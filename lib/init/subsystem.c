@@ -146,7 +146,7 @@ spdk_subsystem_init_next(int rc)
 	assert(spdk_thread_is_app_thread(NULL));
 
 	/* The initialization is interrupted by the spdk_subsystem_fini, so just return */
-	if (g_subsystems_init_interrupted) {
+	if (g_subsystems_init_interrupted) { // 初始化被中断
 		return;
 	}
 
@@ -156,13 +156,13 @@ spdk_subsystem_init_next(int rc)
 		return;
 	}
 
-	if (!g_next_subsystem) {
+	if (!g_next_subsystem) { // 初始化第一个系统
 		g_next_subsystem = TAILQ_FIRST(&g_subsystems);
-	} else {
+	} else { // 初始化下一个系统
 		g_next_subsystem = TAILQ_NEXT(g_next_subsystem, tailq);
 	}
 
-	if (!g_next_subsystem) {
+	if (!g_next_subsystem) { // 初始化完毕
 		g_subsystems_initialized = true;
 		g_subsystem_start_fn(0, g_subsystem_start_arg);
 		return;
@@ -186,7 +186,7 @@ spdk_subsystem_init(spdk_subsystem_init_fn cb_fn, void *cb_arg)
 	g_subsystem_start_arg = cb_arg;
 
 	/* Verify that all dependency name and depends_on subsystems are registered */
-	TAILQ_FOREACH(dep, &g_subsystems_deps, tailq) {
+	TAILQ_FOREACH(dep, &g_subsystems_deps, tailq) { // 遍历依赖项
 		if (!subsystem_find(dep->name)) {
 			SPDK_ERRLOG("subsystem %s is missing\n", dep->name);
 			g_subsystem_start_fn(-1, g_subsystem_start_arg);
@@ -200,7 +200,7 @@ spdk_subsystem_init(spdk_subsystem_init_fn cb_fn, void *cb_arg)
 		}
 	}
 
-	subsystem_sort();
+	subsystem_sort(); // 对子系统进行排序，以确保初始化顺序符合依赖关系
 
 	spdk_subsystem_init_next(0);
 }

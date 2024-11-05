@@ -541,7 +541,7 @@ nvme_robust_mutex_init_shared(pthread_mutex_t *mtx)
 int
 nvme_driver_init(void)
 {
-	static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
+	static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER; // 互斥锁同步初始化
 	int ret = 0;
 	/* Any socket ID */
 	int socket_id = -1;
@@ -563,7 +563,7 @@ nvme_driver_init(void)
 	 *  initialization.
 	 * The secondary process will lookup the existing reserved memory.
 	 */
-	if (spdk_process_is_primary()) {
+	if (spdk_process_is_primary()) { // 是主进程
 		/* The unique named memzone already reserved. */
 		if (g_spdk_nvme_driver != NULL) {
 			pthread_mutex_unlock(&g_init_mutex);
@@ -571,7 +571,7 @@ nvme_driver_init(void)
 		} else {
 			g_spdk_nvme_driver = spdk_memzone_reserve(SPDK_NVME_DRIVER_NAME,
 					     sizeof(struct nvme_driver), socket_id,
-					     SPDK_MEMZONE_NO_IOVA_CONTIG);
+					     SPDK_MEMZONE_NO_IOVA_CONTIG); // 分配共享内存
 		}
 
 		if (g_spdk_nvme_driver == NULL) {
@@ -613,7 +613,7 @@ nvme_driver_init(void)
 	 */
 	assert(spdk_process_is_primary());
 
-	ret = nvme_robust_mutex_init_shared(&g_spdk_nvme_driver->lock);
+	ret = nvme_robust_mutex_init_shared(&g_spdk_nvme_driver->lock); // 初始化互斥锁
 	if (ret != 0) {
 		SPDK_ERRLOG("failed to initialize mutex\n");
 		spdk_memzone_free(SPDK_NVME_DRIVER_NAME);
@@ -628,14 +628,14 @@ nvme_driver_init(void)
 	nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock);
 
 	g_spdk_nvme_driver->initialized = false;
-	g_spdk_nvme_driver->hotplug_fd = spdk_pci_event_listen();
+	g_spdk_nvme_driver->hotplug_fd = spdk_pci_event_listen(); // 热插拔文件描述符 (监控PCI设备的插拔事件)
 	if (g_spdk_nvme_driver->hotplug_fd < 0) {
 		SPDK_DEBUGLOG(nvme, "Failed to open uevent netlink socket\n");
 	}
 
-	TAILQ_INIT(&g_spdk_nvme_driver->shared_attached_ctrlrs);
+	TAILQ_INIT(&g_spdk_nvme_driver->shared_attached_ctrlrs); // 附加控制器列表
 
-	spdk_uuid_generate(&g_spdk_nvme_driver->default_extended_host_id);
+	spdk_uuid_generate(&g_spdk_nvme_driver->default_extended_host_id); // 生成默认的扩展主机 ID
 
 	nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
 
@@ -652,10 +652,10 @@ nvme_ctrlr_probe(const struct spdk_nvme_transport_id *trid,
 
 	assert(trid != NULL);
 
-	spdk_nvme_ctrlr_get_default_ctrlr_opts(&opts, sizeof(opts));
+	spdk_nvme_ctrlr_get_default_ctrlr_opts(&opts, sizeof(opts)); // 获取 NVMe 控制器的默认选项
 
 	if (!probe_ctx->probe_cb || probe_ctx->probe_cb(probe_ctx->cb_ctx, trid, &opts)) {
-		ctrlr = nvme_get_ctrlr_by_trid_unsafe(trid, opts.hostnqn);
+		ctrlr = nvme_get_ctrlr_by_trid_unsafe(trid, opts.hostnqn); // 检查是否已经存在一个与 trid 匹配的控制器
 		if (ctrlr) {
 			/* This ctrlr already exists. */
 
@@ -678,16 +678,17 @@ nvme_ctrlr_probe(const struct spdk_nvme_transport_id *trid,
 			return 0;
 		}
 
-		ctrlr = nvme_transport_ctrlr_construct(trid, &opts, devhandle);
+		ctrlr = nvme_transport_ctrlr_construct(trid, &opts, devhandle); // 尝试构造一个新的控制器
 		if (ctrlr == NULL) {
 			SPDK_ERRLOG("Failed to construct NVMe controller for SSD: %s\n", trid->traddr);
 			return -1;
 		}
+		/* 设置其移除回调函数 remove_cb 和回调上下文 cb_ctx */
 		ctrlr->remove_cb = probe_ctx->remove_cb;
 		ctrlr->cb_ctx = probe_ctx->cb_ctx;
 
-		nvme_qpair_set_state(ctrlr->adminq, NVME_QPAIR_ENABLED);
-		TAILQ_INSERT_TAIL(&probe_ctx->init_ctrlrs, ctrlr, tailq);
+		nvme_qpair_set_state(ctrlr->adminq, NVME_QPAIR_ENABLED); // 将新的控制器的 I/O 队列对（adminq）状态设置为启用
+		TAILQ_INSERT_TAIL(&probe_ctx->init_ctrlrs, ctrlr, tailq); // 将新的控制器添加到 probe_ctx->init_ctrlrs 列表中
 		return 0;
 	}
 
@@ -812,25 +813,25 @@ nvme_probe_internal(struct spdk_nvme_probe_ctx *probe_ctx,
 	struct spdk_nvme_ctrlr *ctrlr, *ctrlr_tmp;
 	const struct spdk_nvme_ctrlr_opts *opts = probe_ctx->opts;
 
-	if (strlen(probe_ctx->trid.trstring) == 0) {
+	if (strlen(probe_ctx->trid.trstring) == 0) { // 没有传输层字符串标识
 		/* If user didn't provide trstring, derive it from trtype */
 		spdk_nvme_trid_populate_transport(&probe_ctx->trid, probe_ctx->trid.trtype);
 	}
 
-	if (!spdk_nvme_transport_available_by_name(probe_ctx->trid.trstring)) {
+	if (!spdk_nvme_transport_available_by_name(probe_ctx->trid.trstring)) { // 检查指定的 NVMe 传输类型是否可用
 		SPDK_ERRLOG("NVMe trtype %u (%s) not available\n",
 			    probe_ctx->trid.trtype, probe_ctx->trid.trstring);
 		return -1;
 	}
 
-	nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock);
+	nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock); // 全局 NVMe 驱动程序锁
 
-	rc = nvme_transport_ctrlr_scan(probe_ctx, direct_connect);
+	rc = nvme_transport_ctrlr_scan(probe_ctx, direct_connect); // 扫描 NVMe 控制器
 	if (rc != 0) {
 		SPDK_ERRLOG("NVMe ctrlr scan failed\n");
 		TAILQ_FOREACH_SAFE(ctrlr, &probe_ctx->init_ctrlrs, tailq, ctrlr_tmp) {
 			TAILQ_REMOVE(&probe_ctx->init_ctrlrs, ctrlr, tailq);
-			nvme_transport_ctrlr_destruct(ctrlr);
+			nvme_transport_ctrlr_destruct(ctrlr); // 释放所有初始化的控制器
 		}
 		nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
 		return -1;
@@ -839,24 +840,24 @@ nvme_probe_internal(struct spdk_nvme_probe_ctx *probe_ctx,
 	/*
 	 * Probe controllers on the shared_attached_ctrlrs list
 	 */
-	if (!spdk_process_is_primary() && (probe_ctx->trid.trtype == SPDK_NVME_TRANSPORT_PCIE)) {
-		TAILQ_FOREACH(ctrlr, &g_spdk_nvme_driver->shared_attached_ctrlrs, tailq) {
+	if (!spdk_process_is_primary() && (probe_ctx->trid.trtype == SPDK_NVME_TRANSPORT_PCIE)) { // 当前进程不是主进程，并且传输类型是 PCIe
+		TAILQ_FOREACH(ctrlr, &g_spdk_nvme_driver->shared_attached_ctrlrs, tailq) { // 遍历共享附加控制器列表
 			/* Do not attach other ctrlrs if user specify a valid trid */
 			if ((strlen(probe_ctx->trid.traddr) != 0) &&
-			    (spdk_nvme_transport_id_compare(&probe_ctx->trid, &ctrlr->trid))) {
+			    (spdk_nvme_transport_id_compare(&probe_ctx->trid, &ctrlr->trid))) { // 用户指定了有效的 trid 但不匹配
 				continue;
 			}
 
-			if (opts && strcmp(opts->hostnqn, ctrlr->opts.hostnqn) != 0) {
+			if (opts && strcmp(opts->hostnqn, ctrlr->opts.hostnqn) != 0) { // 检查控制器的主机 NQN 是否匹配
 				continue;
 			}
 
 			/* Do not attach if we failed to initialize it in this process */
-			if (nvme_ctrlr_get_current_process(ctrlr) == NULL) {
+			if (nvme_ctrlr_get_current_process(ctrlr) == NULL) { // 获取当前进程的控制器没有初始化
 				continue;
 			}
 
-			nvme_ctrlr_proc_get_ref(ctrlr);
+			nvme_ctrlr_proc_get_ref(ctrlr); // 获取控制器的引用
 
 			/*
 			 * Unlock while calling attach_cb() so the user can call other functions
@@ -901,14 +902,14 @@ spdk_nvme_probe(const struct spdk_nvme_transport_id *trid, void *cb_ctx,
 	struct spdk_nvme_transport_id trid_pcie;
 	struct spdk_nvme_probe_ctx *probe_ctx;
 
-	if (trid == NULL) {
+	if (trid == NULL) { // 没有NVMe设备的传输层标识
 		memset(&trid_pcie, 0, sizeof(trid_pcie));
-		spdk_nvme_trid_populate_transport(&trid_pcie, SPDK_NVME_TRANSPORT_PCIE);
+		spdk_nvme_trid_populate_transport(&trid_pcie, SPDK_NVME_TRANSPORT_PCIE); // 设为PCIE
 		trid = &trid_pcie;
 	}
 
 	probe_ctx = spdk_nvme_probe_async(trid, cb_ctx, probe_cb,
-					  attach_cb, remove_cb);
+					  attach_cb, remove_cb); // 创建一个异步探测上下文 probe_ctx，用于管理NVMe设备的探测过程
 	if (!probe_ctx) {
 		SPDK_ERRLOG("Create probe context failed\n");
 		return -1;
@@ -918,7 +919,7 @@ spdk_nvme_probe(const struct spdk_nvme_transport_id *trid, void *cb_ctx,
 	 * Keep going even if one or more nvme_attach() calls failed,
 	 *  but maintain the value of rc to signal errors when we return.
 	 */
-	return nvme_init_controllers(probe_ctx);
+	return nvme_init_controllers(probe_ctx); // 初始化探测到的NVMe设备
 }
 
 static bool
@@ -1540,7 +1541,7 @@ spdk_nvme_probe_async(const struct spdk_nvme_transport_id *trid,
 	int rc;
 	struct spdk_nvme_probe_ctx *probe_ctx;
 
-	rc = nvme_driver_init();
+	rc = nvme_driver_init(); // 初始化NVMe驱动
 	if (rc != 0) {
 		return NULL;
 	}
@@ -1550,8 +1551,8 @@ spdk_nvme_probe_async(const struct spdk_nvme_transport_id *trid,
 		return NULL;
 	}
 
-	nvme_probe_ctx_init(probe_ctx, trid, NULL, cb_ctx, probe_cb, attach_cb, remove_cb);
-	rc = nvme_probe_internal(probe_ctx, false);
+	nvme_probe_ctx_init(probe_ctx, trid, NULL, cb_ctx, probe_cb, attach_cb, remove_cb); // 初始化探测上下文 probe_ctx
+	rc = nvme_probe_internal(probe_ctx, false); // 探测NVMe设备
 	if (rc != 0) {
 		free(probe_ctx);
 		return NULL;

@@ -148,17 +148,17 @@ spdk_nvme_poll_group_process_completions(struct spdk_nvme_poll_group *group,
 		return -EINVAL;
 	}
 
-	if (spdk_unlikely(group->in_process_completions)) {
+	if (spdk_unlikely(group->in_process_completions)) { // 检查是否在处理中
 		return 0;
 	}
 	group->in_process_completions = true;
 
-	STAILQ_FOREACH(tgroup, &group->tgroups, link) {
+	STAILQ_FOREACH(tgroup, &group->tgroups, link) { // 遍历所有的transport poll group
 		local_completions = nvme_transport_poll_group_process_completions(tgroup, completions_per_qpair,
 				    disconnected_qpair_cb);
-		if (local_completions < 0 && error_reason == 0) {
+		if (local_completions < 0 && error_reason == 0) { // 如果有错误，记录错误原因
 			error_reason = local_completions;
-		} else {
+		} else { // 记录完成的数量
 			num_completions += local_completions;
 			/* Just to be safe */
 			assert(num_completions >= 0);

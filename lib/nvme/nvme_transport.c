@@ -56,8 +56,8 @@ nvme_get_transport(const char *transport_name)
 {
 	struct spdk_nvme_transport *registered_transport;
 
-	TAILQ_FOREACH(registered_transport, &g_spdk_nvme_transports, link) {
-		if (strcasecmp(transport_name, registered_transport->ops.name) == 0) {
+	TAILQ_FOREACH(registered_transport, &g_spdk_nvme_transports, link) { // 遍历所有注册的传输类型
+		if (strcasecmp(transport_name, registered_transport->ops.name) == 0) { // 找到名称匹配的传输层，返回指向该传输层结构的指针
 			return registered_transport;
 		}
 	}
@@ -611,7 +611,7 @@ nvme_transport_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_r
 {
 	const struct spdk_nvme_transport *transport;
 
-	if (spdk_likely(!nvme_qpair_is_admin_queue(qpair))) {
+	if (spdk_likely(!nvme_qpair_is_admin_queue(qpair))) { // 如果不是管理队列
 		return qpair->transport->ops.qpair_submit_request(qpair, req);
 	}
 
@@ -776,16 +776,16 @@ nvme_transport_poll_group_connect_qpair(struct spdk_nvme_qpair *qpair)
 
 	tgroup = qpair->poll_group;
 
-	if (qpair->poll_group_tailq_head == &tgroup->connected_qpairs) {
+	if (qpair->poll_group_tailq_head == &tgroup->connected_qpairs) { // 如果已经连接
 		return 0;
 	}
 
-	if (qpair->poll_group_tailq_head == &tgroup->disconnected_qpairs) {
-		rc = tgroup->transport->ops.poll_group_connect_qpair(qpair);
+	if (qpair->poll_group_tailq_head == &tgroup->disconnected_qpairs) { // 如果未连接
+		rc = tgroup->transport->ops.poll_group_connect_qpair(qpair); // 调用传输层的连接函数 (一定成功[在pcie传输层中])
 		if (rc == 0) {
 			qpair->poll_group_tailq_head = &tgroup->connected_qpairs;
-			STAILQ_REMOVE(&tgroup->disconnected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
-			STAILQ_INSERT_TAIL(&tgroup->connected_qpairs, qpair, poll_group_stailq);
+			STAILQ_REMOVE(&tgroup->disconnected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq); // 从断开连接队列中移除
+			STAILQ_INSERT_TAIL(&tgroup->connected_qpairs, qpair, poll_group_stailq); // 插入到连接队列中
 			tgroup->num_connected_qpairs++;
 		}
 

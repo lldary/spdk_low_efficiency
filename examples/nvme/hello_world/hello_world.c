@@ -395,7 +395,7 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 {
 	int op, rc;
 
-	spdk_nvme_trid_populate_transport(&g_trid, SPDK_NVME_TRANSPORT_PCIE);
+	spdk_nvme_trid_populate_transport(&g_trid, SPDK_NVME_TRANSPORT_PCIE); // 初始化NMVe传输层
 	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
 
 	while ((op = getopt(argc, argv, "d:ghi:r:L:V")) != -1) {

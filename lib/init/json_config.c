@@ -223,12 +223,12 @@ rpc_client_connect_poller(void *_ctx)
 	int rc;
 
 	rc = spdk_jsonrpc_client_poll(ctx->client_conn, 0);
-	if (rc != -ENOTCONN) {
+	if (rc != -ENOTCONN) { // 连接存在
 		/* We are connected. Start regular poller and issue first request */
 		spdk_poller_unregister(&ctx->client_conn_poller);
 		ctx->client_conn_poller = SPDK_POLLER_REGISTER(rpc_client_poller, ctx, 100);
 		app_json_config_load_subsystem(ctx);
-	} else {
+	} else { // 连接不存在
 		rc = rpc_client_check_timeout(ctx);
 		if (rc) {
 			app_json_config_load_done(ctx, rc);
@@ -599,7 +599,7 @@ json_config_prepare_ctx(spdk_subsystem_init_fn cb_fn, void *cb_arg, bool stop_on
 	switch (rc) {
 	case 0:
 		/* Get first subsystem */
-		ctx->subsystems_it = spdk_json_array_first(ctx->subsystems);
+		ctx->subsystems_it = spdk_json_array_first(ctx->subsystems); // 获取第一个子系统迭代器
 		if (ctx->subsystems_it == NULL) {
 			SPDK_NOTICELOG("'subsystems' configuration is empty\n");
 		}

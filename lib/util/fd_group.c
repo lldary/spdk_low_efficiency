@@ -273,13 +273,13 @@ spdk_fd_group_add_for_events(struct spdk_fd_group *fgrp, int efd, uint32_t event
 
 	epevent.events = ehdlr->events;
 	epevent.data.ptr = ehdlr;
-	rc = epoll_ctl(epfd, EPOLL_CTL_ADD, efd, &epevent);
+	rc = epoll_ctl(epfd, EPOLL_CTL_ADD, efd, &epevent); // 将文件描述符添加到 epoll 实例中
 	if (rc < 0) {
 		free(ehdlr);
 		return -errno;
 	}
 
-	TAILQ_INSERT_TAIL(&fgrp->event_handlers, ehdlr, next);
+	TAILQ_INSERT_TAIL(&fgrp->event_handlers, ehdlr, next); // 插入事件处理程序
 	fgrp->num_fds++;
 
 	return 0;
@@ -438,20 +438,20 @@ spdk_fd_group_wait(struct spdk_fd_group *fgrp, int timeout)
 		}
 	}
 
-	nfds = epoll_wait(fgrp->epfd, events, totalfds, timeout);
-	if (nfds < 0) {
+	nfds = epoll_wait(fgrp->epfd, events, totalfds, timeout); // 阻塞，等待套接字对应的出现事件
+	if (nfds < 0) { // 表示出现错误
 		if (errno != EINTR) {
 			SPDK_ERRLOG("fgrp epoll_wait returns with fail. errno is %d\n", errno);
 		}
 
 		return -errno;
-	} else if (nfds == 0) {
+	} else if (nfds == 0) { // 表示超时
 		return 0;
 	}
 
-	for (n = 0; n < nfds; n++) {
+	for (n = 0; n < nfds; n++) { // 处理返回数组的每一个事件
 		/* find the event_handler */
-		ehdlr = events[n].data.ptr;
+		ehdlr = events[n].data.ptr; // 获取事件处理程序
 
 		if (ehdlr == NULL) {
 			continue;
@@ -460,7 +460,7 @@ spdk_fd_group_wait(struct spdk_fd_group *fgrp, int timeout)
 		/* Tag ehdlr as running state in case that it is removed
 		 * during this wait loop but before or when it get executed.
 		 */
-		assert(ehdlr->state == EVENT_HANDLER_STATE_WAITING);
+		assert(ehdlr->state == EVENT_HANDLER_STATE_WAITING); // 检查事件状态
 		ehdlr->state = EVENT_HANDLER_STATE_RUNNING;
 	}
 
@@ -482,7 +482,7 @@ spdk_fd_group_wait(struct spdk_fd_group *fgrp, int timeout)
 
 		g_event = &events[n];
 		/* call the interrupt response function */
-		ehdlr->fn(ehdlr->fn_arg);
+		ehdlr->fn(ehdlr->fn_arg); // 调用回调函数
 		g_event = NULL;
 
 		/* It is possible that the ehdlr was removed

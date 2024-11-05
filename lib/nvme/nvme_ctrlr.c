@@ -269,7 +269,7 @@ nvme_ctrlr_proc_add_io_qpair(struct spdk_nvme_qpair *qpair)
 
 	active_proc = nvme_ctrlr_get_current_process(ctrlr);
 	if (active_proc) {
-		TAILQ_INSERT_TAIL(&active_proc->allocated_io_qpairs, qpair, per_process_tailq);
+		TAILQ_INSERT_TAIL(&active_proc->allocated_io_qpairs, qpair, per_process_tailq); // 将 I/O Qpair 添加到该进程的已分配 I/O Qpair 列表 allocated_io_qpairs 中
 		qpair->active_proc = active_proc;
 	}
 }
@@ -313,7 +313,7 @@ spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
 	memset(opts, 0, opts_size);
 
 #define FIELD_OK(field) \
-	offsetof(struct spdk_nvme_io_qpair_opts, field) + sizeof(opts->field) <= opts_size
+	offsetof(struct spdk_nvme_io_qpair_opts, field) + sizeof(opts->field) <= opts_size // 检查字段是否有效 (是否越界)
 
 	if (FIELD_OK(qprio)) {
 		opts->qprio = SPDK_NVME_QPRIO_URGENT;
@@ -328,11 +328,11 @@ spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
 	}
 
 	if (FIELD_OK(delay_cmd_submit)) {
-		opts->delay_cmd_submit = false;
+		opts->delay_cmd_submit = false; // 不延迟提交命令
 	}
 
 	if (FIELD_OK(sq.vaddr)) {
-		opts->sq.vaddr = NULL;
+		opts->sq.vaddr = NULL; // 不定义 SQ 的虚拟地址
 	}
 
 	if (FIELD_OK(sq.paddr)) {
@@ -356,11 +356,11 @@ spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
 	}
 
 	if (FIELD_OK(create_only)) {
-		opts->create_only = false;
+		opts->create_only = false; // 创建 I/O Qpair 后不仅限于创建操作
 	}
 
 	if (FIELD_OK(async_mode)) {
-		opts->async_mode = false;
+		opts->async_mode = false; // 不使用异步模式
 	}
 
 #undef FIELD_OK
@@ -381,7 +381,7 @@ nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 	nvme_ctrlr_lock(ctrlr);
 	cc.raw = ctrlr->process_init_cc.raw;
 
-	if (opts->qprio & ~SPDK_NVME_CREATE_IO_SQ_QPRIO_MASK) {
+	if (opts->qprio & ~SPDK_NVME_CREATE_IO_SQ_QPRIO_MASK) { // 检查用户提供的队列优先级 qprio 是否有效
 		nvme_ctrlr_unlock(ctrlr);
 		return NULL;
 	}
@@ -396,13 +396,13 @@ nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		return NULL;
 	}
 
-	qid = spdk_nvme_ctrlr_alloc_qid(ctrlr);
+	qid = spdk_nvme_ctrlr_alloc_qid(ctrlr); // 分配一个唯一的队列 ID
 	if (qid < 0) {
 		nvme_ctrlr_unlock(ctrlr);
 		return NULL;
 	}
 
-	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
+	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts); // 创建一个新的 I/O Qpair
 	if (qpair == NULL) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_create_io_qpair() failed\n");
 		spdk_nvme_ctrlr_free_qid(ctrlr, qid);
@@ -410,9 +410,9 @@ nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		return NULL;
 	}
 
-	TAILQ_INSERT_TAIL(&ctrlr->active_io_qpairs, qpair, tailq);
+	TAILQ_INSERT_TAIL(&ctrlr->active_io_qpairs, qpair, tailq); // 添加到控制器的活跃 I/O Qpair 列表
 
-	nvme_ctrlr_proc_add_io_qpair(qpair);
+	nvme_ctrlr_proc_add_io_qpair(qpair); // 将新的 I/O Qpair 添加到处理器的 I/O Qpair 列表
 
 	nvme_ctrlr_unlock(ctrlr);
 
@@ -461,7 +461,7 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 
 	nvme_ctrlr_lock(ctrlr);
 
-	if (spdk_unlikely(ctrlr->state != NVME_CTRLR_STATE_READY)) {
+	if (spdk_unlikely(ctrlr->state != NVME_CTRLR_STATE_READY)) { // 控制器状态是否为就绪
 		/* When controller is resetting or initializing, free_io_qids is deleted or not created yet.
 		 * We can't create IO qpair in that case */
 		goto unlock;
@@ -474,11 +474,12 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 	 * This allows for extensions of the opts structure without breaking
 	 * ABI compatibility.
 	 */
-	spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
+	spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts)); // 获取默认的IO队列选项
 	if (user_opts) {
 		memcpy(&opts, user_opts, spdk_min(sizeof(opts), opts_size));
 
 		/* If user passes buffers, make sure they're big enough for the requested queue size */
+		/* 检查用户提供的提交队列（SQ）和完成队列（CQ）的缓冲区大小是否足够大 */
 		if (opts.sq.vaddr) {
 			if (opts.sq.buffer_size < (opts.io_queue_size * sizeof(struct spdk_nvme_cmd))) {
 				NVME_CTRLR_ERRLOG(ctrlr, "sq buffer size %" PRIx64 " is too small for sq size %zx\n",
@@ -495,13 +496,13 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		}
 	}
 
-	qpair = nvme_ctrlr_create_io_qpair(ctrlr, &opts);
+	qpair = nvme_ctrlr_create_io_qpair(ctrlr, &opts); // 创建一个新的 I/O Qpair
 
 	if (qpair == NULL || opts.create_only == true) {
 		goto unlock;
 	}
 
-	rc = spdk_nvme_ctrlr_connect_io_qpair(ctrlr, qpair);
+	rc = spdk_nvme_ctrlr_connect_io_qpair(ctrlr, qpair); // 连接 I/O Qpair
 	if (rc != 0) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_connect_io_qpair() failed\n");
 		nvme_ctrlr_proc_remove_io_qpair(qpair);

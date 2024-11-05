@@ -19,9 +19,9 @@
 int
 spdk_pci_event_listen(void)
 {
-	struct sockaddr_nl addr;
-	int netlink_fd;
-	int size = SPDK_UEVENT_RECVBUF_SIZE;
+	struct sockaddr_nl addr; // 用于存储 Netlink 套接字地址
+	int netlink_fd; // 存储 Netlink 套接字
+	int size = SPDK_UEVENT_RECVBUF_SIZE; // 接收缓冲区大小
 	int buf_size;
 	socklen_t opt_size;
 	int flag, rc;
@@ -37,7 +37,7 @@ spdk_pci_event_listen(void)
 		return netlink_fd;
 	}
 
-	if (setsockopt(netlink_fd, SOL_SOCKET, SO_RCVBUFFORCE, &size, sizeof(size)) < 0) {
+	if (setsockopt(netlink_fd, SOL_SOCKET, SO_RCVBUFFORCE, &size, sizeof(size)) < 0) { // 设置缓冲区大小
 		if (setsockopt(netlink_fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size)) < 0) {
 			rc = errno;
 			SPDK_ERRLOG("Failed to set socket option SO_RCVBUF\n");
@@ -65,13 +65,13 @@ spdk_pci_event_listen(void)
 		goto error;
 	}
 
-	if (fcntl(netlink_fd, F_SETFL, flag | O_NONBLOCK) < 0) {
+	if (fcntl(netlink_fd, F_SETFL, flag | O_NONBLOCK) < 0) { // 设置非阻塞模式
 		rc = errno;
 		SPDK_ERRLOG("Fcntl can't set nonblocking mode for socket, fd: %d\n", netlink_fd);
 		goto error;
 	}
 
-	if (bind(netlink_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+	if (bind(netlink_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) { // 绑定 Netlink 套接字
 		rc = errno;
 		SPDK_ERRLOG("Failed to bind the netlink\n");
 		goto error;

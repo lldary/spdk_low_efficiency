@@ -869,16 +869,16 @@ reactor_post_process_lw_thread(struct spdk_reactor *reactor, struct spdk_lw_thre
 	struct spdk_thread *thread = spdk_thread_get_from_ctx(lw_thread);
 
 	if (spdk_unlikely(spdk_thread_is_exited(thread) &&
-			  spdk_thread_is_idle(thread))) {
-		_reactor_remove_lw_thread(reactor, lw_thread);
-		spdk_thread_destroy(thread);
+			  spdk_thread_is_idle(thread))) { // 已退出并且是空闲状态
+		_reactor_remove_lw_thread(reactor, lw_thread); // 移除该线程
+		spdk_thread_destroy(thread); // 销毁线程
 		return true;
 	}
 
-	if (spdk_unlikely(lw_thread->resched && !spdk_thread_is_bound(thread))) {
-		lw_thread->resched = false;
-		_reactor_remove_lw_thread(reactor, lw_thread);
-		_reactor_schedule_thread(thread);
+	if (spdk_unlikely(lw_thread->resched && !spdk_thread_is_bound(thread))) { // 如果调度标志为真且线程没有绑定
+		lw_thread->resched = false; // 已调度
+		_reactor_remove_lw_thread(reactor, lw_thread); // 将线程移出现有队列
+		_reactor_schedule_thread(thread); // 调度该线程
 		return true;
 	}
 
@@ -901,31 +901,31 @@ _reactor_run(struct spdk_reactor *reactor)
 	uint64_t		now;
 	int			rc;
 
-	event_queue_run_batch(reactor);
+	event_queue_run_batch(reactor); // 处理反应器中的事件队列，执行待处理的事件
 
 	/* If no threads are present on the reactor,
 	 * tsc_last gets outdated. Update it to track
 	 * thread execution time correctly. */
-	if (spdk_unlikely(TAILQ_EMPTY(&reactor->threads))) {
+	if (spdk_unlikely(TAILQ_EMPTY(&reactor->threads))) { // 检查反应器的线程队列是否为空。如果为空，更新空闲时间戳
 		now = spdk_get_ticks();
 		reactor->idle_tsc += now - reactor->tsc_last;
 		reactor->tsc_last = now;
 		return;
 	}
 
-	TAILQ_FOREACH_SAFE(lw_thread, &reactor->threads, link, tmp) {
-		thread = spdk_thread_get_from_ctx(lw_thread);
-		rc = spdk_thread_poll(thread, 0, reactor->tsc_last);
+	TAILQ_FOREACH_SAFE(lw_thread, &reactor->threads, link, tmp) { // 遍历所有线程
+		thread = spdk_thread_get_from_ctx(lw_thread); // 获取工作线程
+		rc = spdk_thread_poll(thread, 0, reactor->tsc_last); // 处理线程中的任务，返回值存在rc中
 
-		now = spdk_thread_get_last_tsc(thread);
-		if (rc == 0) {
+		now = spdk_thread_get_last_tsc(thread); // 获取当前线程时间戳
+		if (rc == 0) { // 更新统计信息
 			reactor->idle_tsc += now - reactor->tsc_last;
 		} else if (rc > 0) {
 			reactor->busy_tsc += now - reactor->tsc_last;
 		}
 		reactor->tsc_last = now;
 
-		reactor_post_process_lw_thread(reactor, lw_thread);
+		reactor_post_process_lw_thread(reactor, lw_thread); // 处理当前线程后续操作，可能包括清理，更新状态等
 	}
 }
 
@@ -956,8 +956,8 @@ reactor_run(void *arg)
 			_reactor_run(reactor);
 		}
 
-		if (g_framework_context_switch_monitor_enabled) {
-			if ((reactor->last_rusage + g_rusage_period) < reactor->tsc_last) {
+		if (g_framework_context_switch_monitor_enabled) {  // 启用了框架上下文切换监控
+			if ((reactor->last_rusage + g_rusage_period) < reactor->tsc_last) { // g_rusage_period为周期，每周期采样一次
 				get_rusage(reactor);
 				reactor->last_rusage = reactor->tsc_last;
 			}
@@ -969,10 +969,10 @@ reactor_run(void *arg)
 				  !g_scheduling_in_progress)) {
 			last_sched = reactor->tsc_last;
 			g_scheduling_in_progress = true;
-			_reactors_scheduler_gather_metrics(NULL, NULL);
+			_reactors_scheduler_gather_metrics(NULL, NULL); // 收集调度度量信息
 		}
 
-		if (g_reactor_state != SPDK_REACTOR_STATE_RUNNING) {
+		if (g_reactor_state != SPDK_REACTOR_STATE_RUNNING) { // 退出循环，结束reactor运行
 			break;
 		}
 	}
@@ -1049,21 +1049,21 @@ spdk_reactors_start(void)
 	g_stopping_reactors = false;
 
 	current_core = spdk_env_get_current_core();
-	SPDK_ENV_FOREACH_CORE(i) {
+	SPDK_ENV_FOREACH_CORE(i) { // 遍历所有可用核心
 		if (i != current_core) {
 			reactor = spdk_reactor_get(i);
 			if (reactor == NULL) {
 				continue;
 			}
 
-			rc = spdk_env_thread_launch_pinned(reactor->lcore, reactor_run, reactor);
+			rc = spdk_env_thread_launch_pinned(reactor->lcore, reactor_run, reactor); // 尝试启动reactor
 			if (rc < 0) {
 				SPDK_ERRLOG("Unable to start reactor thread on core %u\n", reactor->lcore);
 				assert(false);
 				return;
 			}
 		}
-		spdk_cpuset_set_cpu(&g_reactor_core_mask, i, true);
+		spdk_cpuset_set_cpu(&g_reactor_core_mask, i, true); // 将核心添加进入掩码，表示该核心在运行
 	}
 
 	/* Start the main reactor */
@@ -1182,7 +1182,7 @@ _reactor_schedule_thread(struct spdk_thread *thread)
 	memset(lw_thread, 0, sizeof(*lw_thread));
 
 	if (current_lcore != SPDK_ENV_LCORE_ID_ANY) {
-		local_reactor = spdk_reactor_get(current_lcore);
+		local_reactor = spdk_reactor_get(current_lcore); // 获取当前核心ID
 		assert(local_reactor);
 	}
 
@@ -1214,7 +1214,7 @@ _reactor_schedule_thread(struct spdk_thread *thread)
 			}
 		} else if (!spdk_cpuset_get_cpu(&polling_cpumask, core)) {
 			/* If specified reactor is not in polling, spdk_thread should be scheduled
-			 * into one of the polling reactors.
+			 * into one of the polling reactors. 如果具体的reactor没有轮询，thread应该被调度到一个可以轮询的reactor
 			 */
 			core = SPDK_ENV_LCORE_ID_ANY;
 			cpumask = &polling_cpumask;
@@ -1223,20 +1223,20 @@ _reactor_schedule_thread(struct spdk_thread *thread)
 
 	pthread_mutex_lock(&g_scheduler_mtx);
 	if (core == SPDK_ENV_LCORE_ID_ANY) {
-		for (i = 0; i < spdk_env_get_core_count(); i++) {
+		for (i = 0; i < spdk_env_get_core_count(); i++) { // 循环查找可用核心
 			if (g_next_core >= g_reactor_count) {
 				g_next_core = spdk_env_get_first_core();
 			}
 			core = g_next_core;
 			g_next_core = spdk_env_get_next_core(g_next_core);
 
-			if (spdk_cpuset_get_cpu(cpumask, core)) {
+			if (spdk_cpuset_get_cpu(cpumask, core)) { // 满足条件就可以分配
 				break;
 			}
 		}
 	}
 
-	evt = spdk_event_allocate(core, _schedule_thread, lw_thread, NULL);
+	evt = spdk_event_allocate(core, _schedule_thread, lw_thread, NULL); // 创建事件，调度到指定核心
 
 	pthread_mutex_unlock(&g_scheduler_mtx);
 
@@ -1248,7 +1248,7 @@ _reactor_schedule_thread(struct spdk_thread *thread)
 
 	lw_thread->tsc_start = spdk_get_ticks();
 
-	spdk_event_call(evt);
+	spdk_event_call(evt); // 调用事件
 
 	return 0;
 }

@@ -608,7 +608,7 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 
 	cleanup_pci_devices();
 
-	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) { // 遍历已知的PCI设备
 		if (spdk_pci_addr_compare(&dev->addr, pci_address) == 0) {
 			break;
 		}
@@ -633,7 +633,7 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 	driver->cb_arg = enum_ctx;
 
 	rc = -ENODEV;
-	TAILQ_FOREACH(provider, &g_pci_device_providers, tailq) {
+	TAILQ_FOREACH(provider, &g_pci_device_providers, tailq) { // 遍历所有的PCI设备提供者
 		rc = provider->attach_cb(pci_address);
 		if (rc == 0) {
 			break;
@@ -683,17 +683,17 @@ spdk_pci_enumerate(struct spdk_pci_driver *driver,
 	struct spdk_pci_device *dev;
 	int rc;
 
-	cleanup_pci_devices();
+	cleanup_pci_devices(); // 清理之前的设备
 
-	pthread_mutex_lock(&g_pci_mutex);
-	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
+	pthread_mutex_lock(&g_pci_mutex); // 锁保护
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) { // 遍历PCI设备
 		if (dev->internal.attached ||
 		    dev->internal.driver != driver ||
-		    dev->internal.pending_removal) {
+		    dev->internal.pending_removal) { // 设备已被添加或者设备不属于当前驱动或者设备处于待移除状态
 			continue;
 		}
 
-		rc = enum_cb(enum_ctx, dev);
+		rc = enum_cb(enum_ctx, dev); // 调用回调函数
 		if (rc == 0) {
 			dev->internal.attached = true;
 		} else if (rc < 0) {
@@ -703,14 +703,14 @@ spdk_pci_enumerate(struct spdk_pci_driver *driver,
 	}
 	pthread_mutex_unlock(&g_pci_mutex);
 
-	if (scan_pci_bus(true) != 0) {
+	if (scan_pci_bus(true) != 0) { // 扫描PCI总线，查找新设备
 		return -1;
 	}
 
 	driver->cb_fn = enum_cb;
 	driver->cb_arg = enum_ctx;
 
-	if (dpdk_bus_probe() != 0) {
+	if (dpdk_bus_probe() != 0) { // 探测和初始化 DPDK 管理的设备
 		driver->cb_arg = NULL;
 		driver->cb_fn = NULL;
 		return -1;

@@ -3120,7 +3120,7 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 	cpl.u.blob_basic.cb_fn = cb_fn;
 	cpl.u.blob_basic.cb_arg = cb_arg;
 
-	if (blob->frozen_refcnt) {
+	if (blob->frozen_refcnt) { // 是否冻结
 		/* This blob I/O is frozen */
 		spdk_bs_user_op_t *op;
 		struct spdk_bs_channel *bs_channel = spdk_io_channel_get_ctx(_ch);
@@ -3131,12 +3131,12 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 			return;
 		}
 
-		TAILQ_INSERT_TAIL(&bs_channel->queued_io, op, link);
+		TAILQ_INSERT_TAIL(&bs_channel->queued_io, op, link); // 将操作加入队列
 
 		return;
 	}
 
-	is_allocated = blob_calculate_lba_and_lba_count(blob, offset, length, &lba, &lba_count);
+	is_allocated = blob_calculate_lba_and_lba_count(blob, offset, length, &lba, &lba_count); // 计算lba和lba_count
 
 	switch (op_type) {
 	case SPDK_BLOB_READ: {
@@ -3165,12 +3165,12 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 			/* Write to the blob */
 			spdk_bs_batch_t *batch;
 
-			if (lba_count == 0) {
+			if (lba_count == 0) { // 长度为0时，直接返回
 				cb_fn(cb_arg, 0);
 				return;
 			}
 
-			batch = bs_batch_open(_ch, &cpl, blob);
+			batch = bs_batch_open(_ch, &cpl, blob); // 打开batch
 			if (!batch) {
 				cb_fn(cb_arg, -ENOMEM);
 				return;
@@ -3277,24 +3277,24 @@ blob_request_submit_op(struct spdk_blob *blob, struct spdk_io_channel *_channel,
 {
 	assert(blob != NULL);
 
-	if (blob->data_ro && op_type != SPDK_BLOB_READ) {
+	if (blob->data_ro && op_type != SPDK_BLOB_READ) { // 当权限为只读时，不允许写入
 		cb_fn(cb_arg, -EPERM);
 		return;
 	}
 
-	if (length == 0) {
+	if (length == 0) { // 长度为0时，直接返回
 		cb_fn(cb_arg, 0);
 		return;
 	}
 
-	if (offset + length > bs_cluster_to_lba(blob->bs, blob->active.num_clusters)) {
+	if (offset + length > bs_cluster_to_lba(blob->bs, blob->active.num_clusters)) { // 超出范围时，直接返回
 		cb_fn(cb_arg, -EINVAL);
 		return;
 	}
-	if (length <= bs_num_io_units_to_cluster_boundary(blob, offset)) {
+	if (length <= bs_num_io_units_to_cluster_boundary(blob, offset)) { // 长度小于等于一个cluster的边界时，直接提交
 		blob_request_submit_op_single(_channel, blob, payload, offset, length,
 					      cb_fn, cb_arg, op_type);
-	} else {
+	} else { // 长度大于一个cluster的边界时，拆分后提交
 		blob_request_submit_op_split(_channel, blob, payload, offset, length,
 					     cb_fn, cb_arg, op_type);
 	}
@@ -3597,7 +3597,7 @@ bs_channel_create(void *io_device, void *ctx_buf)
 
 	channel->bs = bs;
 	channel->dev = dev;
-	channel->dev_channel = dev->create_channel(dev);
+	channel->dev_channel = dev->create_channel(dev); // 调用设备的 create_channel 函数来创建一个设备通道
 
 	if (!channel->dev_channel) {
 		SPDK_ERRLOG("Failed to create device channel.\n");
@@ -3949,7 +3949,7 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_st
 	spdk_spin_init(&bs->used_lock);
 
 	spdk_io_device_register(bs, bs_channel_create, bs_channel_destroy,
-				sizeof(struct spdk_bs_channel), "blobstore");
+				sizeof(struct spdk_bs_channel), "blobstore"); // 注册 blob 存储实例作为一个 I/O 设备
 	rc = bs_register_md_thread(bs);
 	if (rc == -1) {
 		spdk_io_device_unregister(bs, NULL);
@@ -5486,7 +5486,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 
 	SPDK_DEBUGLOG(blob, "Initializing blobstore on dev %p\n", dev);
 
-	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) { // 检查块大小是否支持
 		SPDK_ERRLOG("unsupported dev block length of %d\n",
 			    dev->blocklen);
 		dev->destroy(dev);
@@ -5494,7 +5494,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		return;
 	}
 
-	spdk_bs_opts_init(&opts, sizeof(opts));
+	spdk_bs_opts_init(&opts, sizeof(opts)); // 初始化opts
 	if (o) {
 		if (bs_opts_copy(o, &opts)) {
 			return;
@@ -5514,7 +5514,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		return;
 	}
 
-	if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
+	if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) { // 初始化元数据页面和位数组
 		/* By default, allocate 1 page per cluster.
 		 * Technically, this over-allocates metadata
 		 * because more metadata will reduce the number
@@ -5551,7 +5551,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		cb_fn(cb_arg, NULL, -ENOMEM);
 		return;
 	}
-
+	/* 设置超块（super block）的签名、版本、长度、超级 blob 和其他元数据 */
 	memcpy(ctx->super->signature, SPDK_BS_SUPER_BLOCK_SIG,
 	       sizeof(ctx->super->signature));
 	ctx->super->version = SPDK_BS_VERSION;
@@ -5570,7 +5570,8 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 	num_md_pages = 1;
 
 	/* The used_md_pages mask requires 1 bit per metadata page, rounded
-	 * up to the nearest page, plus a header.
+	 * up to the nearest page, plus a header. 计算元数据占用的页面数，
+	 * 并设置用于跟踪页面和簇的使用情况的位数组
 	 */
 	ctx->super->used_page_mask_start = num_md_pages;
 	ctx->super->used_page_mask_len = spdk_divide_round_up(sizeof(struct spdk_bs_md_mask) +
@@ -5606,6 +5607,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 	num_md_pages += ctx->super->used_blobid_mask_len;
 
 	/* The metadata region size was chosen above */
+	/* 设置元数据区域的起始位置和长度 */
 	ctx->super->md_start = bs->md_start = num_md_pages;
 	ctx->super->md_len = bs->md_len;
 	num_md_pages += bs->md_len;

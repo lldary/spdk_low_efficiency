@@ -379,11 +379,11 @@ app_start_application(int rc, void *arg1)
 		return;
 	}
 
-	if (g_spdk_app.rpc_addr) {
-		spdk_rpc_server_resume(g_spdk_app.rpc_addr);
+	if (g_spdk_app.rpc_addr) { // 配置了 RPC 地址
+		spdk_rpc_server_resume(g_spdk_app.rpc_addr); // 恢复 RPC 服务器的操作，允许 RPC 请求处理
 	}
 
-	g_start_fn(g_start_arg);
+	g_start_fn(g_start_arg); // 用户自定义应用程序启动逻辑
 }
 
 static void
@@ -395,8 +395,8 @@ app_subsystem_init_done(int rc, void *arg1)
 		return;
 	}
 
-	spdk_rpc_set_allowlist(g_spdk_app.rpc_allowlist);
-	spdk_rpc_set_state(SPDK_RPC_RUNTIME);
+	spdk_rpc_set_allowlist(g_spdk_app.rpc_allowlist); // 限制可以访问 RPC 的客户端
+	spdk_rpc_set_state(SPDK_RPC_RUNTIME); // 设置 RPC 状态为运行时
 
 	if (g_spdk_app.json_data) {
 		/* Load SPDK_RPC_RUNTIME RPCs from config file */
@@ -414,7 +414,7 @@ app_do_spdk_subsystem_init(int rc, void *arg1)
 {
 	struct spdk_rpc_opts opts;
 
-	if (rc) {
+	if (rc) { // 上一个操作失败，退出程序
 		spdk_app_stop(rc);
 		return;
 	}
@@ -862,8 +862,8 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 	}
 #endif
 
-	if (opts->interrupt_mode) {
-		spdk_interrupt_mode_enable();
+	if (opts->interrupt_mode) { // 允许差开启中断模式选项
+		spdk_interrupt_mode_enable(); // 开启中断模式
 	}
 
 	memset(&g_spdk_app, 0, sizeof(g_spdk_app));
@@ -883,23 +883,23 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 	/* Pass NULL to app_setup_env if SPDK app has been set up, in order to
 	 * indicate that this is a reinitialization.
 	 */
-	if (app_setup_env(g_env_was_setup ? NULL : opts) < 0) {
+	if (app_setup_env(g_env_was_setup ? NULL : opts) < 0) { // 设置SPDK环境
 		return 1;
 	}
 
 	/* Calculate mempool size now that the env layer has configured the core count
 	 * for the application */
-	calculate_mempool_size(opts, opts_user);
+	calculate_mempool_size(opts, opts_user); // 计算内存池大小
 
-	spdk_log_open(opts->log);
+	spdk_log_open(opts->log); // 打开日志
 
 	/* Initialize each lock to -1 to indicate "empty" status */
 	for (i = 0; i < SPDK_CONFIG_MAX_LCORES; i++) {
-		g_core_locks[i] = -1;
+		g_core_locks[i] = -1; // 初始化锁
 	}
 
 	if (!opts->disable_cpumask_locks) {
-		if (claim_cpu_cores(NULL)) {
+		if (claim_cpu_cores(NULL)) { // 尝试获取CPU核心的锁
 			SPDK_ERRLOG("Unable to acquire lock on assigned core mask - exiting.\n");
 			return 1;
 		}
@@ -909,7 +909,7 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 
 	SPDK_NOTICELOG("Total cores available: %d\n", spdk_env_get_core_count());
 
-	if ((rc = spdk_reactors_init(opts->msg_mempool_size)) != 0) {
+	if ((rc = spdk_reactors_init(opts->msg_mempool_size)) != 0) { // 初始化reactor
 		SPDK_ERRLOG("Reactor Initialization failed: rc = %d\n", rc);
 		return 1;
 	}
@@ -917,14 +917,14 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 	spdk_cpuset_set_cpu(&tmp_cpumask, spdk_env_get_current_core(), true);
 
 	/* Now that the reactors have been initialized, we can create the app thread. */
-	spdk_thread_create("app_thread", &tmp_cpumask);
+	spdk_thread_create("app_thread", &tmp_cpumask); // 创建线程
 	if (!spdk_thread_get_app_thread()) {
 		SPDK_ERRLOG("Unable to create an spdk_thread for initialization\n");
 		return 1;
 	}
 
 	SPDK_ENV_FOREACH_CORE(core) {
-		rc = init_proc_stat(core);
+		rc = init_proc_stat(core); // 初始化每个核心的/proc/stat解析
 		if (rc) {
 			SPDK_NOTICELOG("Unable to parse /proc/stat [core: %d].\n", core);
 		}
@@ -975,10 +975,10 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 		g_spdk_app.json_data_size = opts->json_data_size;
 	}
 
-	spdk_thread_send_msg(spdk_thread_get_app_thread(), bootstrap_fn, NULL);
+	spdk_thread_send_msg(spdk_thread_get_app_thread(), bootstrap_fn, NULL); // 向线程发送信息，调用bootstrap_fn
 
 	/* This blocks until spdk_app_stop is called */
-	spdk_reactors_start();
+	spdk_reactors_start(); // 启动reactor
 
 	g_env_was_setup = true;
 

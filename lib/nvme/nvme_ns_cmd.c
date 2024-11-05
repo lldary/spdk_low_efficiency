@@ -1032,16 +1032,16 @@ spdk_nvme_ns_cmd_write_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *
 	struct nvme_payload payload;
 	int rc = 0;
 
-	if (!_is_io_flags_valid(io_flags)) {
+	if (!_is_io_flags_valid(io_flags)) { // 检查io_flags是否合法
 		return -EINVAL;
 	}
 
-	payload = NVME_PAYLOAD_CONTIG(buffer, metadata);
+	payload = NVME_PAYLOAD_CONTIG(buffer, metadata); // 生成nvme_payload结构体
 
 	req = _nvme_ns_cmd_rw(ns, qpair, &payload, 0, 0, lba, lba_count, cb_fn, cb_arg, SPDK_NVME_OPC_WRITE,
-			      io_flags, apptag_mask, apptag, 0, false, NULL, &rc);
+			      io_flags, apptag_mask, apptag, 0, false, NULL, &rc); // 生成nvme_request结构体
 	if (req != NULL) {
-		return nvme_qpair_submit_request(qpair, req);
+		return nvme_qpair_submit_request(qpair, req); // 提交请求
 	} else {
 		return nvme_ns_map_failure_rc(lba_count,
 					      ns->sectors_per_max_io,

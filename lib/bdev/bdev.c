@@ -2709,26 +2709,26 @@ bdev_qos_set_ops(struct spdk_bdev_qos *qos)
 {
 	int i;
 
-	for (i = 0; i < SPDK_BDEV_QOS_NUM_RATE_LIMIT_TYPES; i++) {
-		if (qos->rate_limits[i].limit == SPDK_BDEV_QOS_LIMIT_NOT_DEFINED) {
+	for (i = 0; i < SPDK_BDEV_QOS_NUM_RATE_LIMIT_TYPES; i++) { // 遍历所有 QoS 速率限制类型
+		if (qos->rate_limits[i].limit == SPDK_BDEV_QOS_LIMIT_NOT_DEFINED) { // 未限制
 			qos->rate_limits[i].queue_io = NULL;
 			continue;
 		}
 
 		switch (i) {
-		case SPDK_BDEV_QOS_RW_IOPS_RATE_LIMIT:
+		case SPDK_BDEV_QOS_RW_IOPS_RATE_LIMIT: // 读写IOPS限制
 			qos->rate_limits[i].queue_io = bdev_qos_rw_iops_queue;
 			qos->rate_limits[i].rewind_quota = bdev_qos_rw_iops_rewind_quota;
 			break;
-		case SPDK_BDEV_QOS_RW_BPS_RATE_LIMIT:
+		case SPDK_BDEV_QOS_RW_BPS_RATE_LIMIT: // 读写字节每秒限制
 			qos->rate_limits[i].queue_io = bdev_qos_rw_bps_queue;
 			qos->rate_limits[i].rewind_quota = bdev_qos_rw_bps_rewind_quota;
 			break;
-		case SPDK_BDEV_QOS_R_BPS_RATE_LIMIT:
+		case SPDK_BDEV_QOS_R_BPS_RATE_LIMIT: // 读字节每秒限制
 			qos->rate_limits[i].queue_io = bdev_qos_r_bps_queue;
 			qos->rate_limits[i].rewind_quota = bdev_qos_r_bps_rewind_quota;
 			break;
-		case SPDK_BDEV_QOS_W_BPS_RATE_LIMIT:
+		case SPDK_BDEV_QOS_W_BPS_RATE_LIMIT: // 写字节每秒限制
 			qos->rate_limits[i].queue_io = bdev_qos_w_bps_queue;
 			qos->rate_limits[i].rewind_quota = bdev_qos_w_bps_rewind_quota;
 			break;
@@ -2756,7 +2756,7 @@ bdev_io_do_submit(struct spdk_bdev_channel *bdev_ch, struct spdk_bdev_io *bdev_i
 	struct spdk_io_channel *ch = bdev_ch->channel;
 	struct spdk_bdev_shared_resource *shared_resource = bdev_ch->shared_resource;
 
-	if (spdk_unlikely(bdev_io->type == SPDK_BDEV_IO_TYPE_ABORT)) {
+	if (spdk_unlikely(bdev_io->type == SPDK_BDEV_IO_TYPE_ABORT)) { // 如果是中止IO
 		struct spdk_bdev_mgmt_channel *mgmt_channel = shared_resource->mgmt_ch;
 		struct spdk_bdev_io *bio_to_abort = bdev_io->u.abort.bio_to_abort;
 
@@ -2770,18 +2770,18 @@ bdev_io_do_submit(struct spdk_bdev_channel *bdev_ch, struct spdk_bdev_io *bdev_i
 
 	if (spdk_unlikely(bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE &&
 			  bdev_io->bdev->split_on_write_unit &&
-			  bdev_io->u.bdev.num_blocks < bdev_io->bdev->write_unit_size)) {
+			  bdev_io->u.bdev.num_blocks < bdev_io->bdev->write_unit_size)) { // 如果是写IO并且需要分割并且写的块数小于写单元大小
 		SPDK_ERRLOG("IO num_blocks %lu does not match the write_unit_size %u\n",
 			    bdev_io->u.bdev.num_blocks, bdev_io->bdev->write_unit_size);
 		_bdev_io_complete_in_submit(bdev_ch, bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 		return;
 	}
 
-	if (spdk_likely(TAILQ_EMPTY(&shared_resource->nomem_io))) {
-		bdev_io_increment_outstanding(bdev_ch, shared_resource);
-		bdev_io->internal.in_submit_request = true;
-		bdev_submit_request(bdev, ch, bdev_io);
-		bdev_io->internal.in_submit_request = false;
+	if (spdk_likely(TAILQ_EMPTY(&shared_resource->nomem_io))) { // 如果没有内存不足的IO
+		bdev_io_increment_outstanding(bdev_ch, shared_resource); // 增加未完成IO计数
+		bdev_io->internal.in_submit_request = true; // 设置IO正在提交标志
+		bdev_submit_request(bdev, ch, bdev_io); // 提交IO
+		bdev_io->internal.in_submit_request = false; // 清除IO正在提交标志
 	} else {
 		bdev_queue_nomem_io_tail(shared_resource, bdev_io, BDEV_IO_RETRY_STATE_SUBMIT);
 		if (shared_resource->nomem_threshold == 0 && shared_resource->io_outstanding == 0) {
@@ -3501,14 +3501,14 @@ _bdev_io_submit(void *ctx)
 	struct spdk_bdev *bdev = bdev_io->bdev;
 	struct spdk_bdev_channel *bdev_ch = bdev_io->internal.ch;
 
-	if (spdk_likely(bdev_ch->flags == 0)) {
+	if (spdk_likely(bdev_ch->flags == 0)) { // 检查通道是否有标志
 		bdev_io_do_submit(bdev_ch, bdev_io);
 		return;
 	}
 
-	if (bdev_ch->flags & BDEV_CH_RESET_IN_PROGRESS) {
-		_bdev_io_complete_in_submit(bdev_ch, bdev_io, SPDK_BDEV_IO_STATUS_ABORTED);
-	} else if (bdev_ch->flags & BDEV_CH_QOS_ENABLED) {
+	if (bdev_ch->flags & BDEV_CH_RESET_IN_PROGRESS) { // 检查通道是否正在重置
+		_bdev_io_complete_in_submit(bdev_ch, bdev_io, SPDK_BDEV_IO_STATUS_ABORTED); // 完成IO，状态为ABORTED
+	} else if (bdev_ch->flags & BDEV_CH_QOS_ENABLED) { // 检查通道是否启用了QoS
 		if (spdk_unlikely(bdev_io->type == SPDK_BDEV_IO_TYPE_ABORT) &&
 		    bdev_abort_queued_io(&bdev_ch->qos_queued_io, bdev_io->u.abort.bio_to_abort)) {
 			_bdev_io_complete_in_submit(bdev_ch, bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
@@ -3591,31 +3591,31 @@ bdev_io_submit(struct spdk_bdev_io *bdev_io)
 
 	assert(bdev_io->internal.status == SPDK_BDEV_IO_STATUS_PENDING);
 
-	if (!TAILQ_EMPTY(&ch->locked_ranges)) {
+	if (!TAILQ_EMPTY(&ch->locked_ranges)) { // 检查是否有锁定的范围
 		struct lba_range *range;
 
-		TAILQ_FOREACH(range, &ch->locked_ranges, tailq) {
-			if (bdev_io_range_is_locked(bdev_io, range)) {
-				TAILQ_INSERT_TAIL(&ch->io_locked, bdev_io, internal.ch_link);
+		TAILQ_FOREACH(range, &ch->locked_ranges, tailq) { // 遍历所有锁定的范围
+			if (bdev_io_range_is_locked(bdev_io, range)) { // 检查当前IO是否与锁定的范围重叠
+				TAILQ_INSERT_TAIL(&ch->io_locked, bdev_io, internal.ch_link); // 将IO插入到锁定的IO队列中
 				return;
 			}
 		}
 	}
 
-	bdev_ch_add_to_io_submitted(bdev_io);
+	bdev_ch_add_to_io_submitted(bdev_io); // 将IO插入到已提交的IO队列中
 
-	bdev_io->internal.submit_tsc = spdk_get_ticks();
+	bdev_io->internal.submit_tsc = spdk_get_ticks(); // 记录提交时间
 	spdk_trace_record_tsc(bdev_io->internal.submit_tsc, TRACE_BDEV_IO_START,
 			      ch->trace_id, bdev_io->u.bdev.num_blocks,
 			      (uintptr_t)bdev_io, (uint64_t)bdev_io->type, bdev_io->internal.caller_ctx,
 			      bdev_io->u.bdev.offset_blocks, ch->queue_depth);
 
-	if (bdev_io->internal.f.split) {
+	if (bdev_io->internal.f.split) { // 如果需要分裂IO
 		bdev_io_split(bdev_io);
 		return;
 	}
 
-	_bdev_io_submit(bdev_io);
+	_bdev_io_submit(bdev_io); // 提交IO
 }
 
 static inline void
@@ -3805,7 +3805,7 @@ bdev_qos_update_max_quota_per_timeslice(struct spdk_bdev_qos *qos)
 	int i;
 
 	for (i = 0; i < SPDK_BDEV_QOS_NUM_RATE_LIMIT_TYPES; i++) {
-		if (qos->rate_limits[i].limit == SPDK_BDEV_QOS_LIMIT_NOT_DEFINED) {
+		if (qos->rate_limits[i].limit == SPDK_BDEV_QOS_LIMIT_NOT_DEFINED) { // 未限制
 			qos->rate_limits[i].max_per_timeslice = 0;
 			continue;
 		}
@@ -3959,22 +3959,22 @@ bdev_enable_qos(struct spdk_bdev *bdev, struct spdk_bdev_channel *ch)
 			/* No qos channel has been selected, so set one up */
 
 			/* Take another reference to ch */
-			io_ch = spdk_get_io_channel(__bdev_to_io_dev(bdev));
+			io_ch = spdk_get_io_channel(__bdev_to_io_dev(bdev)); // 获取块设备的 I/O 通道 io_ch
 			assert(io_ch != NULL);
-			qos->ch = ch;
+			qos->ch = ch; // 设置 QoS 通道
 
 			qos->thread = spdk_io_channel_get_thread(io_ch);
 
-			for (i = 0; i < SPDK_BDEV_QOS_NUM_RATE_LIMIT_TYPES; i++) {
-				if (bdev_qos_is_iops_rate_limit(i) == true) {
+			for (i = 0; i < SPDK_BDEV_QOS_NUM_RATE_LIMIT_TYPES; i++) { // 遍历所有 QoS 速率限制类型
+				if (bdev_qos_is_iops_rate_limit(i) == true) { // IOPS限制
 					qos->rate_limits[i].min_per_timeslice =
 						SPDK_BDEV_QOS_MIN_IO_PER_TIMESLICE;
-				} else {
+				} else { // 字节限制
 					qos->rate_limits[i].min_per_timeslice =
 						SPDK_BDEV_QOS_MIN_BYTE_PER_TIMESLICE;
 				}
 
-				if (qos->rate_limits[i].limit == 0) {
+				if (qos->rate_limits[i].limit == 0) { // 速率未定义
 					qos->rate_limits[i].limit = SPDK_BDEV_QOS_LIMIT_NOT_DEFINED;
 				}
 			}
@@ -3984,7 +3984,7 @@ bdev_enable_qos(struct spdk_bdev *bdev, struct spdk_bdev_channel *ch)
 			qos->last_timeslice = spdk_get_ticks();
 			qos->poller = SPDK_POLLER_REGISTER(bdev_channel_poll_qos,
 							   bdev,
-							   SPDK_BDEV_QOS_TIMESLICE_IN_USEC);
+							   SPDK_BDEV_QOS_TIMESLICE_IN_USEC); // 注册一个轮询器
 		}
 
 		ch->flags |= BDEV_CH_QOS_ENABLED;
@@ -5606,19 +5606,19 @@ bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *c
 	struct spdk_bdev_io *bdev_io;
 	struct spdk_bdev_channel *channel = __io_ch_to_bdev_ch(ch);
 
-	if (!desc->write) {
+	if (!desc->write) { // 是否支持写
 		return -EBADF;
 	}
 
-	if (!bdev_io_valid_blocks(bdev, offset_blocks, num_blocks)) {
+	if (!bdev_io_valid_blocks(bdev, offset_blocks, num_blocks)) { // 检查offset_blocks和num_blocks是否合法
 		return -EINVAL;
 	}
 
-	bdev_io = bdev_channel_get_io(channel);
+	bdev_io = bdev_channel_get_io(channel); // 从channel中获取一个bdev_io，表示IO操作
 	if (!bdev_io) {
 		return -ENOMEM;
 	}
-
+	/* 初始化 */
 	bdev_io->internal.ch = channel;
 	bdev_io->internal.desc = desc;
 	bdev_io->type = SPDK_BDEV_IO_TYPE_WRITE;
@@ -5633,9 +5633,9 @@ bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *c
 	bdev_io->u.bdev.memory_domain_ctx = NULL;
 	bdev_io->u.bdev.accel_sequence = NULL;
 	bdev_io->u.bdev.dif_check_flags = bdev->dif_check_flags;
-	bdev_io_init(bdev_io, bdev, cb_arg, cb);
+	bdev_io_init(bdev_io, bdev, cb_arg, cb); // 初始化bdev_io
 
-	bdev_io_submit(bdev_io);
+	bdev_io_submit(bdev_io); // 提交IO操作
 	return 0;
 }
 
@@ -8067,7 +8067,11 @@ spdk_bdev_unregister_by_name(const char *bdev_name, struct spdk_bdev_module *mod
 
 	return 0;
 }
-
+/* 
+ * 这个函数的主要作用是初始化和启动块设备的 QoS 功能。通过为每个通道发送 QoS 配置消息，
+ * 确保块设备的 I/O 操作受到监控和限制，从而满足服务质量的要求。这是 SPDK 框架中用于提高
+ * 存储性能和可靠性的一个重要特性，特别是在需要保证 I/O 操作性能的高性能存储应用中。
+ */
 static int
 bdev_start_qos(struct spdk_bdev *bdev)
 {
@@ -8146,12 +8150,12 @@ bdev_open(struct spdk_bdev *bdev, bool write, struct spdk_bdev_desc *desc)
 
 	spdk_spin_lock(&bdev->internal.spinlock);
 	if (bdev->internal.status == SPDK_BDEV_STATUS_UNREGISTERING ||
-	    bdev->internal.status == SPDK_BDEV_STATUS_REMOVING) {
+	    bdev->internal.status == SPDK_BDEV_STATUS_REMOVING) { // 如果块设备正在注销或移除
 		spdk_spin_unlock(&bdev->internal.spinlock);
 		return -ENODEV;
 	}
 
-	if (write && bdev->internal.claim_type != SPDK_BDEV_CLAIM_NONE) {
+	if (write && bdev->internal.claim_type != SPDK_BDEV_CLAIM_NONE) { // 块设备已经被其他进程占用 且 要 写
 		LOG_ALREADY_CLAIMED_ERROR("already claimed", bdev);
 		spdk_spin_unlock(&bdev->internal.spinlock);
 		return -EPERM;
@@ -8188,9 +8192,9 @@ bdev_desc_alloc(struct spdk_bdev *bdev, spdk_bdev_event_cb_t event_cb, void *eve
 	TAILQ_INIT(&desc->free_media_events);
 
 	desc->memory_domains_supported = spdk_bdev_get_memory_domains(bdev, NULL, 0) > 0;
-	desc->callback.event_fn = event_cb;
-	desc->callback.ctx = event_ctx;
-	spdk_spin_init(&desc->spinlock);
+	desc->callback.event_fn = event_cb; // 设置描述符回调函数
+	desc->callback.ctx = event_ctx; // 设置回调函数上下文
+	spdk_spin_init(&desc->spinlock); // 初始化描述符自旋锁
 
 	if (bdev->media_events) {
 		desc->media_events_buffer = calloc(MEDIA_EVENT_POOL_SIZE,
@@ -8207,11 +8211,11 @@ bdev_desc_alloc(struct spdk_bdev *bdev, spdk_bdev_event_cb_t event_cb, void *eve
 		}
 	}
 
-	if (bdev->fn_table->accel_sequence_supported != NULL) {
+	if (bdev->fn_table->accel_sequence_supported != NULL) { // 如果块设备支持加速序列
 		for (i = 0; i < SPDK_BDEV_NUM_IO_TYPES; ++i) {
 			desc->accel_sequence_supported[i] =
 				bdev->fn_table->accel_sequence_supported(bdev->ctxt,
-						(enum spdk_bdev_io_type)i);
+						(enum spdk_bdev_io_type)i); // 检查每种 I/O 类型是否支持加速序列，并设置相应的标志
 		}
 	}
 
@@ -8228,19 +8232,19 @@ bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
 	struct spdk_bdev *bdev;
 	int rc;
 
-	bdev = bdev_get_by_name(bdev_name);
+	bdev = bdev_get_by_name(bdev_name); // 根据名称查找块设备
 
 	if (bdev == NULL) {
 		SPDK_NOTICELOG("Currently unable to find bdev with name: %s\n", bdev_name);
 		return -ENODEV;
 	}
 
-	rc = bdev_desc_alloc(bdev, event_cb, event_ctx, &desc);
+	rc = bdev_desc_alloc(bdev, event_cb, event_ctx, &desc); // 分配描述符，用以跟踪块设备打开状态和元数据
 	if (rc != 0) {
 		return rc;
 	}
 
-	rc = bdev_open(bdev, write, desc);
+	rc = bdev_open(bdev, write, desc); // 实际打开设备
 	if (rc != 0) {
 		bdev_desc_free(desc);
 		desc = NULL;
@@ -8262,7 +8266,7 @@ spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event
 		return -EINVAL;
 	}
 
-	spdk_spin_lock(&g_bdev_mgr.spinlock);
+	spdk_spin_lock(&g_bdev_mgr.spinlock); // 全局块设备管理器自旋锁
 	rc = bdev_open_ext(bdev_name, write, event_cb, event_ctx, _desc);
 	spdk_spin_unlock(&g_bdev_mgr.spinlock);
 

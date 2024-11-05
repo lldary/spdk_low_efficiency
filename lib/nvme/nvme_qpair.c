@@ -759,14 +759,14 @@ spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 	struct nvme_request *req, *tmp;
 
 	/* Complete any pending register operations */
-	if (nvme_qpair_is_admin_queue(qpair)) {
-		nvme_complete_register_operations(qpair);
+	if (nvme_qpair_is_admin_queue(qpair)) { // 是否是admin queue
+		nvme_complete_register_operations(qpair); // 完成注册操作
 	}
 
 	if (spdk_unlikely(qpair->ctrlr->is_failed &&
-			  nvme_qpair_get_state(qpair) != NVME_QPAIR_DISCONNECTING)) {
-		if (qpair->ctrlr->is_removed) {
-			nvme_qpair_set_state(qpair, NVME_QPAIR_DESTROYING);
+			  nvme_qpair_get_state(qpair) != NVME_QPAIR_DISCONNECTING)) { // 控制器失败且不是正在断开连接
+		if (qpair->ctrlr->is_removed) { // 控制器已经被移除
+			nvme_qpair_set_state(qpair, NVME_QPAIR_DESTROYING); // 设置状态为销毁中
 			nvme_qpair_abort_all_queued_reqs(qpair);
 			nvme_transport_qpair_abort_reqs(qpair);
 		}
@@ -775,7 +775,7 @@ spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 
 	if (spdk_unlikely(!nvme_qpair_check_enabled(qpair) &&
 			  !(nvme_qpair_get_state(qpair) == NVME_QPAIR_CONNECTING ||
-			    nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING))) {
+			    nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING))) { // 检查是否启用且不是在连接或断开连接中
 		/*
 		 * qpair is not enabled, likely because a controller reset is
 		 *  in progress.
@@ -784,19 +784,19 @@ spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 	}
 
 	/* error injection for those queued error requests */
-	if (spdk_unlikely(!STAILQ_EMPTY(&qpair->err_req_head))) {
-		STAILQ_FOREACH_SAFE(req, &qpair->err_req_head, stailq, tmp) {
-			if (spdk_get_ticks() - req->submit_tick > req->timeout_tsc) {
-				STAILQ_REMOVE(&qpair->err_req_head, req, nvme_request, stailq);
+	if (spdk_unlikely(!STAILQ_EMPTY(&qpair->err_req_head))) { // 错误请求队列不为空
+		STAILQ_FOREACH_SAFE(req, &qpair->err_req_head, stailq, tmp) { // 遍历错误请求队列
+			if (spdk_get_ticks() - req->submit_tick > req->timeout_tsc) { // 超时
+				STAILQ_REMOVE(&qpair->err_req_head, req, nvme_request, stailq); // 从错误请求队列中移除
 				nvme_qpair_manual_complete_request(qpair, req,
 								   req->cpl.status.sct,
-								   req->cpl.status.sc, qpair->abort_dnr, true);
+								   req->cpl.status.sc, qpair->abort_dnr, true); // 手动完成请求
 			}
 		}
 	}
 
-	qpair->in_completion_context = 1;
-	ret = nvme_transport_qpair_process_completions(qpair, max_completions);
+	qpair->in_completion_context = 1; // 在完成上下文中
+	ret = nvme_transport_qpair_process_completions(qpair, max_completions); // 处理完成请求
 	if (ret < 0) {
 		if (ret == -ENXIO && nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING) {
 			ret = 0;
@@ -947,12 +947,12 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 	struct spdk_nvme_ctrlr	*ctrlr = qpair->ctrlr;
 	bool			child_req_failed = false;
 
-	nvme_qpair_check_enabled(qpair);
+	nvme_qpair_check_enabled(qpair); /* check if qpair is enabled */
 
 	if (spdk_unlikely(nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTED ||
 			  nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING ||
-			  nvme_qpair_get_state(qpair) == NVME_QPAIR_DESTROYING)) {
-		TAILQ_FOREACH_SAFE(child_req, &req->children, child_tailq, tmp) {
+			  nvme_qpair_get_state(qpair) == NVME_QPAIR_DESTROYING)) { // 如果队列对已经断开连接、正在断开连接或者正在销毁，则返回错误
+		TAILQ_FOREACH_SAFE(child_req, &req->children, child_tailq, tmp) { // 遍历子请求，释放子请求
 			nvme_request_remove_child(req, child_req);
 			nvme_request_free_children(child_req);
 			nvme_free_request(child_req);
@@ -962,12 +962,12 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 		goto error;
 	}
 
-	if (req->num_children) {
+	if (req->num_children) { // 如果有子请求
 		/*
 		 * This is a split (parent) request. Submit all of the children but not the parent
 		 * request itself, since the parent is the original unsplit request.
 		 */
-		TAILQ_FOREACH_SAFE(child_req, &req->children, child_tailq, tmp) {
+		TAILQ_FOREACH_SAFE(child_req, &req->children, child_tailq, tmp) { // 遍历子请求
 			if (spdk_likely(!child_req_failed)) {
 				rc = nvme_qpair_submit_request(qpair, child_req);
 				if (spdk_unlikely(rc != 0)) {
@@ -980,7 +980,7 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 			}
 		}
 
-		if (spdk_unlikely(child_req_failed)) {
+		if (spdk_unlikely(child_req_failed)) { // 如果子请求失败
 			/* part of children requests have been submitted,
 			 * return success since we must wait for those children to complete,
 			 * but set the parent request to failure.
@@ -997,8 +997,8 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 	}
 
 	/* queue those requests which matches with opcode in err_cmd list */
-	if (spdk_unlikely(!TAILQ_EMPTY(&qpair->err_cmd_head))) {
-		TAILQ_FOREACH(cmd, &qpair->err_cmd_head, link) {
+	if (spdk_unlikely(!TAILQ_EMPTY(&qpair->err_cmd_head))) { // 如果错误命令列表不为空
+		TAILQ_FOREACH(cmd, &qpair->err_cmd_head, link) { // 遍历错误命令列表
 			if (!cmd->do_not_submit) {
 				continue;
 			}
@@ -1022,7 +1022,7 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 	}
 
 	/* assign submit_tick before submitting req to specific transport */
-	if (spdk_unlikely(ctrlr->timeout_enabled)) {
+	if (spdk_unlikely(ctrlr->timeout_enabled)) { // 如果超时开启
 		if (req->submit_tick == 0) { /* req submitted for the first time */
 			req->submit_tick = spdk_get_ticks();
 			req->timed_out = false;
@@ -1038,7 +1038,7 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 	 */
 	if (spdk_likely(nvme_qpair_get_state(qpair) == NVME_QPAIR_ENABLED) ||
 	    (req->cmd.opc == SPDK_NVME_OPC_FABRIC &&
-	     nvme_qpair_get_state(qpair) == NVME_QPAIR_CONNECTING)) {
+	     nvme_qpair_get_state(qpair) == NVME_QPAIR_CONNECTING)) { // 如果当前队列是已经启用状态，或者当前请求是FABRIC命令且当前队列是正在连接状态
 		rc = nvme_transport_qpair_submit_request(qpair, req);
 	} else {
 		/* The controller is being reset - queue this request and
@@ -1089,7 +1089,7 @@ nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *re
 {
 	int rc;
 
-	if (spdk_unlikely(!STAILQ_EMPTY(&qpair->queued_req) && req->num_children == 0)) {
+	if (spdk_unlikely(!STAILQ_EMPTY(&qpair->queued_req) && req->num_children == 0)) { // 如果有请求在队列中，且当前请求没有子请求
 		/*
 		 * Requests that have no children should be sent to the transport after all
 		 * currently queued requests. Requests with children will be split and go back
@@ -1098,16 +1098,16 @@ nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *re
 		 * asynchronously.
 		 */
 		if (req->cmd.opc != SPDK_NVME_OPC_FABRIC ||
-		    nvme_qpair_get_state(qpair) != NVME_QPAIR_CONNECTING) {
+		    nvme_qpair_get_state(qpair) != NVME_QPAIR_CONNECTING) { // 如果当前请求不是FABRIC命令，或者当前qpair不是正在连接状态
 			STAILQ_INSERT_TAIL(&qpair->queued_req, req, stailq);
 			req->queued = true;
 			return 0;
 		}
 	}
 
-	rc = _nvme_qpair_submit_request(qpair, req);
+	rc = _nvme_qpair_submit_request(qpair, req); // 提交请求
 	if (rc == -EAGAIN) {
-		STAILQ_INSERT_TAIL(&qpair->queued_req, req, stailq);
+		STAILQ_INSERT_TAIL(&qpair->queued_req, req, stailq); // 如果提交失败，将请求加入队列
 		req->queued = true;
 		rc = 0;
 	}

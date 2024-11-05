@@ -973,18 +973,18 @@ _bdev_nvme_find_io_path(struct nvme_bdev_channel *nbdev_ch)
 {
 	struct nvme_io_path *io_path, *start, *non_optimized = NULL;
 
-	start = nvme_io_path_get_next(nbdev_ch, nbdev_ch->current_io_path);
+	start = nvme_io_path_get_next(nbdev_ch, nbdev_ch->current_io_path); // 获取下一个路径
 
 	io_path = start;
 	do {
-		if (spdk_likely(nvme_io_path_is_available(io_path))) {
-			switch (io_path->nvme_ns->ana_state) {
-			case SPDK_NVME_ANA_OPTIMIZED_STATE:
-				nbdev_ch->current_io_path = io_path;
+		if (spdk_likely(nvme_io_path_is_available(io_path))) { // 如果路径可用
+			switch (io_path->nvme_ns->ana_state) { // 获取路径的状态
+			case SPDK_NVME_ANA_OPTIMIZED_STATE: // 优化状态 (说明此路径最佳)
+				nbdev_ch->current_io_path = io_path; // 设置当前路径
 				return io_path;
-			case SPDK_NVME_ANA_NON_OPTIMIZED_STATE:
-				if (non_optimized == NULL) {
-					non_optimized = io_path;
+			case SPDK_NVME_ANA_NON_OPTIMIZED_STATE: // 非优化状态
+				if (non_optimized == NULL) { // 如果没有非优化路径
+					non_optimized = io_path; // 设置非优化路径 (第一个非优化路径，在实在没有优化路径情况下可以选择)
 				}
 				break;
 			default:
@@ -995,11 +995,11 @@ _bdev_nvme_find_io_path(struct nvme_bdev_channel *nbdev_ch)
 		io_path = nvme_io_path_get_next(nbdev_ch, io_path);
 	} while (io_path != start);
 
-	if (nbdev_ch->mp_policy == BDEV_NVME_MP_POLICY_ACTIVE_ACTIVE) {
+	if (nbdev_ch->mp_policy == BDEV_NVME_MP_POLICY_ACTIVE_ACTIVE) { // 如果是主-主动模式
 		/* We come here only if there is no optimized path. Cache even non_optimized
 		 * path for load balance across multiple non_optimized paths.
 		 */
-		nbdev_ch->current_io_path = non_optimized;
+		nbdev_ch->current_io_path = non_optimized; // 设置当前路径为非优化路径
 	}
 
 	return non_optimized;
@@ -1013,25 +1013,25 @@ _bdev_nvme_find_io_path_min_qd(struct nvme_bdev_channel *nbdev_ch)
 	uint32_t opt_min_qd = UINT32_MAX, non_opt_min_qd = UINT32_MAX;
 	uint32_t num_outstanding_reqs;
 
-	STAILQ_FOREACH(io_path, &nbdev_ch->io_path_list, stailq) {
-		if (spdk_unlikely(!nvme_qpair_is_connected(io_path->qpair))) {
+	STAILQ_FOREACH(io_path, &nbdev_ch->io_path_list, stailq) { // 遍历路径列表
+		if (spdk_unlikely(!nvme_qpair_is_connected(io_path->qpair))) { // 如果路径未连接
 			/* The device is currently resetting. */
 			continue;
 		}
 
-		if (spdk_unlikely(!nvme_ns_is_active(io_path->nvme_ns))) {
+		if (spdk_unlikely(!nvme_ns_is_active(io_path->nvme_ns))) { // 如果命名空间未激活
 			continue;
 		}
 
-		num_outstanding_reqs = spdk_nvme_qpair_get_num_outstanding_reqs(io_path->qpair->qpair);
+		num_outstanding_reqs = spdk_nvme_qpair_get_num_outstanding_reqs(io_path->qpair->qpair); // 获取请求队列深度
 		switch (io_path->nvme_ns->ana_state) {
-		case SPDK_NVME_ANA_OPTIMIZED_STATE:
+		case SPDK_NVME_ANA_OPTIMIZED_STATE: // 优化状态
 			if (num_outstanding_reqs < opt_min_qd) {
 				opt_min_qd = num_outstanding_reqs;
 				optimized = io_path;
 			}
 			break;
-		case SPDK_NVME_ANA_NON_OPTIMIZED_STATE:
+		case SPDK_NVME_ANA_NON_OPTIMIZED_STATE: // 非优化状态
 			if (num_outstanding_reqs < non_opt_min_qd) {
 				non_opt_min_qd = num_outstanding_reqs;
 				non_optimized = io_path;
@@ -1043,32 +1043,32 @@ _bdev_nvme_find_io_path_min_qd(struct nvme_bdev_channel *nbdev_ch)
 	}
 
 	/* don't cache io path for BDEV_NVME_MP_SELECTOR_QUEUE_DEPTH selector */
-	if (optimized != NULL) {
+	if (optimized != NULL) { // 如果有优化路径
 		return optimized;
 	}
 
-	return non_optimized;
+	return non_optimized; // 返回非优化路径
 }
 
 static inline struct nvme_io_path *
 bdev_nvme_find_io_path(struct nvme_bdev_channel *nbdev_ch)
 {
-	if (spdk_likely(nbdev_ch->current_io_path != NULL)) {
-		if (nbdev_ch->mp_policy == BDEV_NVME_MP_POLICY_ACTIVE_PASSIVE) {
+	if (spdk_likely(nbdev_ch->current_io_path != NULL)) { // 当前路径不为空
+		if (nbdev_ch->mp_policy == BDEV_NVME_MP_POLICY_ACTIVE_PASSIVE) { // 如果是主备模式，直接返回当前路径
 			return nbdev_ch->current_io_path;
-		} else if (nbdev_ch->mp_selector == BDEV_NVME_MP_SELECTOR_ROUND_ROBIN) {
-			if (++nbdev_ch->rr_counter < nbdev_ch->rr_min_io) {
+		} else if (nbdev_ch->mp_selector == BDEV_NVME_MP_SELECTOR_ROUND_ROBIN) { // 如果是轮询模式
+			if (++nbdev_ch->rr_counter < nbdev_ch->rr_min_io) { // 如果当前路径的请求数小于最小请求数，返回当前路径
 				return nbdev_ch->current_io_path;
 			}
-			nbdev_ch->rr_counter = 0;
+			nbdev_ch->rr_counter = 0; // 否则清零计数器
 		}
 	}
 
 	if (nbdev_ch->mp_policy == BDEV_NVME_MP_POLICY_ACTIVE_PASSIVE ||
-	    nbdev_ch->mp_selector == BDEV_NVME_MP_SELECTOR_ROUND_ROBIN) {
-		return _bdev_nvme_find_io_path(nbdev_ch);
+	    nbdev_ch->mp_selector == BDEV_NVME_MP_SELECTOR_ROUND_ROBIN) { // 如果是主备模式或者轮询模式
+		return _bdev_nvme_find_io_path(nbdev_ch); // 返回找到的路径
 	} else {
-		return _bdev_nvme_find_io_path_min_qd(nbdev_ch);
+		return _bdev_nvme_find_io_path_min_qd(nbdev_ch); // 返回找到的路径 (具有最小队列深度)
 	}
 }
 
@@ -1635,15 +1635,15 @@ bdev_nvme_poll(void *arg)
 	struct nvme_poll_group *group = arg;
 	int64_t num_completions;
 
-	if (group->collect_spin_stat && group->start_ticks == 0) {
+	if (group->collect_spin_stat && group->start_ticks == 0) { // 配置了收集自旋统计（collect_spin_stat）并且start_ticks为0
 		group->start_ticks = spdk_get_ticks();
 	}
 
 	num_completions = spdk_nvme_poll_group_process_completions(group->group, 0,
-			  bdev_nvme_disconnected_qpair_cb);
+			  bdev_nvme_disconnected_qpair_cb); // 轮询完成队列
 	if (group->collect_spin_stat) {
-		if (num_completions > 0) {
-			if (group->end_ticks != 0) {
+		if (num_completions > 0) { // 如果有完成的请求
+			if (group->end_ticks != 0) { // 如果end_ticks不为0，更新
 				group->spin_ticks += (group->end_ticks - group->start_ticks);
 				group->end_ticks = 0;
 			}
@@ -1653,11 +1653,11 @@ bdev_nvme_poll(void *arg)
 		}
 	}
 
-	if (spdk_unlikely(num_completions < 0)) {
+	if (spdk_unlikely(num_completions < 0)) { // 如果轮询失败
 		bdev_nvme_check_io_qpairs(group);
 	}
 
-	return num_completions > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
+	return num_completions > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE; // 如果有完成的请求，返回BUSY，否则返回IDLE
 }
 
 static int bdev_nvme_poll_adminq(void *arg);
@@ -1755,14 +1755,14 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 
 	nvme_ctrlr = nvme_qpair->ctrlr;
 
-	spdk_nvme_ctrlr_get_default_io_qpair_opts(nvme_ctrlr->ctrlr, &opts, sizeof(opts));
+	spdk_nvme_ctrlr_get_default_io_qpair_opts(nvme_ctrlr->ctrlr, &opts, sizeof(opts)); // 获取默认的IO队列选项
 	opts.delay_cmd_submit = g_opts.delay_cmd_submit;
 	opts.create_only = true;
 	opts.async_mode = true;
 	opts.io_queue_requests = spdk_max(g_opts.io_queue_requests, opts.io_queue_requests);
 	g_opts.io_queue_requests = opts.io_queue_requests;
 
-	qpair = spdk_nvme_ctrlr_alloc_io_qpair(nvme_ctrlr->ctrlr, &opts, sizeof(opts));
+	qpair = spdk_nvme_ctrlr_alloc_io_qpair(nvme_ctrlr->ctrlr, &opts, sizeof(opts)); // 分配IO队列
 	if (qpair == NULL) {
 		return -1;
 	}
@@ -1772,19 +1772,19 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 
 	assert(nvme_qpair->group != NULL);
 
-	rc = spdk_nvme_poll_group_add(nvme_qpair->group->group, qpair);
+	rc = spdk_nvme_poll_group_add(nvme_qpair->group->group, qpair); // 将队列添加到轮询组
 	if (rc != 0) {
 		SPDK_ERRLOG("Unable to begin polling on NVMe Channel.\n");
 		goto err;
 	}
 
-	rc = spdk_nvme_ctrlr_connect_io_qpair(nvme_ctrlr->ctrlr, qpair);
+	rc = spdk_nvme_ctrlr_connect_io_qpair(nvme_ctrlr->ctrlr, qpair); // 连接IO队列
 	if (rc != 0) {
 		SPDK_ERRLOG("Unable to connect I/O qpair.\n");
 		goto err;
 	}
 
-	nvme_qpair->qpair = qpair;
+	nvme_qpair->qpair = qpair; // 设置队列
 
 	if (!g_opts.disable_auto_failback) {
 		_bdev_nvme_clear_io_path_cache(nvme_qpair);
@@ -2980,8 +2980,8 @@ exit:
 static inline void
 _bdev_nvme_submit_request(struct nvme_bdev_channel *nbdev_ch, struct spdk_bdev_io *bdev_io)
 {
-	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
-	struct spdk_bdev *bdev = bdev_io->bdev;
+	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx; // 获取上下文
+	struct spdk_bdev *bdev = bdev_io->bdev; // 获取bdev
 	struct nvme_bdev_io *nbdev_io_to_abort;
 	int rc = 0;
 
@@ -3137,32 +3137,33 @@ _bdev_nvme_submit_request(struct nvme_bdev_channel *nbdev_ch, struct spdk_bdev_i
 static void
 bdev_nvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
-	struct nvme_bdev_channel *nbdev_ch = spdk_io_channel_get_ctx(ch);
-	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
+	struct nvme_bdev_channel *nbdev_ch = spdk_io_channel_get_ctx(ch); // 获取NVMe块设备通道的上下文
+	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx; // 获取NVMe块设备IO的上下文
 
-	if (spdk_likely(nbdev_io->submit_tsc == 0)) {
-		nbdev_io->submit_tsc = spdk_bdev_io_get_submit_tsc(bdev_io);
+	if (spdk_likely(nbdev_io->submit_tsc == 0)) { // 第一次提交IO
+		nbdev_io->submit_tsc = spdk_bdev_io_get_submit_tsc(bdev_io); // 获取IO提交时间
 	} else {
 		/* There are cases where submit_tsc != 0, i.e. retry I/O.
 		 * We need to update submit_tsc here.
 		 */
-		nbdev_io->submit_tsc = spdk_get_ticks();
+		nbdev_io->submit_tsc = spdk_get_ticks(); // 更新IO提交时间
 	}
 
 	spdk_trace_record(TRACE_BDEV_NVME_IO_START, 0, 0, (uintptr_t)nbdev_io, (uintptr_t)bdev_io);
-	nbdev_io->io_path = bdev_nvme_find_io_path(nbdev_ch);
-	if (spdk_unlikely(!nbdev_io->io_path)) {
-		if (!bdev_nvme_io_type_is_admin(bdev_io->type)) {
-			bdev_nvme_io_complete(nbdev_io, -ENXIO);
+	nbdev_io->io_path = bdev_nvme_find_io_path(nbdev_ch); // 查找IO路径
+	if (spdk_unlikely(!nbdev_io->io_path)) { // 如果没有找到IO路径
+		if (!bdev_nvme_io_type_is_admin(bdev_io->type)) { // 如果不是管理命令
+			bdev_nvme_io_complete(nbdev_io, -ENXIO); // 完成IO，返回错误
 			return;
 		}
 
 		/* Admin commands do not use the optimal I/O path.
 		 * Simply fall through even if it is not found.
 		 */
+		/* 管理指令无需最佳路径 */
 	}
 
-	_bdev_nvme_submit_request(nbdev_ch, bdev_io);
+	_bdev_nvme_submit_request(nbdev_ch, bdev_io); // 提交IO
 }
 
 static bool
@@ -4282,7 +4283,7 @@ nvme_bdev_create(struct nvme_ctrlr *nvme_ctrlr, struct nvme_ns *nvme_ns)
 	bdev->opal = nvme_ctrlr->opal_dev != NULL;
 
 	rc = nvme_disk_create(&bdev->disk, nbdev_ctrlr->name, nvme_ctrlr->ctrlr,
-			      nvme_ns->ns, nvme_ctrlr->opts.prchk_flags, bdev);
+			      nvme_ns->ns, nvme_ctrlr->opts.prchk_flags, bdev); // 创建一个 NVMe 磁盘
 	if (rc != 0) {
 		SPDK_ERRLOG("Failed to create NVMe disk\n");
 		nvme_bdev_free(bdev);
@@ -4293,16 +4294,16 @@ nvme_bdev_create(struct nvme_ctrlr *nvme_ctrlr, struct nvme_ns *nvme_ns)
 				bdev_nvme_create_bdev_channel_cb,
 				bdev_nvme_destroy_bdev_channel_cb,
 				sizeof(struct nvme_bdev_channel),
-				bdev->disk.name);
+				bdev->disk.name); // 注册 NVMe 块设备
 
 	nvme_ns->bdev = bdev;
 	bdev->nsid = nvme_ns->id;
-	TAILQ_INSERT_TAIL(&bdev->nvme_ns_list, nvme_ns, tailq);
+	TAILQ_INSERT_TAIL(&bdev->nvme_ns_list, nvme_ns, tailq); // 链接 NVMe 名称空间和块设备
 
 	bdev->nbdev_ctrlr = nbdev_ctrlr;
-	TAILQ_INSERT_TAIL(&nbdev_ctrlr->bdevs, bdev, tailq);
+	TAILQ_INSERT_TAIL(&nbdev_ctrlr->bdevs, bdev, tailq); // 块设备添加到控制器块列表中
 
-	rc = spdk_bdev_register(&bdev->disk);
+	rc = spdk_bdev_register(&bdev->disk); // 注册块设备
 	if (rc != 0) {
 		SPDK_ERRLOG("spdk_bdev_register() failed\n");
 		spdk_io_device_unregister(bdev, NULL);
@@ -7849,7 +7850,7 @@ bdev_nvme_writev(struct nvme_bdev_io *bio, struct iovec *iov, int iovcnt,
 	bio->iovpos = 0;
 	bio->iov_offset = 0;
 
-	if (domain != NULL || seq != NULL) {
+	if (domain != NULL || seq != NULL) { // 如果有内存域或者加速序列
 		bio->ext_opts.size = SPDK_SIZEOF(&bio->ext_opts, accel_sequence);
 		bio->ext_opts.memory_domain = domain;
 		bio->ext_opts.memory_domain_ctx = domain_ctx;
@@ -7860,23 +7861,23 @@ bdev_nvme_writev(struct nvme_bdev_io *bio, struct iovec *iov, int iovcnt,
 
 		if (iovcnt == 1) {
 			rc = spdk_nvme_ns_cmd_write_ext(ns, qpair, iov[0].iov_base, lba, lba_count, bdev_nvme_writev_done,
-							bio, &bio->ext_opts);
+							bio, &bio->ext_opts); // 通过扩展选项进行单个写操作
 		} else {
 			rc = spdk_nvme_ns_cmd_writev_ext(ns, qpair, lba, lba_count,
 							 bdev_nvme_writev_done, bio,
 							 bdev_nvme_queued_reset_sgl,
 							 bdev_nvme_queued_next_sge,
-							 &bio->ext_opts);
+							 &bio->ext_opts); // 通过扩展选项进行多个写操作
 		}
 	} else if (iovcnt == 1) {
 		rc = spdk_nvme_ns_cmd_write_with_md(ns, qpair, iov[0].iov_base,
 						    md, lba, lba_count, bdev_nvme_writev_done,
-						    bio, flags, 0, 0);
+						    bio, flags, 0, 0); // 执行带有元数据的单个I/O向量的写操作
 	} else {
 		rc = spdk_nvme_ns_cmd_writev_with_md(ns, qpair, lba, lba_count,
 						     bdev_nvme_writev_done, bio, flags,
 						     bdev_nvme_queued_reset_sgl,
-						     bdev_nvme_queued_next_sge, md, 0, 0);
+						     bdev_nvme_queued_next_sge, md, 0, 0); // 执行带有元数据的多个I/O向量的写操作
 	}
 
 	if (spdk_unlikely(rc != 0 && rc != -ENOMEM)) {

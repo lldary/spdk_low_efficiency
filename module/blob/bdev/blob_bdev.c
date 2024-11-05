@@ -547,7 +547,7 @@ spdk_bdev_create_bs_dev(const char *bdev_name, bool write,
 		return -ENOMEM;
 	}
 
-	rc = spdk_bdev_open_ext(bdev_name, write, event_cb, event_ctx, &desc);
+	rc = spdk_bdev_open_ext(bdev_name, write, event_cb, event_ctx, &desc); // 打开指定的块设备
 	if (rc != 0) {
 		free(b);
 		return rc;
@@ -558,7 +558,7 @@ spdk_bdev_create_bs_dev(const char *bdev_name, bool write,
 	*bs_dev = &b->bs_dev;
 	b->write = write;
 	b->refs = 1;
-	spdk_spin_init(&b->lock);
+	spdk_spin_init(&b->lock); // 初始化自旋锁
 
 	return 0;
 }

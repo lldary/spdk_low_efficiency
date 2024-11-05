@@ -24,7 +24,11 @@ struct nvme_pcie_enum_ctx {
 static uint16_t g_signal_lock;
 static bool g_sigset = false;
 static spdk_nvme_pcie_hotplug_filter_cb g_hotplug_filter_cb;
-
+/* 
+ * 这个信号处理程序的主要作用是在发生 SIGBUS 信号时，
+ * 尝试重新映射 NVMe 控制器的 MMIO 区域，以恢复对控制器的访问。
+ * 这可能是由于控制器的固件或硬件问题导致原始映射失效。
+ */
 static void
 nvme_sigbus_fault_sighandler(const void *failure_addr, void *ctx)
 {
@@ -32,7 +36,7 @@ nvme_sigbus_fault_sighandler(const void *failure_addr, void *ctx)
 	uint16_t flag = 0;
 
 	if (!__atomic_compare_exchange_n(&g_signal_lock, &flag, 1, false, __ATOMIC_ACQUIRE,
-					 __ATOMIC_RELAXED)) {
+					 __ATOMIC_RELAXED)) { // 尝试获取全局信号锁 g_signal_lock
 		SPDK_DEBUGLOG(nvme, "request g_signal_lock failed\n");
 		return;
 	}
@@ -870,7 +874,7 @@ nvme_pcie_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 
 	enum_ctx.probe_ctx = probe_ctx;
 
-	if (strlen(probe_ctx->trid.traddr) != 0) {
+	if (strlen(probe_ctx->trid.traddr) != 0) { // trid.traddr is the PCI address
 		if (spdk_pci_addr_parse(&enum_ctx.pci_addr, probe_ctx->trid.traddr)) {
 			return -1;
 		}
@@ -884,7 +888,7 @@ nvme_pcie_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 		return 0;
 	}
 
-	if (enum_ctx.has_pci_addr == false) {
+	if (enum_ctx.has_pci_addr == false) { // 没有指定PCI地址，遍历所有PCI设备
 		return spdk_pci_enumerate(spdk_pci_nvme_get_driver(),
 					  pcie_nvme_enum_cb, &enum_ctx);
 	} else {
@@ -905,7 +909,7 @@ static struct spdk_nvme_ctrlr *
 	int rc;
 	struct spdk_pci_id pci_id;
 
-	rc = spdk_pci_device_claim(pci_dev);
+	rc = spdk_pci_device_claim(pci_dev); // 声明 PCIe 设备
 	if (rc < 0) {
 		SPDK_ERRLOG("could not claim device %s (%s)\n",
 			    trid->traddr, spdk_strerror(-rc));
@@ -913,7 +917,7 @@ static struct spdk_nvme_ctrlr *
 	}
 
 	pctrlr = spdk_zmalloc(sizeof(struct nvme_pcie_ctrlr), 64, NULL,
-			      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+			      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE); // 分配内存来创建一个 nvme_pcie_ctrlr 结构体实例 pctrlr
 	if (pctrlr == NULL) {
 		spdk_pci_device_unclaim(pci_dev);
 		SPDK_ERRLOG("could not allocate ctrlr\n");
@@ -930,14 +934,14 @@ static struct spdk_nvme_ctrlr *
 	pci_id = spdk_pci_device_get_id(pci_dev);
 	pctrlr->ctrlr.quirks = nvme_get_quirks(&pci_id);
 
-	rc = nvme_ctrlr_construct(&pctrlr->ctrlr);
+	rc = nvme_ctrlr_construct(&pctrlr->ctrlr); // 进一步构造控制器
 	if (rc != 0) {
 		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
 		return NULL;
 	}
 
-	rc = nvme_pcie_ctrlr_allocate_bars(pctrlr);
+	rc = nvme_pcie_ctrlr_allocate_bars(pctrlr); // 为控制器分配 BAR（Base Address Register）资源
 	if (rc != 0) {
 		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
@@ -945,11 +949,12 @@ static struct spdk_nvme_ctrlr *
 	}
 
 	/* Enable PCI busmaster and disable INTx */
+	/* 配置 PCI 命令寄存器以启用 PCI 总线主控和禁用 INTx */
 	spdk_pci_device_cfg_read16(pci_dev, &cmd_reg, 4);
 	cmd_reg |= 0x404;
 	spdk_pci_device_cfg_write16(pci_dev, cmd_reg, 4);
 
-	if (nvme_ctrlr_get_cap(&pctrlr->ctrlr, &cap)) {
+	if (nvme_ctrlr_get_cap(&pctrlr->ctrlr, &cap)) { // 获取 NVMe 控制器的 capability 寄存器值
 		SPDK_ERRLOG("get_cap() failed\n");
 		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
@@ -958,16 +963,16 @@ static struct spdk_nvme_ctrlr *
 
 	/* Doorbell stride is 2 ^ (dstrd + 2),
 	 * but we want multiples of 4, so drop the + 2 */
-	pctrlr->doorbell_stride_u32 = 1 << cap.bits.dstrd;
+	pctrlr->doorbell_stride_u32 = 1 << cap.bits.dstrd; // 计算 Doorbell stride
 
-	rc = nvme_pcie_ctrlr_construct_admin_qpair(&pctrlr->ctrlr, pctrlr->ctrlr.opts.admin_queue_size);
+	rc = nvme_pcie_ctrlr_construct_admin_qpair(&pctrlr->ctrlr, pctrlr->ctrlr.opts.admin_queue_size); // 构造管理队列
 	if (rc != 0) {
 		nvme_ctrlr_destruct(&pctrlr->ctrlr);
 		return NULL;
 	}
 
 	/* Construct the primary process properties */
-	rc = nvme_ctrlr_add_process(&pctrlr->ctrlr, pci_dev);
+	rc = nvme_ctrlr_add_process(&pctrlr->ctrlr, pci_dev); // 将控制器添加到当前进程
 	if (rc != 0) {
 		nvme_ctrlr_destruct(&pctrlr->ctrlr);
 		return NULL;
@@ -975,7 +980,7 @@ static struct spdk_nvme_ctrlr *
 
 	if (g_sigset != true) {
 		spdk_pci_register_error_handler(nvme_sigbus_fault_sighandler,
-						NULL);
+						NULL); // 注册 SIGBUS 信号处理程序
 		g_sigset = true;
 	}
 

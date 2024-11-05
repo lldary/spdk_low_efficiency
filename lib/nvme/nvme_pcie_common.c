@@ -111,21 +111,21 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 	uint64_t		cq_paddr = 0;
 
 	if (opts) {
-		pqpair->sq_vaddr = opts->sq.vaddr;
+		pqpair->sq_vaddr = opts->sq.vaddr; // 设置SQ的虚拟地址
 		pqpair->cq_vaddr = opts->cq.vaddr;
 		pqpair->flags.disable_pcie_sgl_merge = opts->disable_pcie_sgl_merge;
 		sq_paddr = opts->sq.paddr;
 		cq_paddr = opts->cq.paddr;
 	}
 
-	pqpair->retry_count = ctrlr->opts.transport_retry_count;
+	pqpair->retry_count = ctrlr->opts.transport_retry_count; // 重试次数
 
 	/*
 	 * Limit the maximum number of completions to return per call to prevent wraparound,
 	 * and calculate how many trackers can be submitted at once without overflowing the
 	 * completion queue.
 	 */
-	pqpair->max_completions_cap = pqpair->num_entries / 4;
+	pqpair->max_completions_cap = pqpair->num_entries / 4; // 每次最多处理的完成队列数
 	pqpair->max_completions_cap = spdk_max(pqpair->max_completions_cap, NVME_MIN_COMPLETIONS);
 	pqpair->max_completions_cap = spdk_min(pqpair->max_completions_cap, NVME_MAX_COMPLETIONS);
 	num_trackers = pqpair->num_entries - pqpair->max_completions_cap;
@@ -169,7 +169,7 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 			assert(pqpair->sq_vaddr != NULL);
 			pqpair->cmd_bus_addr = sq_paddr;
 		} else {
-			pqpair->cmd_bus_addr = nvme_pcie_vtophys(ctrlr, pqpair->cmd, NULL);
+			pqpair->cmd_bus_addr = nvme_pcie_vtophys(ctrlr, pqpair->cmd, NULL); // 获取SQ的物理地址（从虚拟地址转换而来）
 			if (pqpair->cmd_bus_addr == SPDK_VTOPHYS_ERROR) {
 				SPDK_ERRLOG("spdk_vtophys(pqpair->cmd) failed\n");
 				return -EFAULT;
@@ -192,15 +192,15 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 		assert(pqpair->cq_vaddr != NULL);
 		pqpair->cpl_bus_addr = cq_paddr;
 	} else {
-		pqpair->cpl_bus_addr =  nvme_pcie_vtophys(ctrlr, pqpair->cpl, NULL);
+		pqpair->cpl_bus_addr =  nvme_pcie_vtophys(ctrlr, pqpair->cpl, NULL); // 获取CQ的物理地址
 		if (pqpair->cpl_bus_addr == SPDK_VTOPHYS_ERROR) {
 			SPDK_ERRLOG("spdk_vtophys(pqpair->cpl) failed\n");
 			return -EFAULT;
 		}
 	}
 
-	pqpair->sq_tdbl = pctrlr->doorbell_base + (2 * qpair->id + 0) * pctrlr->doorbell_stride_u32;
-	pqpair->cq_hdbl = pctrlr->doorbell_base + (2 * qpair->id + 1) * pctrlr->doorbell_stride_u32;
+	pqpair->sq_tdbl = pctrlr->doorbell_base + (2 * qpair->id + 0) * pctrlr->doorbell_stride_u32; // SQ的门铃地址
+	pqpair->cq_hdbl = pctrlr->doorbell_base + (2 * qpair->id + 1) * pctrlr->doorbell_stride_u32; // CQ的门铃地址
 
 	/*
 	 * Reserve space for all of the trackers in a single allocation.
@@ -209,7 +209,7 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 	 *   4KB boundary, while allowing access to trackers in tr[] via normal array indexing.
 	 */
 	pqpair->tr = spdk_zmalloc(num_trackers * sizeof(*tr), sizeof(*tr), NULL,
-				  SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
+				  SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE); // 分配跟踪器内存
 	if (pqpair->tr == NULL) {
 		SPDK_ERRLOG("nvme_tr failed\n");
 		return -ENOMEM;
@@ -222,7 +222,7 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 	for (i = 0; i < num_trackers; i++) {
 		tr = &pqpair->tr[i];
 		nvme_qpair_construct_tracker(tr, i, nvme_pcie_vtophys(ctrlr, tr, NULL));
-		TAILQ_INSERT_HEAD(&pqpair->free_tr, tr, tq_list);
+		TAILQ_INSERT_HEAD(&pqpair->free_tr, tr, tq_list); // 添加到空闲跟踪器列表中
 	}
 
 	nvme_pcie_qpair_reset(qpair);
@@ -634,7 +634,7 @@ nvme_pcie_qpair_submit_tracker(struct spdk_nvme_qpair *qpair, struct nvme_tracke
 			  req->cmd.cdw10, req->cmd.cdw11, req->cmd.cdw12,
 			  pqpair->qpair.queue_depth);
 
-	if (req->cmd.fuse) {
+	if (req->cmd.fuse) { // 如果是多命令且是融合操作
 		/*
 		 * Keep track of the fuse operation sequence so that we ring the doorbell only
 		 * after the second fuse is submitted.
@@ -645,11 +645,11 @@ nvme_pcie_qpair_submit_tracker(struct spdk_nvme_qpair *qpair, struct nvme_tracke
 	/* Don't use wide instructions to copy NVMe command, this is limited by QEMU
 	 * virtual NVMe controller, the maximum access width is 8 Bytes for one time.
 	 */
-	if (spdk_unlikely((ctrlr->quirks & NVME_QUIRK_MAXIMUM_PCI_ACCESS_WIDTH) && pqpair->sq_in_cmb)) {
-		nvme_pcie_copy_command_mmio(&pqpair->cmd[pqpair->sq_tail], &req->cmd);
+	if (spdk_unlikely((ctrlr->quirks & NVME_QUIRK_MAXIMUM_PCI_ACCESS_WIDTH) && pqpair->sq_in_cmb)) { // 如果有最大PCI访问宽度的限制
+		nvme_pcie_copy_command_mmio(&pqpair->cmd[pqpair->sq_tail], &req->cmd); // 映射命令到SQ
 	} else {
 		/* Copy the command from the tracker to the submission queue. */
-		nvme_pcie_copy_command(&pqpair->cmd[pqpair->sq_tail], &req->cmd);
+		nvme_pcie_copy_command(&pqpair->cmd[pqpair->sq_tail], &req->cmd); // 直接复制命令到SQ
 	}
 
 	if (spdk_unlikely(++pqpair->sq_tail == pqpair->num_entries)) {
@@ -661,7 +661,7 @@ nvme_pcie_qpair_submit_tracker(struct spdk_nvme_qpair *qpair, struct nvme_tracke
 	}
 
 	if (!pqpair->flags.delay_cmd_submit) {
-		nvme_pcie_qpair_ring_sq_doorbell(qpair);
+		nvme_pcie_qpair_ring_sq_doorbell(qpair); // 触发SQ的门铃
 	}
 }
 
@@ -1054,13 +1054,13 @@ nvme_pcie_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid,
 
 	qpair = &pqpair->qpair;
 
-	rc = nvme_qpair_init(qpair, qid, ctrlr, opts->qprio, opts->io_queue_requests, opts->async_mode);
+	rc = nvme_qpair_init(qpair, qid, ctrlr, opts->qprio, opts->io_queue_requests, opts->async_mode); // 初始化 I/O Qpair
 	if (rc != 0) {
 		nvme_pcie_qpair_destroy(qpair);
 		return NULL;
 	}
 
-	rc = nvme_pcie_qpair_construct(qpair, opts);
+	rc = nvme_pcie_qpair_construct(qpair, opts); // 进一步构造 I/O Qpair
 
 	if (rc != 0) {
 		nvme_pcie_qpair_destroy(qpair);
@@ -1639,49 +1639,49 @@ nvme_pcie_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_reques
 	bool			mptr_sgl_supported;
 	bool			dword_aligned = true;
 
-	if (spdk_unlikely(nvme_qpair_is_admin_queue(qpair))) {
-		nvme_ctrlr_lock(ctrlr);
+	if (spdk_unlikely(nvme_qpair_is_admin_queue(qpair))) { // 如果是 admin 队列
+		nvme_ctrlr_lock(ctrlr); // 锁住控制器
 	}
 
-	tr = TAILQ_FIRST(&pqpair->free_tr);
+	tr = TAILQ_FIRST(&pqpair->free_tr); // 获取一个空闲的 tracker
 
-	if (tr == NULL) {
+	if (tr == NULL) { // 如果没有空闲的 tracker
 		pqpair->stat->queued_requests++;
 		/* Inform the upper layer to try again later. */
 		rc = -EAGAIN;
 		goto exit;
 	}
 
-	pqpair->stat->submitted_requests++;
+	pqpair->stat->submitted_requests++; // 提交的请求数量 +1
 	TAILQ_REMOVE(&pqpair->free_tr, tr, tq_list); /* remove tr from free_tr */
-	TAILQ_INSERT_TAIL(&pqpair->outstanding_tr, tr, tq_list);
-	pqpair->qpair.queue_depth++;
+	TAILQ_INSERT_TAIL(&pqpair->outstanding_tr, tr, tq_list); // 将 tr 插入到 outstanding_tr 队列中
+	pqpair->qpair.queue_depth++; // 队列深度 +1
 	tr->req = req;
 	tr->cb_fn = req->cb_fn;
 	tr->cb_arg = req->cb_arg;
 	req->cmd.cid = tr->cid;
 	/* Use PRP by default. This bit will be overridden below if needed. */
-	req->cmd.psdt = SPDK_NVME_PSDT_PRP;
+	req->cmd.psdt = SPDK_NVME_PSDT_PRP; // 默认使用 PRP
 
 	if (req->payload_size != 0) {
-		payload_type = nvme_payload_type(&req->payload);
+		payload_type = nvme_payload_type(&req->payload); // 获取 payload 类型
 		/* According to the specification, PRPs shall be used for all
 		 *  Admin commands for NVMe over PCIe implementations.
 		 */
 		sgl_supported = (ctrlr->flags & SPDK_NVME_CTRLR_SGL_SUPPORTED) != 0 &&
-				!nvme_qpair_is_admin_queue(qpair);
+				!nvme_qpair_is_admin_queue(qpair); // 是否支持 SGL
 		mptr_sgl_supported = (ctrlr->flags & SPDK_NVME_CTRLR_MPTR_SGL_SUPPORTED) != 0 &&
-				     !nvme_qpair_is_admin_queue(qpair);
+				     !nvme_qpair_is_admin_queue(qpair); // 是否支持 MPTR SGL
 
 		if (sgl_supported) {
 			/* Don't use SGL for DSM command */
 			if (spdk_unlikely((ctrlr->quirks & NVME_QUIRK_NO_SGL_FOR_DSM) &&
-					  (req->cmd.opc == SPDK_NVME_OPC_DATASET_MANAGEMENT))) {
+					  (req->cmd.opc == SPDK_NVME_OPC_DATASET_MANAGEMENT))) { // 如果是 DSM 命令
 				sgl_supported = false;
 			}
 		}
 
-		if (sgl_supported && !(ctrlr->flags & SPDK_NVME_CTRLR_SGL_REQUIRES_DWORD_ALIGNMENT)) {
+		if (sgl_supported && !(ctrlr->flags & SPDK_NVME_CTRLR_SGL_REQUIRES_DWORD_ALIGNMENT)) { // 如果支持 SGL 且不需要 dword 对齐
 			dword_aligned = false;
 		}
 
@@ -1689,14 +1689,14 @@ nvme_pcie_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_reques
 		 * the stack.  This ensures that we always fail these types of requests via a
 		 * completion callback, and never in the context of the submission.
 		 */
-		rc = g_nvme_pcie_build_req_table[payload_type][sgl_supported](qpair, req, tr, dword_aligned);
+		rc = g_nvme_pcie_build_req_table[payload_type][sgl_supported](qpair, req, tr, dword_aligned); // 构建请求
 		if (rc < 0) {
 			assert(rc == -EFAULT);
 			rc = 0;
 			goto exit;
 		}
 
-		rc = nvme_pcie_qpair_build_metadata(qpair, tr, sgl_supported, mptr_sgl_supported, dword_aligned);
+		rc = nvme_pcie_qpair_build_metadata(qpair, tr, sgl_supported, mptr_sgl_supported, dword_aligned); // 构建元数据
 		if (rc < 0) {
 			assert(rc == -EFAULT);
 			rc = 0;
@@ -1704,7 +1704,7 @@ nvme_pcie_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_reques
 		}
 	}
 
-	nvme_pcie_qpair_submit_tracker(qpair, tr);
+	nvme_pcie_qpair_submit_tracker(qpair, tr); // 提交 tracker
 
 exit:
 	if (spdk_unlikely(nvme_qpair_is_admin_queue(qpair))) {
@@ -1764,14 +1764,14 @@ nvme_pcie_poll_group_process_completions(struct spdk_nvme_transport_poll_group *
 	int32_t local_completions = 0;
 	int64_t total_completions = 0;
 
-	STAILQ_FOREACH_SAFE(qpair, &tgroup->disconnected_qpairs, poll_group_stailq, tmp_qpair) {
+	STAILQ_FOREACH_SAFE(qpair, &tgroup->disconnected_qpairs, poll_group_stailq, tmp_qpair) { // 遍历 disconnected_qpairs 队列，处理断开连接的 Qpair
 		disconnected_qpair_cb(qpair, tgroup->group->ctx);
 	}
 
-	STAILQ_FOREACH_SAFE(qpair, &tgroup->connected_qpairs, poll_group_stailq, tmp_qpair) {
-		local_completions = spdk_nvme_qpair_process_completions(qpair, completions_per_qpair);
+	STAILQ_FOREACH_SAFE(qpair, &tgroup->connected_qpairs, poll_group_stailq, tmp_qpair) { // 遍历 connected_qpairs 队列，处理连接的 Qpair
+		local_completions = spdk_nvme_qpair_process_completions(qpair, completions_per_qpair); // 处理完成队列
 		if (spdk_unlikely(local_completions < 0)) {
-			disconnected_qpair_cb(qpair, tgroup->group->ctx);
+			disconnected_qpair_cb(qpair, tgroup->group->ctx); // 如果处理失败，调用 disconnected_qpair_cb
 			total_completions = -ENXIO;
 		} else if (spdk_likely(total_completions >= 0)) {
 			total_completions += local_completions;

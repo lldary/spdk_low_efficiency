@@ -1295,10 +1295,10 @@ vmd_enum_cb(void *ctx, struct spdk_pci_device *pci_dev)
 	struct vmd_adapter *vmd = &vmd_c->vmd[vmd_c->count];
 
 	spdk_pci_device_cfg_read32(pci_dev, &cmd_reg, 4);
-	cmd_reg |= 0x6;                      /* PCI bus master/memory enable. */
+	cmd_reg |= 0x6;                      /* PCI bus master/memory enable. 允许 PCI 总线主控和内存访问 */
 	spdk_pci_device_cfg_write32(pci_dev, cmd_reg, 4);
 
-	spdk_pci_addr_fmt(bdf, sizeof(bdf), &pci_dev->addr);
+	spdk_pci_addr_fmt(bdf, sizeof(bdf), &pci_dev->addr); // PCI 设备的地址格式化为字符串，并存储在 bdf 变量
 	SPDK_INFOLOG(vmd, "Found a VMD[ %d ] at %s\n", vmd_c->count, bdf);
 
 	/* map vmd bars */

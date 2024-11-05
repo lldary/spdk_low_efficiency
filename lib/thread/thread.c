@@ -496,7 +496,7 @@ spdk_thread_create(const char *name, const struct spdk_cpuset *cpumask)
 
 	/* Since this spdk_thread object will be used by another core, ensure that it won't share a
 	 * cache line with any other object allocated on this core */
-	rc = posix_memalign((void **)&thread, SPDK_CACHE_LINE_SIZE, size);
+	rc = posix_memalign((void **)&thread, SPDK_CACHE_LINE_SIZE, size); // 内存对齐分配，确保缓存行没有冲突
 	if (rc != 0) {
 		SPDK_ERRLOG("Unable to allocate memory for thread\n");
 		return NULL;
@@ -523,7 +523,7 @@ spdk_thread_create(const char *name, const struct spdk_cpuset *cpumask)
 	 */
 	thread->next_poller_id = 1;
 
-	thread->messages = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536, SPDK_ENV_SOCKET_ID_ANY);
+	thread->messages = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536, SPDK_ENV_SOCKET_ID_ANY); // 创建消息环，用于线程之间消息传递
 	if (!thread->messages) {
 		SPDK_ERRLOG("Unable to allocate memory for message ring\n");
 		free(thread);
@@ -554,7 +554,7 @@ spdk_thread_create(const char *name, const struct spdk_cpuset *cpumask)
 		_free_thread(thread);
 		return NULL;
 	}
-	thread->id = g_thread_id++;
+	thread->id = g_thread_id++; // 分配线程ID，并且送入全局线程队列
 	TAILQ_INSERT_TAIL(&g_threads, thread, tailq);
 	g_thread_count++;
 	pthread_mutex_unlock(&g_devlist_mutex);
@@ -562,16 +562,16 @@ spdk_thread_create(const char *name, const struct spdk_cpuset *cpumask)
 	SPDK_DEBUGLOG(thread, "Allocating new thread (%" PRIu64 ", %s)\n",
 		      thread->id, thread->name);
 
-	if (spdk_interrupt_mode_is_enabled()) {
+	if (spdk_interrupt_mode_is_enabled()) { // 如果启用中断模式
 		thread->in_interrupt = true;
-		rc = thread_interrupt_create(thread);
+		rc = thread_interrupt_create(thread); // 给线程创建中断处理方式
 		if (rc != 0) {
 			_free_thread(thread);
 			return NULL;
 		}
 	}
 
-	if (g_new_thread_fn) {
+	if (g_new_thread_fn) { // 如果有新线程函数，就执行
 		rc = g_new_thread_fn(thread);
 	} else if (g_thread_op_supported_fn && g_thread_op_supported_fn(SPDK_THREAD_OP_NEW)) {
 		rc = g_thread_op_fn(thread, SPDK_THREAD_OP_NEW);
@@ -830,16 +830,16 @@ msg_queue_run_batch(struct spdk_thread *thread, uint32_t max_msgs)
 	memset(messages, 0, sizeof(messages));
 #endif
 
-	if (max_msgs > 0) {
+	if (max_msgs > 0) { // 设置max_msgs不超过SPDK_MSG_BATCH_SIZE
 		max_msgs = spdk_min(max_msgs, SPDK_MSG_BATCH_SIZE);
 	} else {
 		max_msgs = SPDK_MSG_BATCH_SIZE;
 	}
 
-	count = spdk_ring_dequeue(thread->messages, messages, max_msgs);
+	count = spdk_ring_dequeue(thread->messages, messages, max_msgs); // 消息队列读取消息
 	if (spdk_unlikely(thread->in_interrupt) &&
-	    spdk_ring_count(thread->messages) != 0) {
-		rc = write(thread->msg_fd, &notify, sizeof(notify));
+	    spdk_ring_count(thread->messages) != 0) { // 如果当前处于中断状态，并且消息队列中仍然有消息
+		rc = write(thread->msg_fd, &notify, sizeof(notify)); // 发送通知，表示有新消息到来
 		if (rc < 0) {
 			SPDK_ERRLOG("failed to notify msg_queue: %s.\n", spdk_strerror(errno));
 		}
@@ -855,17 +855,17 @@ msg_queue_run_batch(struct spdk_thread *thread, uint32_t max_msgs)
 
 		SPDK_DTRACE_PROBE2(msg_exec, msg->fn, msg->arg);
 
-		msg->fn(msg->arg);
+		msg->fn(msg->arg); // 消息处理函数处理消息
 
-		SPIN_ASSERT(thread->lock_count == 0, SPIN_ERR_HOLD_DURING_SWITCH);
+		SPIN_ASSERT(thread->lock_count == 0, SPIN_ERR_HOLD_DURING_SWITCH); // 线程锁数目为0，避免死锁
 
-		if (thread->msg_cache_count < SPDK_MSG_MEMPOOL_CACHE_SIZE) {
+		if (thread->msg_cache_count < SPDK_MSG_MEMPOOL_CACHE_SIZE) { // 检查消息缓存计数是否小于缓存大小
 			/* Insert the messages at the head. We want to re-use the hot
 			 * ones. */
-			SLIST_INSERT_HEAD(&thread->msg_cache, msg, link);
+			SLIST_INSERT_HEAD(&thread->msg_cache, msg, link); // 是，插入消息
 			thread->msg_cache_count++;
 		} else {
-			spdk_mempool_put(g_spdk_msg_mempool, msg);
+			spdk_mempool_put(g_spdk_msg_mempool, msg); // 否，释放消息回内存池
 		}
 	}
 
@@ -921,7 +921,7 @@ thread_insert_poller(struct spdk_thread *thread, struct spdk_poller *poller)
 		TAILQ_INSERT_TAIL(&thread->active_pollers, poller, tailq);
 	}
 }
-
+/* 更新空闲/忙碌统计信息 */
 static inline void
 thread_update_stats(struct spdk_thread *thread, uint64_t end,
 		    uint64_t start, int rc)
@@ -942,30 +942,30 @@ thread_execute_poller(struct spdk_thread *thread, struct spdk_poller *poller)
 {
 	int rc;
 
-	switch (poller->state) {
-	case SPDK_POLLER_STATE_UNREGISTERED:
-		TAILQ_REMOVE(&thread->active_pollers, poller, tailq);
+	switch (poller->state) { // 查询轮询器状态
+	case SPDK_POLLER_STATE_UNREGISTERED: // 未注册
+		TAILQ_REMOVE(&thread->active_pollers, poller, tailq); // 释放内存
 		free(poller);
 		return 0;
-	case SPDK_POLLER_STATE_PAUSING:
-		TAILQ_REMOVE(&thread->active_pollers, poller, tailq);
-		TAILQ_INSERT_TAIL(&thread->paused_pollers, poller, tailq);
-		poller->state = SPDK_POLLER_STATE_PAUSED;
+	case SPDK_POLLER_STATE_PAUSING: // 暂停
+		TAILQ_REMOVE(&thread->active_pollers, poller, tailq); // 移除活动链表
+		TAILQ_INSERT_TAIL(&thread->paused_pollers, poller, tailq); // 添加进入暂停链表
+		poller->state = SPDK_POLLER_STATE_PAUSED; // 状态为已暂停
 		return 0;
-	case SPDK_POLLER_STATE_WAITING:
+	case SPDK_POLLER_STATE_WAITING: // 等待状态
 		break;
 	default:
 		assert(false);
 		break;
 	}
 
-	poller->state = SPDK_POLLER_STATE_RUNNING;
-	rc = poller->fn(poller->arg);
+	poller->state = SPDK_POLLER_STATE_RUNNING; // 切换为运行状态
+	rc = poller->fn(poller->arg); // 调用轮询器执行函数
 
-	SPIN_ASSERT(thread->lock_count == 0, SPIN_ERR_HOLD_DURING_SWITCH);
+	SPIN_ASSERT(thread->lock_count == 0, SPIN_ERR_HOLD_DURING_SWITCH); // 确保无锁
 
-	poller->run_count++;
-	if (rc > 0) {
+	poller->run_count++; // 记录轮询器轮询次数
+	if (rc > 0) { // 代表轮询出了一些结果
 		poller->busy_count++;
 	}
 
@@ -975,7 +975,7 @@ thread_execute_poller(struct spdk_thread *thread, struct spdk_poller *poller)
 	}
 #endif
 
-	switch (poller->state) {
+	switch (poller->state) { // 再次检查轮询器状态
 	case SPDK_POLLER_STATE_UNREGISTERED:
 		TAILQ_REMOVE(&thread->active_pollers, poller, tailq);
 		free(poller);
@@ -1068,55 +1068,55 @@ thread_poll(struct spdk_thread *thread, uint32_t max_msgs, uint64_t now)
 	spdk_msg_fn critical_msg;
 	int rc = 0;
 
-	thread->tsc_last = now;
+	thread->tsc_last = now; // 更新当前时间戳
 
 	critical_msg = thread->critical_msg;
-	if (spdk_unlikely(critical_msg != NULL)) {
-		critical_msg(NULL);
+	if (spdk_unlikely(critical_msg != NULL)) { // 是否非空
+		critical_msg(NULL); // 执行该关键消息的处理函数，并将其设置为NULL
 		thread->critical_msg = NULL;
-		rc = 1;
+		rc = 1; // 有关键信息被处理
 	}
 
-	msg_count = msg_queue_run_batch(thread, max_msgs);
-	if (msg_count) {
+	msg_count = msg_queue_run_batch(thread, max_msgs); // 处理消息队列中的消息
+	if (msg_count) { // 成功处理了消息
 		rc = 1;
 	}
 
 	TAILQ_FOREACH_REVERSE_SAFE(poller, &thread->active_pollers,
-				   active_pollers_head, tailq, tmp) {
+				   active_pollers_head, tailq, tmp) { // 遍历所有活动轮询器
 		int poller_rc;
 
-		poller_rc = thread_execute_poller(thread, poller);
+		poller_rc = thread_execute_poller(thread, poller); // 执行轮询逻辑，根据返回值更新rc
 		if (poller_rc > rc) {
 			rc = poller_rc;
 		}
 	}
 
 	poller = thread->first_timed_poller;
-	while (poller != NULL) {
+	while (poller != NULL) { // 处理定时轮询器 (队列按照触发时间排序)
 		int timer_rc = 0;
 
-		if (now < poller->next_run_tick) {
+		if (now < poller->next_run_tick) { // 没有到达定时时间
 			break;
 		}
 
 		tmp = RB_NEXT(timed_pollers_tree, &thread->timed_pollers, poller);
-		RB_REMOVE(timed_pollers_tree, &thread->timed_pollers, poller);
+		RB_REMOVE(timed_pollers_tree, &thread->timed_pollers, poller); // 移除当前定时器
 
 		/* Update the cache to the next timed poller in the list
 		 * only if the current poller is still the closest, otherwise,
 		 * do nothing because the cache has been already updated.
 		 */
-		if (thread->first_timed_poller == poller) {
+		if (thread->first_timed_poller == poller) { // 如果当前轮询器是第一个定时轮询器，则更新 thread->first_timed_poller 为下一个定时轮询器
 			thread->first_timed_poller = tmp;
 		}
 
-		timer_rc = thread_execute_timed_poller(thread, poller, now);
-		if (timer_rc > rc) {
+		timer_rc = thread_execute_timed_poller(thread, poller, now); // 执行定时轮询器
+		if (timer_rc > rc) { // 更新rc
 			rc = timer_rc;
 		}
 
-		poller = tmp;
+		poller = tmp; // 指针移向下一个
 	}
 
 	return rc;
@@ -1173,9 +1173,9 @@ spdk_thread_poll(struct spdk_thread *thread, uint32_t max_msgs, uint64_t now)
 		now = spdk_get_ticks();
 	}
 
-	if (spdk_likely(!thread->in_interrupt)) {
-		rc = thread_poll(thread, max_msgs, now);
-		if (spdk_unlikely(thread->in_interrupt)) {
+	if (spdk_likely(!thread->in_interrupt)) { // 如果当前线程不在中断状态
+		rc = thread_poll(thread, max_msgs, now); // 轮询处理
+		if (spdk_unlikely(thread->in_interrupt)) { // 如果中途切换成为中断状态，则再调用一次轮询，用来处理切换过程中的请求
 			/* The thread transitioned to interrupt mode during the above poll.
 			 * Poll it one more time in case that during the transition time
 			 * there is msg received without notification.
@@ -1183,12 +1183,12 @@ spdk_thread_poll(struct spdk_thread *thread, uint32_t max_msgs, uint64_t now)
 			rc = thread_poll(thread, max_msgs, now);
 		}
 
-		if (spdk_unlikely(thread->state == SPDK_THREAD_STATE_EXITING)) {
+		if (spdk_unlikely(thread->state == SPDK_THREAD_STATE_EXITING)) { // 如果线程正在退出，则退出线程
 			thread_exit(thread, now);
 		}
-	} else {
+	} else { // 如果在中断状态
 		/* Non-block wait on thread's fd_group */
-		rc = spdk_fd_group_wait(thread->fgrp, 0);
+		rc = spdk_fd_group_wait(thread->fgrp, 0); // 非阻塞地等待线程的文件描述符组中的事件
 	}
 
 	thread_update_stats(thread, spdk_get_ticks(), now, rc);
@@ -2593,8 +2593,8 @@ spdk_for_each_channel(void *io_device, spdk_channel_msg fn, void *ctx,
 
 	i->orig_thread->for_each_count++;
 
-	pthread_mutex_lock(&g_devlist_mutex);
-	i->dev = io_device_get(io_device);
+	pthread_mutex_lock(&g_devlist_mutex); // 全局设备列表互斥锁
+	i->dev = io_device_get(io_device); // 获取 io_device 对应的设备结构体
 	if (i->dev == NULL) {
 		SPDK_ERRLOG("could not find io_device %p\n", io_device);
 		assert(false);
@@ -2605,13 +2605,13 @@ spdk_for_each_channel(void *io_device, spdk_channel_msg fn, void *ctx,
 	/* Do not allow new for_each operations if we are already waiting to unregister
 	 * the device for other for_each operations to complete.
 	 */
-	if (i->dev->pending_unregister) {
+	if (i->dev->pending_unregister) { // 有待处理的注销操作
 		SPDK_ERRLOG("io_device %p has a pending unregister\n", io_device);
 		i->status = -ENODEV;
 		goto end;
 	}
 
-	TAILQ_FOREACH(thread, &g_threads, tailq) {
+	TAILQ_FOREACH(thread, &g_threads, tailq) { // 遍历所有线程
 		ch = thread_get_io_channel(thread, i->dev);
 		if (ch != NULL) {
 			ch->dev->for_each_count++;
@@ -2728,7 +2728,7 @@ thread_interrupt_msg_process(void *arg)
 	 * so msg_acknowledge should be applied ahead. And then check for self's msg_notify.
 	 * This can avoid msg notification missing.
 	 */
-	rc = read(thread->msg_fd, &notify, sizeof(notify));
+	rc = read(thread->msg_fd, &notify, sizeof(notify)); // 读取 msg_fd 中的消息，以确认消息事件
 	if (rc < 0 && errno != EAGAIN) {
 		SPDK_ERRLOG("failed to acknowledge msg event: %s.\n", spdk_strerror(errno));
 	}
@@ -2746,11 +2746,11 @@ thread_interrupt_msg_process(void *arg)
 	}
 
 	SPIN_ASSERT(thread->lock_count == 0, SPIN_ERR_HOLD_DURING_SWITCH);
-	if (spdk_unlikely(!thread->in_interrupt)) {
+	if (spdk_unlikely(!thread->in_interrupt)) { // 检查线程是否仍处于中断模式。如果不在中断模式，说明线程可能在处理消息的过程中切换到了轮询模式
 		/* The thread transitioned to poll mode in a msg during the above processing.
 		 * Clear msg_fd since thread messages will be polled directly in poll mode.
 		 */
-		rc = read(thread->msg_fd, &notify, sizeof(notify));
+		rc = read(thread->msg_fd, &notify, sizeof(notify)); // 再次读取 msg_fd 中的消息，以确认消息事件，防止切换过程丢失通知
 		if (rc < 0 && errno != EAGAIN) {
 			SPDK_ERRLOG("failed to acknowledge msg queue: %s.\n", spdk_strerror(errno));
 		}
@@ -2767,12 +2767,12 @@ thread_interrupt_create(struct spdk_thread *thread)
 
 	SPDK_INFOLOG(thread, "Create fgrp for thread (%s)\n", thread->name);
 
-	rc = spdk_fd_group_create(&thread->fgrp);
+	rc = spdk_fd_group_create(&thread->fgrp); // 创建一个文件描述符组，用于管理和监听多个文件描述符的事件
 	if (rc) {
 		return rc;
 	}
 
-	thread->msg_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	thread->msg_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); // 创建一个事件文件描述符，非阻塞模式创建，调用exec后关闭
 	if (thread->msg_fd < 0) {
 		rc = -errno;
 		spdk_fd_group_destroy(thread->fgrp);
