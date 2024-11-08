@@ -115,6 +115,22 @@ struct spdk_nvme_ctrlr *nvme_transport_ctrlr_construct(const struct spdk_nvme_tr
 	return ctrlr;
 }
 
+int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	if (transport == NULL) {
+		SPDK_ERRLOG("Transport %s doesn't exist.", ctrlr->trid.trstring);
+		return -ENOENT;
+	}
+
+	if (transport->ops.ctrlr_alloc_msix) {
+		return transport->ops.ctrlr_alloc_msix(ctrlr, index);
+	}
+
+	return -ENOTSUP;
+}
+
 int
 nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 			  bool direct_connect)
@@ -476,6 +492,19 @@ nvme_transport_connect_qpair_fail(struct spdk_nvme_qpair *qpair, void *unused)
 	/* If the qpair was unable to reconnect, restore the original failure reason */
 	qpair->transport_failure_reason = qpair->last_transport_failure_reason;
 	nvme_transport_ctrlr_disconnect_qpair(ctrlr, qpair);
+}
+
+int nvme_transport_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t vector_count)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_alloc_msix) {
+		return transport->ops.ctrlr_alloc_msix(ctrlr, vector_count);
+	}
+	SPDK_ERRLOG("Transport %s does not support ctrlr_alloc_msix callback\n",
+		    ctrlr->trid.trstring);
+	return -ENOTSUP;
 }
 
 int

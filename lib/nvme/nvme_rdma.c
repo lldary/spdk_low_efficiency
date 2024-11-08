@@ -3301,6 +3301,7 @@ const struct spdk_nvme_transport_ops rdma_ops = {
 	.ctrlr_delete_io_qpair = nvme_rdma_ctrlr_delete_io_qpair,
 	.ctrlr_connect_qpair = nvme_rdma_ctrlr_connect_qpair,
 	.ctrlr_disconnect_qpair = nvme_rdma_ctrlr_disconnect_qpair,
+	.ctrlr_alloc_msix = NULL, // 暂不支持
 
 	.ctrlr_get_memory_domains = nvme_rdma_ctrlr_get_memory_domains,
 

@@ -3027,6 +3027,7 @@ const struct spdk_nvme_transport_ops tcp_ops = {
 	.ctrlr_delete_io_qpair = nvme_tcp_ctrlr_delete_io_qpair,
 	.ctrlr_connect_qpair = nvme_tcp_ctrlr_connect_qpair,
 	.ctrlr_disconnect_qpair = nvme_tcp_ctrlr_disconnect_qpair,
+	.ctrlr_alloc_msix = NULL, // 暂不支持
 
 	.ctrlr_get_memory_domains = nvme_tcp_ctrlr_get_memory_domains,
 

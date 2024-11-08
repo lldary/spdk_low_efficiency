@@ -1762,6 +1762,8 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 	opts.io_queue_requests = spdk_max(g_opts.io_queue_requests, opts.io_queue_requests);
 	g_opts.io_queue_requests = opts.io_queue_requests;
 
+	// TODO: 设置哪些pair需要中断或者混合轮询 (设置opts.interupt_mode)
+
 	qpair = spdk_nvme_ctrlr_alloc_io_qpair(nvme_ctrlr->ctrlr, &opts, sizeof(opts)); // 分配IO队列
 	if (qpair == NULL) {
 		return -1;
@@ -1771,11 +1773,22 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 			   spdk_nvme_qpair_get_id(qpair), spdk_thread_get_id(nvme_ctrlr->thread));
 
 	assert(nvme_qpair->group != NULL);
-
-	rc = spdk_nvme_poll_group_add(nvme_qpair->group->group, qpair); // 将队列添加到轮询组
-	if (rc != 0) {
-		SPDK_ERRLOG("Unable to begin polling on NVMe Channel.\n");
-		goto err;
+	if(opts.interupt_mode){
+		rc = spdk_nvme_int_group_add(qpair);
+		if (rc != 0) {
+			SPDK_ERRLOG("Unable to add qpair to interrupt group.\n");
+			goto err;
+		}
+	}
+	else if(opts.interupt_roll_mode){
+		// TODO: 根据需要将其添加到中断轮询组(中断组已添加)
+	}
+	else{ // 这是原本默认内容
+		rc = spdk_nvme_poll_group_add(nvme_qpair->group->group, qpair); // 将队列添加到轮询组
+		if (rc != 0) {
+			SPDK_ERRLOG("Unable to begin polling on NVMe Channel.\n");
+			goto err;
+		}
 	}
 
 	rc = spdk_nvme_ctrlr_connect_io_qpair(nvme_ctrlr->ctrlr, qpair); // 连接IO队列
@@ -4224,7 +4237,7 @@ nvme_disk_create(struct spdk_bdev *disk, const char *base_name,
 	}
 
 	disk->ctxt = ctx;
-	disk->fn_table = &nvmelib_fn_table;
+	disk->fn_table = &nvmelib_fn_table; // 配置读取函数
 	disk->module = &nvme_if;
 
 	return 0;

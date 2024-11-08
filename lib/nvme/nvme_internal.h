@@ -533,12 +533,18 @@ struct spdk_nvme_qpair {
 
 	/* In-band authentication state */
 	struct nvme_auth			auth;
+
+	uint16_t interupt_index; // 中断索引 0xFFFF表示不支持中断
+
+	uint8_t reserved[2]; // 保留字段
 };
 
 struct spdk_nvme_poll_group {
 	void						*ctx;
 	struct spdk_nvme_accel_fn_table			accel_fn_table;
 	STAILQ_HEAD(, spdk_nvme_transport_poll_group)	tgroups;
+	STAILQ_HEAD(, spdk_nvme_transport_poll_group)	int_groups; // 支持中断的tgroup
+	STAILQ_HEAD(, spdk_nvme_transport_poll_group)   int_pollgroups; // 支持中断轮询的tgroup
 	bool						in_process_completions;
 };
 
@@ -1623,6 +1629,7 @@ void  nvme_ctrlr_update_namespaces(struct spdk_nvme_ctrlr *ctrlr);
 struct spdk_nvme_ctrlr *nvme_transport_ctrlr_construct(const struct spdk_nvme_transport_id *trid,
 		const struct spdk_nvme_ctrlr_opts *opts,
 		void *devhandle);
+int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index); // 自行添加的函数
 int nvme_transport_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr);
 int nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx, bool direct_connect);
 int nvme_transport_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx);

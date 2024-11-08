@@ -1681,8 +1681,12 @@ struct spdk_nvme_io_qpair_opts {
 	 */
 	bool disable_pcie_sgl_merge;
 
+	bool interupt_mode; // 是否允许中断
+
+	bool interupt_roll_mode; // 是否允许混合轮询
+
 	/* Hole at bytes 67-71. */
-	uint8_t reserved67[5];
+	uint8_t reserved67[3]; // 从5改到了3
 };
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_io_qpair_opts) == 72, "Incorrect size");
 
@@ -2782,6 +2786,12 @@ struct spdk_nvme_poll_group *spdk_nvme_poll_group_create(void *ctx,
  * \return Pointer to the optimal poll group, or NULL if not found.
  */
 struct spdk_nvme_poll_group *spdk_nvme_qpair_get_optimal_poll_group(struct spdk_nvme_qpair *qpair);
+
+/**
+ * 将一个qpair设置为中断模式
+ * \return 0 on success, -1 on failure.
+ */
+int spdk_nvme_int_group_add(struct spdk_nvme_qpair *qpair);
 
 /**
  * Add an spdk_nvme_qpair to a poll group. qpairs may only be added to
@@ -4368,6 +4378,8 @@ struct spdk_nvme_transport_ops {
 	int (*ctrlr_connect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
 
 	void (*ctrlr_disconnect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
+
+	int (*ctrlr_alloc_msix)(struct spdk_nvme_ctrlr *ctrlr, uint16_t index);
 
 	void (*qpair_abort_reqs)(struct spdk_nvme_qpair *qpair, uint32_t dnr);
 

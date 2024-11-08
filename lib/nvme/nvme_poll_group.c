@@ -57,6 +57,8 @@ spdk_nvme_poll_group_create(void *ctx, struct spdk_nvme_accel_fn_table *table)
 
 	group->ctx = ctx;
 	STAILQ_INIT(&group->tgroups);
+	STAILQ_INIT(&group->int_groups);
+	STAILQ_INIT(&group->int_pollgroups);
 
 	return group;
 }
@@ -74,6 +76,20 @@ spdk_nvme_qpair_get_optimal_poll_group(struct spdk_nvme_qpair *qpair)
 
 	return tgroup->group;
 }
+
+/* 将io pair配置为中断驱动
+ * \return 0 on success, negated errno on failure
+ */
+int spdk_nvme_int_group_add(struct spdk_nvme_qpair *qpair){
+	int rc = 0;
+	rc = nvme_transport_alloc_msix(qpair->ctrlr, qpair->interupt_index);
+	if (rc) {
+		SPDK_ERRLOG("Failed to allocate msix interrupt\n");
+		return rc;
+	}
+	return rc;
+}
+
 
 int
 spdk_nvme_poll_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair)

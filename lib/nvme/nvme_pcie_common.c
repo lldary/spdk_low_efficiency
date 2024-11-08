@@ -225,6 +225,18 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 		TAILQ_INSERT_HEAD(&pqpair->free_tr, tr, tq_list); // 添加到空闲跟踪器列表中
 	}
 
+	// TODO: 需要不需要考虑竞争？
+	if(opts->interupt_mode){
+		for(i = 0;i < 16; i++){
+			if(pctrlr->msix_vectors[i] == false){
+				pctrlr->msix_vectors[i] = true;
+				qpair->interupt_index = i;
+				break;
+			}
+		}
+	}
+	// TODO: 混合轮询
+
 	nvme_pcie_qpair_reset(qpair);
 
 	return 0;
@@ -352,6 +364,12 @@ nvme_pcie_ctrlr_cmd_create_io_cq(struct spdk_nvme_ctrlr *ctrlr,
 	cmd->cdw10_bits.create_io_q.qsize = pqpair->num_entries - 1;
 
 	cmd->cdw11_bits.create_io_cq.pc = 1;
+
+	if(io_que->interupt_index != 0xFFFF) {
+		cmd->cdw11_bits.create_io_cq.ien = 1;
+		cmd->cdw11_bits.create_io_cq.iv = io_que->interupt_index;
+	}
+
 	cmd->dptr.prp.prp1 = pqpair->cpl_bus_addr;
 
 	return nvme_ctrlr_submit_admin_request(ctrlr, req);

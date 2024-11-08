@@ -402,7 +402,7 @@ nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		return NULL;
 	}
 
-	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts); // 创建一个新的 I/O Qpair
+	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts); // 创建一个新的 I/O Qpair (实际没有创建，只是创建了spdk需要维护的pair结构)
 	if (qpair == NULL) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_create_io_qpair() failed\n");
 		spdk_nvme_ctrlr_free_qid(ctrlr, qid);

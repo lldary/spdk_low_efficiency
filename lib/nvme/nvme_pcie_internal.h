@@ -75,6 +75,19 @@ struct nvme_pcie_ctrlr {
 	bool is_remapped;
 
 	volatile uint32_t *doorbell_base;
+
+	uint32_t msix_enabled; /* 0 means MSI-X is not enabled */
+
+	uint8_t table_bir; // 该字段存放MSI-X Table所在的位置，PCIe总线规范规定MSI-X Table存放在设备的BAR空间中。该字段表示设备使用BAR0 ~ 5寄存器中的哪个空间存放MSI-X table。
+
+	uint8_t pba_bir; // 存放Pending Table在PCIe设备的哪个BAR空间中。在通常情况下，Pending Table和MSI-X Table存放在PCIe设备的同一个BAR空间中。
+
+	bool msix_vectors[16]; // 该字段存放每个队列对应的MSI-X向量是否被分配。
+
+	uint32_t table_offset; // 存放MSI-X Table在相应BAR空间中的偏移。
+
+	uint32_t pba_offset; // 该字段存放Pending Table在相应BAR空间中的偏移。
+
 };
 
 extern __thread struct nvme_pcie_ctrlr *g_thread_mmio_ctrlr;

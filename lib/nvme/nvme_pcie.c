@@ -897,6 +897,47 @@ nvme_pcie_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 	}
 }
 
+/* 检查是否支持msix中断 */
+static void spdk_check_msix_support(struct spdk_pci_device *dev, struct nvme_pcie_ctrlr *pctrlr)
+{
+	uint16_t status;
+	spdk_pci_device_cfg_read16(dev, &status, 0x02);
+	if(!(status & 0x40)) {
+		SPDK_ERRLOG("MSI-X not supported\n");
+		return;
+	}
+	uint16_t pos = 0x34;
+	while(1){
+		uint32_t cap_reg;
+		spdk_pci_device_cfg_read32(dev, &cap_reg, pos);
+		uint8_t cap_id = (cap_reg & 0xFF);
+		if(cap_id == 0x11){
+			// TODO: 精简内容，这里只需要记录是否支持MSI-X，以及MSI-X的数量
+			bool msix_enable = cap_reg >> 31;
+			uint16_t msix_count = (cap_reg >> 16) & 0x7FF;
+			if(msix_count < 1){
+				SPDK_ERRLOG("MSI-X count less than 1\n");
+				return;
+			}
+			bool function_mask = (cap_reg >> 30) & 0x1;
+			pctrlr->msix_enabled = msix_count;
+			spdk_pci_device_cfg_read32(dev, &cap_reg, pos + 4);
+			pctrlr->table_bir = cap_reg & 0x7;
+			pctrlr->table_offset = cap_reg >> 3;
+			spdk_pci_device_cfg_read32(dev, &cap_reg, pos + 8);
+			pctrlr->pba_bir = cap_reg & 0x7;
+			pctrlr->pba_offset = cap_reg >> 3;
+			return;
+		}
+		else if(cap_id == 0){
+			SPDK_ERRLOG("MSI-X capability not found\n");
+			return;
+		}
+		pos = (cap_reg >> 8) & 0xFF;
+	}
+	return;
+}
+
 static struct spdk_nvme_ctrlr *
 	nvme_pcie_ctrlr_construct(const struct spdk_nvme_transport_id *trid,
 			  const struct spdk_nvme_ctrlr_opts *opts,
@@ -953,6 +994,10 @@ static struct spdk_nvme_ctrlr *
 	spdk_pci_device_cfg_read16(pci_dev, &cmd_reg, 4);
 	cmd_reg |= 0x404;
 	spdk_pci_device_cfg_write16(pci_dev, cmd_reg, 4);
+
+	/* Check if MSI-X is enabled */
+	spdk_check_msix_support(pci_dev, pctrlr);
+
 
 	if (nvme_ctrlr_get_cap(&pctrlr->ctrlr, &cap)) { // 获取 NVMe 控制器的 capability 寄存器值
 		SPDK_ERRLOG("get_cap() failed\n");
@@ -1064,6 +1109,53 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 	return 0;
 }
 
+
+// TODO: 好好思考一下到底放到哪里
+// #include "env_dpdk/pci_dpdk.h"
+#include <linux/vfio.h>
+
+static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t index)
+{
+	int rc;
+
+	if (pctrlr->msix_enabled == 0) {
+		return 0;
+	}
+
+	struct spdk_pci_device *pci_dev = pctrlr->devhandle;
+	// TODO: 保存msix中断的信息好像是不必要的
+	spdk_pci_device_enable_interrupt(pci_dev);
+	int device_fd = spdk_pci_device_get_interrupt_efd(pci_dev);
+	// TODO: 这个eventfd应该在别的地方设置，这里是暂时的
+	int event_fd = eventfd(0, 0);
+    if (event_fd < 0) {
+        SPDK_ERRLOG("Failed to create eventfd");
+        return -1;
+    }
+	struct vfio_irq_set irq_set = {0};
+    irq_set.argsz = sizeof(irq_set) + sizeof(int); // 确保有足够的空间存储 eventfd
+    irq_set.flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER; // 使用 eventfd 触发中断
+    // TODO: 再确认一下这里的 index 是不是正确的
+	irq_set.index = index; // MSI-X 表的索引
+    irq_set.start = index; // 指定要操作的子索引范围开始
+    irq_set.count = 1; // 子索引范围的数量
+
+    // 将 eventfd 放入 data 数组
+    int* data_ptr = (int*)&irq_set.data;
+    *data_ptr = event_fd;
+
+    // 使用 ioctl 设置 MSI-X 中断
+    if (ioctl(device_fd, VFIO_DEVICE_SET_IRQS, &irq_set)) {
+        SPDK_ERRLOG("Failed to set IRQs");
+        return -1;
+    }
+	if (rc < 0) {
+		SPDK_ERRLOG("spdk_pci_device_alloc_irqs() failed\n");
+		return rc;
+	}
+	return 0;
+}
+
 void
 spdk_nvme_pcie_set_hotplug_filter(spdk_nvme_pcie_hotplug_filter_cb filter_cb)
 {
@@ -1115,6 +1207,7 @@ const struct spdk_nvme_transport_ops pcie_ops = {
 	.ctrlr_delete_io_qpair = nvme_pcie_ctrlr_delete_io_qpair,
 	.ctrlr_connect_qpair = nvme_pcie_ctrlr_connect_qpair,
 	.ctrlr_disconnect_qpair = nvme_pcie_ctrlr_disconnect_qpair,
+	.ctrlr_alloc_msix = nvme_pcie_ctrlr_alloc_msix, // 支持分配msix中断
 
 	.qpair_abort_reqs = nvme_pcie_qpair_abort_reqs,
 	.qpair_reset = nvme_pcie_qpair_reset,
