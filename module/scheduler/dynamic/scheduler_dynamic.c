@@ -97,7 +97,9 @@ prepare_to_wake(uint32_t core)
 		SPDK_ERRLOG("could not set_core_freq_max(%d)\n", core);
 	}
 }
-
+/**
+ * 这个函数 _move_thread 的作用是将一个线程 thread_info 从当前核心（src 核心）移动到目标核心（dst_core 核心）。
+ */
 static void
 _move_thread(struct spdk_scheduler_thread_info *thread_info, uint32_t dst_core)
 {
@@ -329,55 +331,55 @@ balance(struct spdk_scheduler_core_info *cores_info, uint32_t cores_count)
 		g_cores[i].busy = cores_info[i].current_busy_tsc;
 		g_cores[i].idle = cores_info[i].current_idle_tsc;
 		SPDK_DTRACE_PROBE2(dynsched_core_info, i, &cores_info[i]);
-	}
+	} // 遍历所有核心，将核心的线程数、忙闲时间等信息保存到 g_cores 数组中
 	main_core = &g_cores[g_main_lcore];
 
 	/* Distribute threads in two passes, to make sure updated core stats are considered on each pass.
 	 * 1) Move all idle threads to main core. */
-	_foreach_thread(cores_info, _balance_idle);
+	_foreach_thread(cores_info, _balance_idle); // 遍历所有线程，将空闲线程移动到主核心
 	/* 2) Distribute active threads across all cores. */
-	_foreach_thread(cores_info, _balance_active);
+	_foreach_thread(cores_info, _balance_active); // 遍历所有线程，将活跃线程移动到最佳核心 (负载均衡)
 
 	/* Switch unused cores to interrupt mode and switch cores to polled mode
 	 * if they will be used after rebalancing */
-	SPDK_ENV_FOREACH_CORE(i) {
+	SPDK_ENV_FOREACH_CORE(i) { // 遍历所有核心
 		reactor = spdk_reactor_get(i);
 		assert(reactor != NULL);
 
 		core = &cores_info[i];
 		/* We can switch mode only if reactor already does not have any threads */
 		if (g_cores[i].thread_count == 0 && TAILQ_EMPTY(&reactor->threads)) {
-			core->interrupt_mode = true;
-			prepare_to_sleep(i);
-		} else if (g_cores[i].thread_count != 0) {
-			core->interrupt_mode = false;
+			core->interrupt_mode = true; // 如果该核心没有线程，将其设置为中断模式
+			prepare_to_sleep(i); // 准备进入睡眠状态
+		} else if (g_cores[i].thread_count != 0) { // 如果该核心有线程
+			core->interrupt_mode = false; // 将其设置为非中断模式
 			if (i != g_main_lcore) {
 				/* If a thread is present on non g_main_lcore,
 				 * it has to be busy. */
-				busy_threads_present = true;
-				prepare_to_wake(i);
+				busy_threads_present = true; // 如果该核心有线程，将 busy_threads_present 设置为 true
+				prepare_to_wake(i); // 准备唤醒该核心
 			}
 		}
 	}
 
-	governor = spdk_governor_get();
+	governor = spdk_governor_get(); // 获取调频管理器
 	if (governor == NULL) {
 		return;
 	}
 
 	/* Change main core frequency if needed */
-	if (busy_threads_present) {
-		rc = governor->set_core_freq_max(g_main_lcore);
+	if (busy_threads_present) { // 如果有线程
+		rc = governor->set_core_freq_max(g_main_lcore); // 将主核心的频率设置为最大
 		if (rc < 0) {
 			SPDK_ERRLOG("setting default frequency for core %u failed\n", g_main_lcore);
 		}
-	} else if (main_core->busy > main_core->idle) {
-		rc = governor->core_freq_up(g_main_lcore);
+	} else if (main_core->busy > main_core->idle) { // 如果主核心的忙时间大于空闲时间
+		rc = governor->core_freq_up(g_main_lcore); // 将主核心的频率提高
 		if (rc < 0) {
 			SPDK_ERRLOG("increasing frequency for core %u failed\n", g_main_lcore);
 		}
 	} else {
-		rc = governor->core_freq_down(g_main_lcore);
+		rc = governor->core_freq_down(g_main_lcore); // 将主核心的频率降低
 		if (rc < 0) {
 			SPDK_ERRLOG("lowering frequency for core %u failed\n", g_main_lcore);
 		}
