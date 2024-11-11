@@ -9130,7 +9130,7 @@ spdk_blob_io_write_zeroes(struct spdk_blob *blob, struct spdk_io_channel *channe
 	blob_request_submit_op(blob, channel, NULL, offset, length, cb_fn, cb_arg,
 			       SPDK_BLOB_WRITE_ZEROES);
 }
-
+// TODO: 注意如果想指定中断轮询的话调用的时候channel直接选定为中断轮询即可，注意第一次调用要初始化一下设备的中断轮询
 void
 spdk_blob_io_write(struct spdk_blob *blob, struct spdk_io_channel *channel,
 		   void *payload, uint64_t offset, uint64_t length,

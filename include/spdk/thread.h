@@ -215,6 +215,10 @@ int spdk_thread_lib_init_ext(spdk_thread_op_fn thread_op_fn,
  */
 void spdk_thread_lib_fini(void);
 
+struct spdk_thread *spdk_int_thread_create(const char *name, const struct spdk_cpuset *cpumask);
+
+struct spdk_thread *spdk_int_poll_thread_create(const char *name, const struct spdk_cpuset *cpumask);
+
 /**
  * Creates a new SPDK thread object.
  *
@@ -445,6 +449,40 @@ uint32_t spdk_thread_get_count(void);
  * \return a pointer to the current thread on success or NULL on failure.
  */
 struct spdk_thread *spdk_get_thread(void);
+
+void spdk_ssd_io_param_init(void);
+
+struct timespec spdk_get_write_predict_delay(uint32_t io_size, uint32_t cycle_number);
+
+struct timespec spdk_get_read_predict_delay(uint32_t io_size, uint32_t cycle_number);
+
+/**
+ * Get a handle to 特定的可以处理nvme中断的线程.
+ *
+ * This handle may be passed to other threads and used as the target of
+ * spdk_thread_send_msg().
+ *
+ * \return a pointer to the current interrupt thread on success or NULL on failure.
+ */
+struct spdk_thread *spdk_get_int_thread(void);
+
+struct spdk_thread *spdk_get_int_poll_thread(void);
+
+/**
+ * Get the eventfd associated with 特定的可以处理nvme中断的线程.
+ * \return 中断号
+ */
+int spdk_get_int_efd(void);
+
+int spdk_get_int_poll_efd(void);
+
+int spdk_get_int_timerfd(void);
+
+int spdk_set_new_timer(struct timespec timer_spec);
+
+struct timespec* spdk_get_new_timer(void);
+
+void spdk_del_head_timer(void);
 
 /**
  * Get a thread's name.
@@ -705,6 +743,8 @@ void spdk_io_device_unregister(void *io_device, spdk_io_device_unregister_cb unr
  */
 struct spdk_io_channel *spdk_get_io_channel(void *io_device);
 
+struct spdk_io_channel *spdk_get_int_io_channel(void *io_device, bool poll_mode);
+
 /**
  * Release a reference to an I/O channel. This happens asynchronously.
  *
@@ -850,6 +890,11 @@ typedef int (*spdk_interrupt_fn)(void *ctx);
  */
 struct spdk_interrupt *spdk_interrupt_register(int efd, spdk_interrupt_fn fn,
 		void *arg, const char *name);
+
+struct spdk_interrupt *
+spdk_interrupt_register_for_events_and_thread(int efd, uint32_t events, struct spdk_thread *thread, spdk_interrupt_fn fn, void *arg,
+				   const char *name);
+
 
 /**
  * Register an spdk_interrupt with specific event types on the current thread.

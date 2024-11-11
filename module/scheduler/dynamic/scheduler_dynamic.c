@@ -350,14 +350,14 @@ balance(struct spdk_scheduler_core_info *cores_info, uint32_t cores_count)
 		/* We can switch mode only if reactor already does not have any threads */
 		if (g_cores[i].thread_count == 0 && TAILQ_EMPTY(&reactor->threads)) {
 			core->interrupt_mode = true; // 如果该核心没有线程，将其设置为中断模式
-			prepare_to_sleep(i); // 准备进入睡眠状态
+			prepare_to_sleep(i); // 准备进入睡眠状态 (调整频率)
 		} else if (g_cores[i].thread_count != 0) { // 如果该核心有线程
 			core->interrupt_mode = false; // 将其设置为非中断模式
 			if (i != g_main_lcore) {
 				/* If a thread is present on non g_main_lcore,
 				 * it has to be busy. */
 				busy_threads_present = true; // 如果该核心有线程，将 busy_threads_present 设置为 true
-				prepare_to_wake(i); // 准备唤醒该核心
+				prepare_to_wake(i); // 准备唤醒该核心 (调整频率)
 			}
 		}
 	}

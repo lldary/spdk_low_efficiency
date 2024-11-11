@@ -1072,6 +1072,81 @@ bdev_nvme_find_io_path(struct nvme_bdev_channel *nbdev_ch)
 	}
 }
 
+static inline size_t get_io_size(struct nvme_bdev_io *nbdev_io){
+	size_t io_size = 0;
+	for(uint32_t i = 0; i < nbdev_io->iovcnt; i++){
+		io_size += nbdev_io->iovs[i].iov_len;
+	}
+	return io_size;
+}
+
+static inline bool is_int_polling(struct nvme_bdev_channel *nbdev_ch){
+	struct spdk_io_channel* int_poll_channel = spdk_get_int_io_channel(nbdev_ch->current_io_path->nvme_ns->ctrlr, true);
+	struct nvme_bdev_channel *int_nbdev_ch = spdk_io_channel_get_ctx(int_poll_channel);
+	return int_nbdev_ch == nbdev_ch;
+}
+
+static inline struct timespec bdev_nvme_get_io_delay(struct spdk_bdev_io *bdev_io){
+	switch (bdev_io->type) {
+	case SPDK_BDEV_IO_TYPE_READ:
+		struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
+		size_t io_size = get_io_size(nbdev_io);
+		return spdk_get_read_predict_delay(io_size, nbdev_io->iovcnt);
+	case SPDK_BDEV_IO_TYPE_WRITE:
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+		struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
+		size_t io_size = get_io_size(nbdev_io);
+		return spdk_get_write_predict_delay(io_size, nbdev_io->iovcnt);
+	default:
+		SPDK_ASSERT_H(0, "Unsupported I/O type %d", bdev_io->type);
+		break;
+	}
+}
+
+static inline struct nvme_io_path *
+bdev_nvme_find_io_path_ai(struct nvme_bdev_channel *nbdev_ch, struct spdk_bdev_io *bdev_io)
+{
+	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
+	if(is_int_polling(nbdev_ch)){
+		struct timespec ts = bdev_nvme_get_io_delay(bdev_io);
+		spdk_set_new_timer(ts);
+		return nbdev_ch->current_io_path == NULL ? _bdev_nvme_find_io_path(nbdev_ch) : nbdev_ch->current_io_path;
+	}
+	if (spdk_likely(nbdev_ch->current_io_path != NULL)) { // 当前路径不为空
+		if (nbdev_ch->mp_policy == BDEV_NVME_MP_POLICY_ACTIVE_PASSIVE) { // 如果是主备模式，直接返回当前路径
+			return nbdev_ch->current_io_path;
+		} else if (nbdev_ch->mp_selector == BDEV_NVME_MP_SELECTOR_ROUND_ROBIN) { // 如果是轮询模式
+			size_t io_size = get_io_size(nbdev_io);
+			if(io_size < (4096 << 5)){
+				if (++nbdev_ch->rr_counter < nbdev_ch->rr_min_io) { // 如果当前路径的请求数小于最小请求数，返回当前路径
+					return nbdev_ch->current_io_path;
+				}
+				nbdev_ch->rr_counter = 0; // 否则清零计数器
+			}else{
+				spdk_get_int_io_channel(bdev_io->bdev->ctxt, false);
+				struct spdk_io_channel* int_channel = spdk_get_int_io_channel(nbdev_ch->current_io_path->nvme_ns->ctrlr, false);
+				struct nvme_bdev_channel *int_nbdev_ch = spdk_io_channel_get_ctx(int_channel);
+				return _bdev_nvme_find_io_path(int_nbdev_ch);
+			}
+		}
+	}
+
+	if (nbdev_ch->mp_policy == BDEV_NVME_MP_POLICY_ACTIVE_PASSIVE ||
+	    nbdev_ch->mp_selector == BDEV_NVME_MP_SELECTOR_ROUND_ROBIN) { // 如果是主备模式或者轮询模式
+		size_t io_size = get_io_size(nbdev_io);
+		if(io_size < (4096 << 5)){
+			return _bdev_nvme_find_io_path(nbdev_ch); // 返回找到的路径
+		} else {
+			spdk_get_int_io_channel(bdev_io->bdev->ctxt, false);
+			struct spdk_io_channel* int_channel = spdk_get_int_io_channel(nvme_io_path_get_next(nbdev_ch, nbdev_ch->current_io_path)->nvme_ns->ctrlr, false);
+			struct nvme_bdev_channel *int_nbdev_ch = spdk_io_channel_get_ctx(int_channel);
+			return _bdev_nvme_find_io_path(int_nbdev_ch);
+		}
+	} else {
+		return _bdev_nvme_find_io_path_min_qd(nbdev_ch); // 返回找到的路径 (具有最小队列深度)
+	}
+}
+
 /* Return true if there is any io_path whose qpair is active or ctrlr is not failed,
  * or false otherwise.
  *
@@ -1660,6 +1735,88 @@ bdev_nvme_poll(void *arg)
 	return num_completions > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE; // 如果有完成的请求，返回BUSY，否则返回IDLE
 }
 
+static int
+bdev_nvme_int_poll(void *arg)
+{
+	struct nvme_poll_group *group = arg;
+	int64_t num_completions;
+
+	if (group->collect_spin_stat && group->start_ticks == 0) { // 配置了收集自旋统计（collect_spin_stat）并且start_ticks为0
+		group->start_ticks = spdk_get_ticks();
+	}
+
+	num_completions = spdk_nvme_int_group_process_completions(group->group, 0,
+			  bdev_nvme_disconnected_qpair_cb); // 轮询完成队列
+	// if (group->collect_spin_stat) {
+	// 	if (num_completions > 0) { // 如果有完成的请求
+	// 		if (group->end_ticks != 0) { // 如果end_ticks不为0，更新
+	// 			group->spin_ticks += (group->end_ticks - group->start_ticks);
+	// 			group->end_ticks = 0;
+	// 		}
+	// 		group->start_ticks = 0;
+	// 	} else {
+	// 		group->end_ticks = spdk_get_ticks();
+	// 	}
+	// }
+
+	if (spdk_unlikely(num_completions < 0)) { // 如果轮询失败
+		// bdev_nvme_check_io_qpairs(group);
+		// TODO: 使用其他函数替代
+	}
+
+	return num_completions > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE; // 如果有完成的请求，返回BUSY，否则返回IDLE
+}
+
+static int
+bdev_nvme_int_polling(void *arg)
+{
+	struct nvme_poll_group *group = arg;
+	int64_t num_completions;
+
+	if (group->collect_spin_stat && group->start_ticks == 0) { // 配置了收集自旋统计（collect_spin_stat）并且start_ticks为0
+		group->start_ticks = spdk_get_ticks();
+	}
+
+	num_completions = spdk_nvme_int_poll_group_process_completions(group->group, 0,
+			  bdev_nvme_disconnected_qpair_cb); // 轮询完成队列
+	// if (group->collect_spin_stat) {
+	// 	if (num_completions > 0) { // 如果有完成的请求
+	// 		if (group->end_ticks != 0) { // 如果end_ticks不为0，更新
+	// 			group->spin_ticks += (group->end_ticks - group->start_ticks);
+	// 			group->end_ticks = 0;
+	// 		}
+	// 		group->start_ticks = 0;
+	// 	} else {
+	// 		group->end_ticks = spdk_get_ticks();
+	// 	}
+	// }
+
+	if (spdk_unlikely(num_completions < 0)) { // 如果轮询失败
+		// bdev_nvme_check_io_qpairs(group);
+		// TODO: 使用其他函数替代
+	}
+
+	return num_completions > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE; // 如果有完成的请求，返回BUSY，否则返回IDLE
+}
+
+static int bdev_nvme_int_poll_event(void* arg){
+	/* 预期只管理一个队列 */
+	int rc;
+	do{
+		rc = bdev_nvme_int_polling(arg);
+		if(rc == SPDK_POLLER_BUSY){
+			struct timespec *ts = spdk_get_new_timer();
+			if (timerfd_settime(spdk_get_int_timerfd(), 0, spdk_get_new_timer(), NULL) == -1) {
+				SPDK_ERRLOG("Failed to set timerfd time.\n");
+				return -1; // TODO: 错误处理怎么做
+			}
+			spdk_free_timer();
+			break;
+		}
+	}while (1);
+	return rc;
+}
+
 static int bdev_nvme_poll_adminq(void *arg);
 
 static void
@@ -1746,7 +1903,7 @@ bdev_nvme_destruct(void *ctx)
 }
 
 static int
-bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
+bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair, uint8_t int_mode)
 {
 	struct nvme_ctrlr *nvme_ctrlr;
 	struct spdk_nvme_io_qpair_opts opts;
@@ -1762,8 +1919,15 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 	opts.io_queue_requests = spdk_max(g_opts.io_queue_requests, opts.io_queue_requests);
 	g_opts.io_queue_requests = opts.io_queue_requests;
 
-	// TODO: 设置哪些pair需要中断或者混合轮询 (设置opts.interupt_mode)
-
+	if(int_mode == 1){
+		opts.interupt_mode = true;
+	}
+	else if(int_mode == 2){
+		opts.interupt_roll_mode = true;
+	}
+	else{
+		opts.interupt_mode = false;
+	}
 	qpair = spdk_nvme_ctrlr_alloc_io_qpair(nvme_ctrlr->ctrlr, &opts, sizeof(opts)); // 分配IO队列
 	if (qpair == NULL) {
 		return -1;
@@ -1773,15 +1937,19 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 			   spdk_nvme_qpair_get_id(qpair), spdk_thread_get_id(nvme_ctrlr->thread));
 
 	assert(nvme_qpair->group != NULL);
-	if(opts.interupt_mode){
-		rc = spdk_nvme_int_group_add(qpair);
+	if(opts.interupt_mode){ // 根据需要将其添加到中断组
+		rc = spdk_nvme_int_group_add(nvme_qpair->group->group, qpair, spdk_get_int_efd());
 		if (rc != 0) {
 			SPDK_ERRLOG("Unable to add qpair to interrupt group.\n");
 			goto err;
 		}
 	}
 	else if(opts.interupt_roll_mode){
-		// TODO: 根据需要将其添加到中断轮询组(中断组已添加)
+		rc = spdk_nvme_int_poll_group_add(nvme_qpair->group->group, qpair);
+		if (rc != 0) {
+			SPDK_ERRLOG("Unable to add qpair to interrupt poll group.\n");
+			goto err;
+		}
 	}
 	else{ // 这是原本默认内容
 		rc = spdk_nvme_poll_group_add(nvme_qpair->group->group, qpair); // 将队列添加到轮询组
@@ -2230,7 +2398,10 @@ bdev_nvme_reset_create_qpair(struct spdk_io_channel_iter *i)
 	struct nvme_ctrlr_channel *ctrlr_ch = spdk_io_channel_get_ctx(_ch);
 	int rc;
 
-	rc = bdev_nvme_create_qpair(ctrlr_ch->qpair);
+	// bool int_mode = ctrlr_ch->qpair->qpair->interupt_index != 0xFF;
+	// TODO: 思考一种方案去做这件事 (解析int_mode到底是什么)
+	bool int_mode = false;
+	rc = bdev_nvme_create_qpair(ctrlr_ch->qpair, int_mode);
 	if (rc == 0) {
 		ctrlr_ch->connect_poller = SPDK_POLLER_REGISTER(bdev_nvme_reset_check_qpair_connected,
 					   ctrlr_ch, 0);
@@ -3163,7 +3334,7 @@ bdev_nvme_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 	}
 
 	spdk_trace_record(TRACE_BDEV_NVME_IO_START, 0, 0, (uintptr_t)nbdev_io, (uintptr_t)bdev_io);
-	nbdev_io->io_path = bdev_nvme_find_io_path(nbdev_ch); // 查找IO路径
+	nbdev_io->io_path = bdev_nvme_find_io_path_ai(nbdev_ch, bdev_io); // 查找IO路径
 	if (spdk_unlikely(!nbdev_io->io_path)) { // 如果没有找到IO路径
 		if (!bdev_nvme_io_type_is_admin(bdev_io->type)) { // 如果不是管理命令
 			bdev_nvme_io_complete(nbdev_io, -ENXIO); // 完成IO，返回错误
@@ -3246,7 +3417,7 @@ bdev_nvme_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 }
 
 static int
-nvme_qpair_create(struct nvme_ctrlr *nvme_ctrlr, struct nvme_ctrlr_channel *ctrlr_ch)
+nvme_qpair_create(struct nvme_ctrlr *nvme_ctrlr, struct nvme_ctrlr_channel *ctrlr_ch, uint8_t int_mode)
 {
 	struct nvme_qpair *nvme_qpair;
 	struct spdk_io_channel *pg_ch;
@@ -3281,7 +3452,7 @@ nvme_qpair_create(struct nvme_ctrlr *nvme_ctrlr, struct nvme_ctrlr_channel *ctrl
 		/* If a nvme_ctrlr is disabled, don't try to create qpair for it. Qpair will
 		 * be created when it's enabled.
 		 */
-		rc = bdev_nvme_create_qpair(nvme_qpair);
+		rc = bdev_nvme_create_qpair(nvme_qpair, int_mode);
 		if (rc != 0) {
 			/* nvme_ctrlr can't create IO qpair if connection is down.
 			 * If reconnect_delay_sec is non-zero, creating IO qpair is retried
@@ -3317,7 +3488,9 @@ bdev_nvme_create_ctrlr_channel_cb(void *io_device, void *ctx_buf)
 
 	TAILQ_INIT(&ctrlr_ch->pending_resets);
 
-	return nvme_qpair_create(nvme_ctrlr, ctrlr_ch);
+	uint8_t int_mode = *((uint8_t*)ctx_buf);
+
+	return nvme_qpair_create(nvme_ctrlr, ctrlr_ch, int_mode);
 }
 
 static void
@@ -3475,6 +3648,9 @@ bdev_nvme_create_poll_group_cb(void *io_device, void *ctx_buf)
 	}
 
 	group->poller = SPDK_POLLER_REGISTER(bdev_nvme_poll, group, g_opts.nvme_ioq_poll_period_us);
+	// TODO: 保证spdk_get_int_thread最先执行
+	spdk_interrupt_register_for_events_and_thread(spdk_get_int_efd(), 10, spdk_get_int_thread(), bdev_nvme_int_poll, group, "nvme_int_event");
+	spdk_interrupt_register_for_events_and_thread(spdk_get_int_poll_efd(), 10, spdk_get_int_poll_thread(), bdev_nvme_int_poll_event, group, "nvme_int_poll_event");
 
 	if (group->poller == NULL) {
 		spdk_nvme_poll_group_destroy(group->group);

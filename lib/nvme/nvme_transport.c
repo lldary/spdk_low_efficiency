@@ -115,7 +115,7 @@ struct spdk_nvme_ctrlr *nvme_transport_ctrlr_construct(const struct spdk_nvme_tr
 	return ctrlr;
 }
 
-int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index)
+int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, int efd)
 {
 	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
 
@@ -125,7 +125,7 @@ int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index)
 	}
 
 	if (transport->ops.ctrlr_alloc_msix) {
-		return transport->ops.ctrlr_alloc_msix(ctrlr, index);
+		return transport->ops.ctrlr_alloc_msix(ctrlr, index, efd);
 	}
 
 	return -ENOTSUP;

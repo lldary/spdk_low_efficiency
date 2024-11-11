@@ -235,7 +235,6 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 			}
 		}
 	}
-	// TODO: 混合轮询
 
 	nvme_pcie_qpair_reset(qpair);
 

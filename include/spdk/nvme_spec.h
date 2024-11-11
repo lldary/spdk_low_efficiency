@@ -1961,7 +1961,7 @@ enum spdk_nvme_dsm_attribute {
 	SPDK_NVME_DSM_ATTR_INTEGRAL_WRITE		= 0x2,
 	SPDK_NVME_DSM_ATTR_DEALLOCATE			= 0x4,
 };
-
+// TODO: 这个结构是描述nvme硬盘的功耗的？
 struct spdk_nvme_power_state {
 	uint16_t mp;				/* bits 15:00: maximum power */
 

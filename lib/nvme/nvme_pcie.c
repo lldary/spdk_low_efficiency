@@ -1114,7 +1114,7 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 // #include "env_dpdk/pci_dpdk.h"
 #include <linux/vfio.h>
 
-static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t index)
+static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t index, int efd)
 {
 	int rc;
 
@@ -1126,17 +1126,15 @@ static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t i
 	// TODO: 保存msix中断的信息好像是不必要的
 	spdk_pci_device_enable_interrupt(pci_dev);
 	int device_fd = spdk_pci_device_get_interrupt_efd(pci_dev);
-	// TODO: 这个eventfd应该在别的地方设置，这里是暂时的
-	int event_fd = eventfd(0, 0);
+	int event_fd = efd;
     if (event_fd < 0) {
         SPDK_ERRLOG("Failed to create eventfd");
         return -1;
     }
 	struct vfio_irq_set irq_set = {0};
-    irq_set.argsz = sizeof(irq_set) + sizeof(int); // 确保有足够的空间存储 eventfd
+    irq_set.argsz = sizeof(irq_set) + sizeof(int32_t); // 确保有足够的空间存储 eventfd
     irq_set.flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER; // 使用 eventfd 触发中断
-    // TODO: 再确认一下这里的 index 是不是正确的
-	irq_set.index = index; // MSI-X 表的索引
+	irq_set.index = VFIO_PCI_MSIX_IRQ_INDEX; // MSI-X 表的索引
     irq_set.start = index; // 指定要操作的子索引范围开始
     irq_set.count = 1; // 子索引范围的数量
 

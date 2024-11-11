@@ -150,6 +150,7 @@ struct spdk_thread {
 	/* Indicates whether this spdk_thread currently runs in interrupt. */
 	bool				in_interrupt;
 	bool				poller_unregistered;
+	bool is_interrupt_thread; // 这是辨别是否是我设置的特殊线程的标志
 	struct spdk_fd_group		*fgrp;
 
 	/* User context allocated at the end */
@@ -484,6 +485,30 @@ spdk_thread_lib_fini(void)
 		spdk_mempool_free(g_spdk_msg_mempool);
 		g_spdk_msg_mempool = NULL;
 	}
+}
+
+struct spdk_thread *
+spdk_int_thread_create(const char *name, const struct spdk_cpuset *cpumask){
+	struct spdk_thread *thread = spdk_thread_create(name, cpumask);
+	if(thread == NULL){
+		SPDK_ERRLOG("spdk_int_thread_create failed\n");
+		return NULL;
+	}
+	thread->is_interrupt_thread = true;
+	g_int_thread = thread->id;
+	return thread;
+}
+
+struct spdk_thread *
+spdk_int_poll_thread_create(const char *name, const struct spdk_cpuset *cpumask){
+	struct spdk_thread *thread = spdk_thread_create(name, cpumask);
+	if(thread == NULL){
+		SPDK_ERRLOG("spdk_int_thread_create failed\n");
+		return NULL;
+	}
+	thread->is_interrupt_thread = true;
+	g_int_poll_thread = thread->id;
+	return thread;
 }
 
 struct spdk_thread *
@@ -1268,6 +1293,185 @@ spdk_get_thread(void)
 	return _get_thread();
 }
 
+// TODO: 延迟模型构建
+struct ssd_io_param {
+	uint32_t read_seq_base_cost;
+	uint32_t read_ran_base_cost;
+	uint32_t write_seq_base_cost;
+	uint32_t write_ran_base_cost;
+	uint32_t read_size_cost_rate;
+	uint32_t write_size_cost_rate;
+};
+
+static struct ssd_io_param io_param;
+
+
+void spdk_ssd_io_param_init(void){
+	// TODO: 初始化数据
+}
+
+
+struct timespec spdk_get_write_predict_delay(uint32_t io_size, uint32_t cycle_number){
+	struct timespec delay;
+	delay.tv_sec = 0;
+	delay.tv_nsec = io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate;
+	return delay;
+}
+
+struct timespec spdk_get_read_predict_delay(uint32_t io_size, uint32_t cycle_number){
+	struct timespec delay;
+	delay.tv_sec = 0;
+	delay.tv_nsec = io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate; // TODO: 时间预估一个简单模型
+	return delay;
+}
+
+
+
+
+
+
+
+
+
+struct spdk_thread *spdk_get_int_thread(void){
+	struct spdk_thread *thread = spdk_thread_get_by_id(g_int_thread);
+	if(thread == NULL){
+		SPDK_ERRLOG("spdk_thread_get_by_id failed\n");
+		return NULL;
+	}
+	return thread;
+}
+
+struct spdk_thread *spdk_get_int_poll_thread(void){
+	struct spdk_thread *thread = spdk_thread_get_by_id(g_int_poll_thread);
+	if(thread == NULL){
+		SPDK_ERRLOG("spdk_thread_get_by_id failed\n");
+		return NULL;
+	}
+	spdk_ssd_io_param_init();
+	return thread;
+}
+
+int spdk_get_int_efd(void){
+	// struct spdk_thread *thread = spdk_get_int_thread();
+	// if(thread == NULL){
+	// 	SPDK_ERRLOG("spdk_get_int_thread failed\n");
+	// 	return -1;
+	// }
+	static int efd = 0;
+	if(efd == 0){
+		efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+		if(efd < 0){
+			SPDK_ERRLOG("eventfd failed\n");
+			return -1;
+		}
+		return efd;
+	}
+	return efd;
+}
+
+int spdk_get_int_poll_efd(void){
+	// struct spdk_thread *thread = spdk_get_int_thread();
+	// if(thread == NULL){
+	// 	SPDK_ERRLOG("spdk_get_int_thread failed\n");
+	// 	return -1;
+	// }
+	static int efd = 0;
+	if(efd == 0){
+		efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+		if(efd < 0){
+			SPDK_ERRLOG("eventfd failed\n");
+			return -1;
+		}
+		return efd;
+	}
+	return efd;
+}
+// TODO: 这个头文件临时放置在这里
+#include <linux/time.h>  
+int spdk_get_int_timerfd(void){
+	static int timerfd = 0;
+	if(timerfd == 0){
+		timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+		if(timerfd < 0){
+			SPDK_ERRLOG("timerfd_create failed\n");
+			return -1;
+		}
+	}
+	return timerfd;
+}
+// TODO: 临时放在这里
+struct timerlist{
+	struct timespec ts;
+	struct timerlist *next;
+};
+
+static struct timerlist *head = NULL;
+
+int spdk_set_new_timer(struct timespec timer_spec){
+	if(head == NULL){
+		int timerfd = spdk_get_int_timerfd();
+		struct itimerspec curr_value;
+		if(timerfd_gettime(timerfd, &curr_value)==-1){
+			SPDK_ERRLOG("timerfd_gettime failed\n");
+			return -1;
+		}
+		if(curr_value.it_value.tv_sec == 0 && curr_value.it_value.tv_nsec == 0){
+			struct itimerspec new_value;
+			new_value.it_interval.tv_sec = 0;
+			new_value.it_interval.tv_nsec = 0;
+			new_value.it_value.tv_sec = timer_spec.tv_sec;
+			new_value.it_value.tv_nsec = timer_spec.tv_nsec;
+			if(timerfd_settime(timerfd, 0, &new_value, NULL)==-1){
+				SPDK_ERRLOG("timerfd_settime failed\n");
+				return -1;
+			}
+			return 0;
+		}		
+		head = (struct timerlist *)malloc(sizeof(struct timerlist));
+		if(head == NULL){
+			SPDK_ERRLOG("malloc failed\n");
+			return -1;
+		}
+		head->ts = timer_spec;
+		head->next = NULL;
+		return 0;
+	}
+	else{
+		struct timerlist *tmp = head;
+		while(tmp->next != NULL){
+			tmp = tmp->next;
+		}
+		tmp->next = (struct timerlist *)malloc(sizeof(struct timerlist));
+		if(tmp->next == NULL){
+			SPDK_ERRLOG("malloc failed\n");
+			return -1;
+		}
+		tmp->next->ts = timer_spec;
+		tmp->next->next = NULL;
+		return 0;
+	}
+	return -1;
+}
+
+struct timespec* spdk_get_new_timer(void){
+	if(head == NULL){
+		return NULL;
+	}
+	struct timespec *ts = &(head->ts);
+	return ts;
+}
+
+void spdk_del_head_timer(void){
+	if(head == NULL){
+		return;
+	}
+	struct timerlist *tmp = head;
+	head = head->next;
+	free(tmp);
+	return;
+}
+
 const char *
 spdk_thread_get_name(const struct spdk_thread *thread)
 {
@@ -1354,7 +1558,7 @@ thread_send_msg_notification(const struct spdk_thread *target_thread)
 
 	return 0;
 }
-
+// TODO: 或许可以用这个实现中断轮询
 int
 spdk_thread_send_msg(const struct spdk_thread *thread, spdk_msg_fn fn, void *ctx)
 {
@@ -1643,7 +1847,7 @@ convert_us_to_ticks(uint64_t us)
 		return 0;
 	}
 }
-
+// TODO: 或许可以做成中断轮询
 static struct spdk_poller *
 poller_register(spdk_poller_fn fn,
 		void *arg,
@@ -2363,7 +2567,94 @@ spdk_get_io_channel(void *io_device)
 	dev->refcnt++;
 
 	pthread_mutex_unlock(&g_devlist_mutex);
+	uint8_t *int_mode = (uint8_t*)((uint8_t *)ch + sizeof(*ch));
+	*int_mode = 0;
+	rc = dev->create_cb(io_device, (uint8_t *)ch + sizeof(*ch));
+	if (rc != 0) {
+		pthread_mutex_lock(&g_devlist_mutex);
+		RB_REMOVE(io_channel_tree, &ch->thread->io_channels, ch);
+		dev->refcnt--;
+		free(ch);
+		SPDK_ERRLOG("could not create io_channel for io_device %s (%p): %s (rc=%d)\n",
+			    dev->name, io_device, spdk_strerror(-rc), rc);
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
 
+	spdk_trace_record(TRACE_THREAD_IOCH_GET, 0, 0, (uint64_t)spdk_io_channel_get_ctx(ch), 1);
+	return ch;
+}
+
+struct spdk_io_channel *
+spdk_get_int_io_channel(void *io_device, bool poll_mode)
+{
+	struct spdk_io_channel *ch;
+	struct spdk_thread *thread;
+	struct io_device *dev;
+	int rc;
+
+	pthread_mutex_lock(&g_devlist_mutex);
+	dev = io_device_get(io_device);
+	if (dev == NULL) {
+		SPDK_ERRLOG("could not find io_device %p\n", io_device);
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	thread = poll_mode ? spdk_get_int_poll_thread() : spdk_get_int_thread();
+	if (!thread) {
+		SPDK_ERRLOG("No thread allocated\n");
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	if (spdk_unlikely(thread->state == SPDK_THREAD_STATE_EXITED)) {
+		SPDK_ERRLOG("Thread %s is marked as exited\n", thread->name);
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	ch = thread_get_io_channel(thread, dev);
+	if (ch != NULL) {
+		ch->ref++;
+
+		SPDK_DEBUGLOG(thread, "Get io_channel %p for io_device %s (%p) on thread %s refcnt %u\n",
+			      ch, dev->name, dev->io_device, thread->name, ch->ref);
+
+		/*
+		 * An I/O channel already exists for this device on this
+		 *  thread, so return it.
+		 */
+		pthread_mutex_unlock(&g_devlist_mutex);
+		spdk_trace_record(TRACE_THREAD_IOCH_GET, 0, 0,
+				  (uint64_t)spdk_io_channel_get_ctx(ch), ch->ref);
+		return ch;
+	}
+
+	ch = calloc(1, sizeof(*ch) + dev->ctx_size);
+	if (ch == NULL) {
+		SPDK_ERRLOG("could not calloc spdk_io_channel\n");
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	ch->dev = dev;
+	ch->destroy_cb = dev->destroy_cb;
+	ch->thread = thread;
+	ch->ref = 1;
+	ch->destroy_ref = 0;
+	RB_INSERT(io_channel_tree, &thread->io_channels, ch);
+
+	SPDK_DEBUGLOG(thread, "Get io_channel %p for io_device %s (%p) on thread %s refcnt %u\n",
+		      ch, dev->name, dev->io_device, thread->name, ch->ref);
+
+	dev->refcnt++;
+
+	pthread_mutex_unlock(&g_devlist_mutex);
+
+	uint8_t *int_mode = (uint8_t*)((uint8_t *)ch + sizeof(*ch));
+	*int_mode = poll_mode? 2 : 1;
+	// TODO: 如何识别设备是nvme设备？
 	rc = dev->create_cb(io_device, (uint8_t *)ch + sizeof(*ch));
 	if (rc != 0) {
 		pthread_mutex_lock(&g_devlist_mutex);
@@ -2748,8 +3039,8 @@ thread_interrupt_msg_process(void *arg)
 	SPIN_ASSERT(thread->lock_count == 0, SPIN_ERR_HOLD_DURING_SWITCH);
 	if (spdk_unlikely(!thread->in_interrupt)) { // 检查线程是否仍处于中断模式。如果不在中断模式，说明线程可能在处理消息的过程中切换到了轮询模式
 		/* The thread transitioned to poll mode in a msg during the above processing.
-		 * Clear msg_fd since thread messages will be polled directly in poll mode.
-		 */
+		* Clear msg_fd since thread messages will be polled directly in poll mode.
+		*/
 		rc = read(thread->msg_fd, &notify, sizeof(notify)); // 再次读取 msg_fd 中的消息，以确认消息事件，防止切换过程丢失通知
 		if (rc < 0 && errno != EAGAIN) {
 			SPDK_ERRLOG("failed to acknowledge msg queue: %s.\n", spdk_strerror(errno));
@@ -2823,6 +3114,54 @@ spdk_interrupt_register(int efd, spdk_interrupt_fn fn,
 	return spdk_interrupt_register_for_events(efd, SPDK_INTERRUPT_EVENT_IN, fn, arg, name);
 }
 
+struct spdk_interrupt *
+spdk_interrupt_register_for_events_and_thread(int efd, uint32_t events, struct spdk_thread *thread, spdk_interrupt_fn fn, void *arg,
+				   const char *name)
+{
+	struct spdk_interrupt *intr;
+	int ret;
+
+	thread = spdk_get_thread();
+	if (!thread) {
+		assert(false);
+		return NULL;
+	}
+
+	if (spdk_unlikely(thread->state != SPDK_THREAD_STATE_RUNNING)) {
+		SPDK_ERRLOG("thread %s is marked as exited\n", thread->name);
+		return NULL;
+	}
+
+	intr = calloc(1, sizeof(*intr));
+	if (intr == NULL) {
+		SPDK_ERRLOG("Interrupt handler allocation failed\n");
+		return NULL;
+	}
+
+	if (name) {
+		snprintf(intr->name, sizeof(intr->name), "%s", name);
+	} else {
+		snprintf(intr->name, sizeof(intr->name), "%p", fn);
+	}
+
+	intr->efd = efd;
+	intr->thread = thread;
+	intr->fn = fn;
+	intr->arg = arg;
+
+	ret = spdk_fd_group_add_for_events(thread->fgrp, efd, events, _interrupt_wrapper, intr, intr->name);
+
+	if (ret != 0) {
+		SPDK_ERRLOG("thread %s: failed to add fd %d: %s\n",
+			    thread->name, efd, spdk_strerror(-ret));
+		free(intr);
+		return NULL;
+	}
+
+	return intr;
+}
+
+// TODO: 这个函数可以利用
 struct spdk_interrupt *
 spdk_interrupt_register_for_events(int efd, uint32_t events, spdk_interrupt_fn fn, void *arg,
 				   const char *name)
@@ -2932,6 +3271,9 @@ spdk_thread_get_interrupt_fd_group(struct spdk_thread *thread)
 }
 
 static bool g_interrupt_mode = false;
+
+static uint64_t g_int_thread = 1 << 31;
+static uint64_t g_int_poll_thread = 1 << 31;
 
 int
 spdk_interrupt_mode_enable(void)

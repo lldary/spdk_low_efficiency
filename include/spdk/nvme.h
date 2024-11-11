@@ -2791,7 +2791,9 @@ struct spdk_nvme_poll_group *spdk_nvme_qpair_get_optimal_poll_group(struct spdk_
  * 将一个qpair设置为中断模式
  * \return 0 on success, -1 on failure.
  */
-int spdk_nvme_int_group_add(struct spdk_nvme_qpair *qpair);
+int spdk_nvme_int_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair, int efd);
+
+int spdk_nvme_int_poll_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair);
 
 /**
  * Add an spdk_nvme_qpair to a poll group. qpairs may only be added to
@@ -2842,6 +2844,13 @@ int spdk_nvme_poll_group_destroy(struct spdk_nvme_poll_group *group);
  * -EIO if the shared completion queue cannot be polled for the RDMA transport.
  */
 int64_t spdk_nvme_poll_group_process_completions(struct spdk_nvme_poll_group *group,
+		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
+
+
+int64_t spdk_nvme_int_group_process_completions(struct spdk_nvme_poll_group *group,
+		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
+
+int64_t spdk_nvme_int_poll_group_process_completions(struct spdk_nvme_poll_group *group,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
 
 /**
@@ -4379,7 +4388,7 @@ struct spdk_nvme_transport_ops {
 
 	void (*ctrlr_disconnect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
 
-	int (*ctrlr_alloc_msix)(struct spdk_nvme_ctrlr *ctrlr, uint16_t index);
+	int (*ctrlr_alloc_msix)(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, int efd);
 
 	void (*qpair_abort_reqs)(struct spdk_nvme_qpair *qpair, uint32_t dnr);
 
