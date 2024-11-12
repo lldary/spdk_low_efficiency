@@ -494,13 +494,13 @@ nvme_transport_connect_qpair_fail(struct spdk_nvme_qpair *qpair, void *unused)
 	nvme_transport_ctrlr_disconnect_qpair(ctrlr, qpair);
 }
 
-int nvme_transport_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t vector_count)
+int nvme_transport_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t vector_count, uint32_t efd)
 {
 	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
 
 	assert(transport != NULL);
 	if (transport->ops.ctrlr_alloc_msix) {
-		return transport->ops.ctrlr_alloc_msix(ctrlr, vector_count);
+		return transport->ops.ctrlr_alloc_msix(ctrlr, vector_count, efd);
 	}
 	SPDK_ERRLOG("Transport %s does not support ctrlr_alloc_msix callback\n",
 		    ctrlr->trid.trstring);

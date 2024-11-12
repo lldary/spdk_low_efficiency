@@ -169,6 +169,9 @@ static size_t g_ctx_sz = 0;
  */
 static uint64_t g_thread_id = 1;
 
+static uint64_t g_int_thread_id = 1 << 31;
+static uint64_t g_int_poll_thread_id = 1 << 31;
+
 enum spin_error {
 	SPIN_ERR_NONE,
 	/* Trying to use an SPDK lock while not on an SPDK thread */
@@ -495,7 +498,7 @@ spdk_int_thread_create(const char *name, const struct spdk_cpuset *cpumask){
 		return NULL;
 	}
 	thread->is_interrupt_thread = true;
-	g_int_thread = thread->id;
+	g_int_thread_id = thread->id;
 	return thread;
 }
 
@@ -507,7 +510,7 @@ spdk_int_poll_thread_create(const char *name, const struct spdk_cpuset *cpumask)
 		return NULL;
 	}
 	thread->is_interrupt_thread = true;
-	g_int_poll_thread = thread->id;
+	g_int_poll_thread_id = thread->id;
 	return thread;
 }
 
@@ -1340,7 +1343,7 @@ struct timespec spdk_get_read_predict_delay(uint32_t io_size, uint32_t cycle_num
 
 
 struct spdk_thread *spdk_get_int_thread(void){
-	struct spdk_thread *thread = spdk_thread_get_by_id(g_int_thread);
+	struct spdk_thread *thread = spdk_thread_get_by_id(g_int_thread_id);
 	if(thread == NULL){
 		SPDK_ERRLOG("spdk_thread_get_by_id failed\n");
 		return NULL;
@@ -1349,7 +1352,7 @@ struct spdk_thread *spdk_get_int_thread(void){
 }
 
 struct spdk_thread *spdk_get_int_poll_thread(void){
-	struct spdk_thread *thread = spdk_thread_get_by_id(g_int_poll_thread);
+	struct spdk_thread *thread = spdk_thread_get_by_id(g_int_poll_thread_id);
 	if(thread == NULL){
 		SPDK_ERRLOG("spdk_thread_get_by_id failed\n");
 		return NULL;
@@ -1394,7 +1397,7 @@ int spdk_get_int_poll_efd(void){
 	return efd;
 }
 // TODO: 这个头文件临时放置在这里
-#include <linux/time.h>  
+#define CLOCK_MONOTONIC			1
 int spdk_get_int_timerfd(void){
 	static int timerfd = 0;
 	if(timerfd == 0){
@@ -3278,8 +3281,6 @@ spdk_thread_get_interrupt_fd_group(struct spdk_thread *thread)
 
 static bool g_interrupt_mode = false;
 
-static uint64_t g_int_thread = 1 << 31;
-static uint64_t g_int_poll_thread = 1 << 31;
 
 int
 spdk_interrupt_mode_enable(void)
