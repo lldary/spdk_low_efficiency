@@ -5,6 +5,8 @@
  *   Copyright (c) 2022 Dell Inc, or its subsidiaries. All rights reserved.
  */
 
+#include <sys/timerfd.h>
+
 #include "spdk/stdinc.h"
 
 #include "bdev_nvme.h"
@@ -1074,7 +1076,7 @@ bdev_nvme_find_io_path(struct nvme_bdev_channel *nbdev_ch)
 
 static inline size_t get_io_size(struct nvme_bdev_io *nbdev_io){
 	size_t io_size = 0;
-	for(uint32_t i = 0; i < nbdev_io->iovcnt; i++){
+	for(int i = 0; i < nbdev_io->iovcnt; i++){
 		io_size += nbdev_io->iovs[i].iov_len;
 	}
 	return io_size;
@@ -1087,18 +1089,16 @@ static inline bool is_int_polling(struct nvme_bdev_channel *nbdev_ch){
 }
 
 static inline struct timespec bdev_nvme_get_io_delay(struct spdk_bdev_io *bdev_io){
+	struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
+	size_t io_size = get_io_size(nbdev_io);
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
-		struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
-		size_t io_size = get_io_size(nbdev_io);
 		return spdk_get_read_predict_delay(io_size, nbdev_io->iovcnt);
 	case SPDK_BDEV_IO_TYPE_WRITE:
 	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
-		struct nvme_bdev_io *nbdev_io = (struct nvme_bdev_io *)bdev_io->driver_ctx;
-		size_t io_size = get_io_size(nbdev_io);
 		return spdk_get_write_predict_delay(io_size, nbdev_io->iovcnt);
 	default:
-		SPDK_ASSERT_H(0, "Unsupported I/O type %d", bdev_io->type);
+		SPDK_ERRLOG("Unsupported I/O type\n");
 		break;
 	}
 }
@@ -1805,12 +1805,11 @@ static int bdev_nvme_int_poll_event(void* arg){
 	do{
 		rc = bdev_nvme_int_polling(arg);
 		if(rc == SPDK_POLLER_BUSY){
-			struct timespec *ts = spdk_get_new_timer();
 			if (timerfd_settime(spdk_get_int_timerfd(), 0, spdk_get_new_timer(), NULL) == -1) {
 				SPDK_ERRLOG("Failed to set timerfd time.\n");
 				return -1; // TODO: 错误处理怎么做
 			}
-			spdk_free_timer();
+			spdk_del_head_timer();
 			break;
 		}
 	}while (1);
@@ -1938,7 +1937,8 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair, uint8_t int_mode)
 
 	assert(nvme_qpair->group != NULL);
 	if(opts.interupt_mode){ // 根据需要将其添加到中断组
-		rc = spdk_nvme_int_group_add(nvme_qpair->group->group, qpair, spdk_get_int_efd());
+		int eventfd = spdk_get_int_efd();
+		rc = spdk_nvme_int_group_add(nvme_qpair->group->group, qpair, eventfd);
 		if (rc != 0) {
 			SPDK_ERRLOG("Unable to add qpair to interrupt group.\n");
 			goto err;

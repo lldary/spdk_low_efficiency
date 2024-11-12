@@ -80,7 +80,8 @@ spdk_nvme_qpair_get_optimal_poll_group(struct spdk_nvme_qpair *qpair)
 /* 将io pair配置为中断驱动
  * \return 0 on success, negated errno on failure
  */
-int spdk_nvme_int_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair, int efd){
+int
+spdk_nvme_int_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair, int efd){
 	if(efd < 0){
 		SPDK_ERRLOG("Invalid eventfd\n");
 		return -EINVAL;
@@ -95,7 +96,8 @@ int spdk_nvme_int_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme
 	return rc;
 }
 
-int spdk_nvme_int_poll_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair){
+int
+spdk_nvme_int_poll_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair){
 	STAILQ_INSERT_TAIL(&group->int_pollgroups, qpair, poll_group_stailq);
 	return 0;
 }
@@ -202,27 +204,27 @@ spdk_nvme_int_group_process_completions(struct spdk_nvme_poll_group *group,
 	struct spdk_nvme_qpair *qpair, *tmp_qpair;
 	int64_t local_completions = 0, error_reason = 0, num_completions = 0;
 
-	if (disconnected_qpair_cb == NULL) {
-		return -EINVAL;
-	}
+	// if (disconnected_qpair_cb == NULL) {
+	// 	return -EINVAL;
+	// }
 
-	if (spdk_unlikely(group->in_int_completions)) { // 检查是否在处理中
-		return 0;
-	}
-	group->in_int_completions = true;
+	// if (spdk_unlikely(group->in_int_completions)) { // 检查是否在处理中
+	// 	return 0;
+	// }
+	// group->in_int_completions = true;
 
-	STAILQ_FOREACH_SAFE(qpair, &group->int_groups, poll_group_stailq, tmp_qpair) { // 遍历所有的transport poll group
-		local_completions = nvme_transport_qpair_process_completions(qpair, completions_per_qpair);
-		if (spdk_unlikely(local_completions < 0)) {
-			disconnected_qpair_cb(qpair, group->ctx); // 如果处理失败，调用 disconnected_qpair_cb
-			error_reason = -ENXIO;
-		} else if (spdk_likely(num_completions >= 0)) {
-			num_completions += local_completions;
-			/* Just to be safe */
-			assert(num_completions >= 0);
-		}
-	}
-	group->in_int_completions = false;
+	// STAILQ_FOREACH_SAFE(qpair, &group->int_groups, poll_group_stailq, tmp_qpair) { // 遍历所有的transport poll group
+	// 	local_completions = nvme_transport_qpair_process_completions(qpair, completions_per_qpair);
+	// 	if (spdk_unlikely(local_completions < 0)) {
+	// 		disconnected_qpair_cb(qpair, group->ctx); // 如果处理失败，调用 disconnected_qpair_cb
+	// 		error_reason = -ENXIO;
+	// 	} else if (spdk_likely(num_completions >= 0)) {
+	// 		num_completions += local_completions;
+	// 		/* Just to be safe */
+	// 		assert(num_completions >= 0);
+	// 	}
+	// }
+	// group->in_int_completions = false;
 
 	return error_reason ? error_reason : num_completions;
 }
@@ -234,27 +236,27 @@ spdk_nvme_int_poll_group_process_completions(struct spdk_nvme_poll_group *group,
 	struct spdk_nvme_qpair *qpair, *tmp_qpair;
 	int64_t local_completions = 0, error_reason = 0, num_completions = 0;
 
-	if (disconnected_qpair_cb == NULL) {
-		return -EINVAL;
-	}
+	// if (disconnected_qpair_cb == NULL) {
+	// 	return -EINVAL;
+	// }
 
-	if (spdk_unlikely(group->in_int_poll_completions)) { // 检查是否在处理中
-		return 0;
-	}
-	group->in_int_poll_completions = true;
+	// if (spdk_unlikely(group->in_int_poll_completions)) { // 检查是否在处理中
+	// 	return 0;
+	// }
+	// group->in_int_poll_completions = true;
 
-	STAILQ_FOREACH_SAFE(qpair, &group->int_pollgroups, poll_group_stailq, tmp_qpair) { // 遍历所有的transport poll group
-		local_completions = nvme_transport_qpair_process_completions(qpair, completions_per_qpair);
-		if (spdk_unlikely(local_completions < 0)) {
-			disconnected_qpair_cb(qpair, group->ctx); // 如果处理失败，调用 disconnected_qpair_cb
-			error_reason = -ENXIO;
-		} else if (spdk_likely(num_completions >= 0)) {
-			num_completions += local_completions;
-			/* Just to be safe */
-			assert(num_completions >= 0);
-		}
-	}
-	group->in_int_poll_completions = false;
+	// STAILQ_FOREACH_SAFE(qpair, &group->int_pollgroups, poll_group_stailq, tmp_qpair) { // 遍历所有的transport poll group
+	// 	local_completions = nvme_transport_qpair_process_completions(qpair, completions_per_qpair);
+	// 	if (spdk_unlikely(local_completions < 0)) {
+	// 		disconnected_qpair_cb(qpair, group->ctx); // 如果处理失败，调用 disconnected_qpair_cb
+	// 		error_reason = -ENXIO;
+	// 	} else if (spdk_likely(num_completions >= 0)) {
+	// 		num_completions += local_completions;
+	// 		/* Just to be safe */
+	// 		assert(num_completions >= 0);
+	// 	}
+	// }
+	// group->in_int_poll_completions = false;
 
 	return error_reason ? error_reason : num_completions;
 }

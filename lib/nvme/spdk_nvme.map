@@ -119,6 +119,11 @@
 	spdk_nvme_ctrlr_get_discovery_log_page;
 	spdk_nvme_ctrlr_get_registers;
 
+	spdk_nvme_int_poll_group_add;
+	spdk_nvme_int_group_add;
+	spdk_nvme_int_group_process_completions;
+	spdk_nvme_int_poll_group_process_completions;
+
 	spdk_nvme_poll_group_create;
 	spdk_nvme_poll_group_add;
 	spdk_nvme_poll_group_remove;

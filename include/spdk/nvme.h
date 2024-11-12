@@ -2846,7 +2846,6 @@ int spdk_nvme_poll_group_destroy(struct spdk_nvme_poll_group *group);
 int64_t spdk_nvme_poll_group_process_completions(struct spdk_nvme_poll_group *group,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
 
-
 int64_t spdk_nvme_int_group_process_completions(struct spdk_nvme_poll_group *group,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
 
