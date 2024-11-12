@@ -1295,12 +1295,12 @@ spdk_get_thread(void)
 
 // TODO: 延迟模型构建
 struct ssd_io_param {
-	uint32_t read_seq_base_cost;
-	uint32_t read_ran_base_cost;
-	uint32_t write_seq_base_cost;
-	uint32_t write_ran_base_cost;
-	uint32_t read_size_cost_rate;
-	uint32_t write_size_cost_rate;
+	double read_seq_base_cost;
+	double read_ran_base_cost;
+	double write_seq_base_cost;
+	double write_ran_base_cost;
+	double read_size_cost_rate;
+	double write_size_cost_rate;
 };
 
 static struct ssd_io_param io_param;
@@ -1308,20 +1308,26 @@ static struct ssd_io_param io_param;
 
 void spdk_ssd_io_param_init(void){
 	// TODO: 初始化数据
+	io_param.read_size_cost_rate = 1000000000 / 533725184.0;
+	io_param.write_size_cost_rate = 1000000000 / 435159040.0;
+	io_param.read_seq_base_cost = 1000000000 / 29770.14 - io_param.read_size_cost_rate * 4096;
+	io_param.write_seq_base_cost = 1000000000 / 45463.07 - io_param.write_size_cost_rate * 4096;
+	io_param.read_ran_base_cost = 1000000000 / 31125.4 - io_param.read_size_cost_rate * 4096;
+	io_param.write_ran_base_cost = 1000000000 / 53734 - io_param.write_size_cost_rate * 4096;
 }
 
 
 struct timespec spdk_get_write_predict_delay(uint32_t io_size, uint32_t cycle_number){
 	struct timespec delay;
 	delay.tv_sec = 0;
-	delay.tv_nsec = io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate;
+	delay.tv_nsec = floor(io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate);
 	return delay;
 }
 
 struct timespec spdk_get_read_predict_delay(uint32_t io_size, uint32_t cycle_number){
 	struct timespec delay;
 	delay.tv_sec = 0;
-	delay.tv_nsec = io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate; // TODO: 时间预估一个简单模型
+	delay.tv_nsec = floor(io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate); // TODO: 时间预估一个简单模型
 	return delay;
 }
 
