@@ -237,6 +237,21 @@ struct spdk_scheduler {
 	 */
 	void (*get_opts)(struct spdk_json_write_ctx *ctx);
 
+	/**
+	 * Function to set ai scheduler parameters like load_limit.
+	 *
+	 * \param opts Pointer to spdk_json_val struct containing values of parameters
+	 * to be set in scheduler.
+	 */
+	int (*set_ai_opts)(const struct spdk_json_val *opts);
+
+	/**
+	 * Function to get ai current scheduler parameters like load_limit.
+	 *
+	 * \param ctx Pointer to spdk_json_write_ctx struct to be filled with current parameters.
+	 */
+	void (*get_ai_opts)(struct spdk_json_write_ctx *ctx);
+
 	TAILQ_ENTRY(spdk_scheduler)	link;
 };
 
