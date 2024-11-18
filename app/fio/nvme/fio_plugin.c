@@ -751,6 +751,7 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 
 	assert(fio_qpair->qpair == NULL);
 	spdk_nvme_ctrlr_get_default_io_qpair_opts(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
+	qpopts.interupt_mode = true; // 手动添加
 	qpopts.delay_cmd_submit = true;
 	if (fio_options->enable_wrr) {
 		qpopts.qprio = fio_options->wrr_priority;
@@ -1312,7 +1313,19 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 				continue;
 			}
 
-			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+			int efd = spdk_get_int_efd();
+			uint32_t value;
+			int rc = read(efd, &value, sizeof(value));
+			if (rc < 0) {
+				perror("read");
+				exit(EXIT_FAILURE);
+			}
+			else if(rc == 0){
+				/* no event */
+			}
+			else{
+				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+			}
 
 			if (fio_thread->iocq_count >= min) {
 				/* reset the current handling qpair */
