@@ -39,7 +39,7 @@
 
 #define NVME_IO_ALIGN		4096
 
-#define INT_MODE
+// #define INT_MODE
 // #define FRE_CONTROL_MODE
 #ifdef FRE_CONTROL_MODE
 #include <cpufreq.h>
@@ -50,7 +50,7 @@ struct cpu_statistic{
 struct cpu_statistic cpu_stat;
 
 #endif
-// #define INT_POLL_MODE
+#define INT_POLL_MODE
 
 static bool g_spdk_env_initialized;
 static bool g_log_flag_error;
@@ -330,8 +330,7 @@ int start_next_timer(int success_number){
 		pthread_mutex_unlock(&event_lock);
 		return -1;
 	}
-	// if(curr_value.it_value.tv_sec == 0 && curr_value.it_value.tv_nsec == 0){
-	if(1) {
+	if(curr_value.it_value.tv_sec == 0 && curr_value.it_value.tv_nsec == 0 && set_timer == false){
 		struct itimerspec new_value;
 		new_value.it_interval.tv_sec = 0;
 		new_value.it_interval.tv_nsec = 0;
@@ -1029,7 +1028,7 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 
 #endif
 #ifdef INT_MODE
-	int cpu_id = 12; 
+	int cpu_id = 13; 
 	cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(cpu_id, &cpuset);
@@ -1719,7 +1718,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// struct timespec start, end;
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 			uint64_t iocq_count = fio_thread->iocq_count;
-			if(first_choice && set_timer == false){
+			if(first_choice){
 				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 				start_next_timer(1);
 				first_choice = false;
