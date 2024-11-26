@@ -380,12 +380,13 @@ nvme_pcie_ctrlr_cmd_create_io_cq(struct spdk_nvme_ctrlr *ctrlr,
 	cmd->cdw10_bits.create_io_q.qsize = pqpair->num_entries - 1;
 
 	cmd->cdw11_bits.create_io_cq.pc = 1;
-	if (ien) {
+	if (ien || io_que->interrupt_enabled) {
 		cmd->cdw11_bits.create_io_cq.ien = 1;
 		/* The interrupt vector offset starts from 1. We directly map the
 		 * queue id to interrupt vector.
 		 */
 		cmd->cdw11_bits.create_io_cq.iv = io_que->id;
+		SPDK_ERRLOG("The interrupt vector offset starts from 1. We directly map the queue id to interrupt vector.\n");
 	}
 
 	cmd->dptr.prp.prp1 = pqpair->cpl_bus_addr;

@@ -155,6 +155,21 @@ nvme_transport_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 	assert(transport != NULL);
 	return transport->ops.ctrlr_destruct(ctrlr);
 }
+int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, int efd)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	if (transport == NULL) {
+		SPDK_ERRLOG("Transport %s doesn't exist.", ctrlr->trid.trstring);
+		return -ENOENT;
+	}
+
+	if (transport->ops.ctrlr_alloc_msix) {
+		return transport->ops.ctrlr_alloc_msix(ctrlr, index, efd);
+	}
+
+	return -ENOTSUP;
+}
 
 int
 nvme_transport_ctrlr_enable(struct spdk_nvme_ctrlr *ctrlr)

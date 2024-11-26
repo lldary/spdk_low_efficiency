@@ -1812,7 +1812,9 @@ struct spdk_nvme_io_qpair_opts {
 	bool disable_pcie_sgl_merge;
 
 	/* Hole at bytes 67-71. */
-	uint8_t reserved67[5];
+	bool interupt_mode;
+
+	uint8_t reserved67[4];
 
 	/**
 	 * The size of spdk_nvme_io_qpair_opts according to the caller of this library is used for
@@ -1857,6 +1859,12 @@ void spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
 struct spdk_nvme_qpair *spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		const struct spdk_nvme_io_qpair_opts *opts,
 		size_t opts_size);
+
+struct spdk_nvme_qpair *
+spdk_nvme_ctrlr_alloc_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
+			       const struct spdk_nvme_io_qpair_opts *user_opts,
+			       size_t opts_size, int *efd);
+
 
 /**
  * Connect a newly created I/O qpair.
@@ -4617,6 +4625,8 @@ struct spdk_nvme_transport_ops {
 	int (*ctrlr_connect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
 
 	void (*ctrlr_disconnect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
+
+	int (*ctrlr_alloc_msix)(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, int efd);
 
 	void (*qpair_abort_reqs)(struct spdk_nvme_qpair *qpair, uint32_t dnr);
 

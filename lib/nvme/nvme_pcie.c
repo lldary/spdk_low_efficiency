@@ -1087,6 +1087,55 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 	return 0;
 }
 
+
+// TODO: 好好思考一下到底放到哪里
+// #include "env_dpdk/pci_dpdk.h"
+#include <linux/vfio.h>
+
+static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t index, int efd)
+{
+	int rc;
+	SPDK_ERRLOG("nvme_pcie_ctrlr_alloc_msix\n");
+	// TODO: 不允许MSIX解决方案
+	struct spdk_pci_device *pci_dev = pctrlr->devhandle;
+	// TODO: 保存msix中断的信息好像是不必要的
+	// spdk_pci_device_enable_interrupt(pci_dev);
+	spdk_pci_device_enable_interrupts(pci_dev, index+1);
+	// if(dpdk_pci_device_interrupt_cap_multi(pci_dev->dev_handle) != 1) {
+	// 	SPDK_ERRLOG("MSI-X is not supported\n");
+	// 	return -1;
+	// }
+	return spdk_pci_device_get_interrupt_efd_by_index(pci_dev, index);
+	// int device_fd = spdk_pci_device_get_interrupt_efd(pci_dev);
+	// int32_t event_fd = efd;
+    // if (event_fd < 0) {
+    //     SPDK_ERRLOG("Failed to create eventfd");
+    //     return -1;
+    // }
+	// struct vfio_irq_set irq_set = {0};
+    // irq_set.argsz = sizeof(irq_set) + sizeof(int32_t); // 确保有足够的空间存储 eventfd
+    // irq_set.flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER; // 使用 eventfd 触发中断
+	// irq_set.index = VFIO_PCI_MSIX_IRQ_INDEX; // MSI-X 表的索引
+    // irq_set.start = index; // 指定要操作的子索引范围开始
+    // irq_set.count = 1; // 子索引范围的数量
+
+    // // 将 eventfd 放入 data 数组
+    // int* data_ptr = (int*)&irq_set.data;
+    // *data_ptr = event_fd;
+
+    // // 使用 ioctl 设置 MSI-X 中断
+    // if (ioctl(device_fd, VFIO_DEVICE_SET_IRQS, &irq_set)) {
+    //     SPDK_ERRLOG("Failed to set IRQs");
+    //     return -1;
+    // }
+	if (rc < 0) {
+		SPDK_ERRLOG("spdk_pci_device_alloc_irqs() failed\n");
+		return rc;
+	}
+	return 0;
+}
+
+
 void
 spdk_nvme_pcie_set_hotplug_filter(spdk_nvme_pcie_hotplug_filter_cb filter_cb)
 {
@@ -1139,6 +1188,8 @@ const struct spdk_nvme_transport_ops pcie_ops = {
 	.ctrlr_delete_io_qpair = nvme_pcie_ctrlr_delete_io_qpair,
 	.ctrlr_connect_qpair = nvme_pcie_ctrlr_connect_qpair,
 	.ctrlr_disconnect_qpair = nvme_pcie_ctrlr_disconnect_qpair,
+
+	.ctrlr_alloc_msix = nvme_pcie_ctrlr_alloc_msix, // 我添加的
 
 	.qpair_abort_reqs = nvme_pcie_qpair_abort_reqs,
 	.qpair_reset = nvme_pcie_qpair_reset,

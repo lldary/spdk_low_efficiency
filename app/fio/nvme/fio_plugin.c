@@ -39,6 +39,19 @@
 
 #define NVME_IO_ALIGN		4096
 
+#define INT_MODE
+// #define FRE_CONTROL_MODE
+#ifdef FRE_CONTROL_MODE
+#include <cpufreq.h>
+struct cpu_statistic{
+	unsigned long long idle;
+	unsigned long long total;
+};
+struct cpu_statistic cpu_stat;
+
+#endif
+// #define INT_POLL_MODE
+
 static bool g_spdk_env_initialized;
 static bool g_log_flag_error;
 static int g_spdk_enable_sgl = 0;
@@ -147,6 +160,200 @@ struct spdk_fio_probe_ctx {
 	char			hostnqn[SPDK_NVMF_NQN_MAX_LEN + 1];
 	struct fio_file		*f; /* fio_file given by user */
 };
+
+#ifdef INT_POLL_MODE
+struct ssd_io_param {
+	double read_seq_base_cost;
+	double read_ran_base_cost;
+	double write_seq_base_cost;
+	double write_ran_base_cost;
+	double read_size_cost_rate;
+	double write_size_cost_rate;
+};
+
+
+pthread_mutex_t event_lock;
+
+bool set_timer = false;
+
+static struct ssd_io_param io_param;
+#include <sys/timerfd.h>
+#define CLOCK_MONOTONIC			1
+int spdk_get_int_timerfd(void){
+	static int timerfd = 0;
+	if(timerfd == 0){
+		timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
+		if(timerfd < 0){
+			SPDK_ERRLOG("timerfd_create failed\n");
+			return -1;
+		}
+		SPDK_ERRLOG("timerfd_create success\n");
+	}
+	// SPDK_ERRLOG("get timerfd success\n");
+	return timerfd;
+}
+
+
+void spdk_ssd_io_param_init(void){
+	// TODO: 初始化数据
+	io_param.read_size_cost_rate = 1000000000 / 533725184.0;
+	io_param.write_size_cost_rate = 1000000000 / 435159040.0;
+	io_param.read_seq_base_cost = 1000000000 / 29770.14 - io_param.read_size_cost_rate * 4096;
+	io_param.write_seq_base_cost = 1000000000 / 45463.07 - io_param.write_size_cost_rate * 4096;
+	io_param.read_ran_base_cost = 1000000000 / 31125.4 - io_param.read_size_cost_rate * 4096;
+	io_param.write_ran_base_cost = 1000000000 / 53734 - io_param.write_size_cost_rate * 4096;
+}
+
+
+struct timespec spdk_get_write_predict_delay(uint32_t io_size){
+	struct timespec delay;
+	delay.tv_sec = 0;
+	delay.tv_nsec = max(floor(0.1 * (io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 0);
+	// SPDK_ERRLOG("write predict delay: %ld\n", delay.tv_nsec);
+	return delay;
+}
+
+struct timespec spdk_get_read_predict_delay(uint32_t io_size){
+	struct timespec delay;
+	delay.tv_sec = 0;
+	delay.tv_nsec = max(floor(0.1 * (io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) - 8000, 0); // TODO: 时间预估一个简单模型
+	// SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
+	return delay;
+}
+
+struct timerlist{
+	struct timespec ts;
+	struct timerlist *next;
+};
+
+static struct timerlist *head = NULL;
+int length = 0;
+
+int spdk_set_new_timer(struct timespec timer_spec){
+	pthread_mutex_lock(&event_lock);
+	if(head == NULL){
+		// int timerfd = spdk_get_int_timerfd();
+		// struct itimerspec curr_value;
+		// if(timerfd_gettime(timerfd, &curr_value)==-1){
+		// 	SPDK_ERRLOG("timerfd_gettime failed\n");
+		// 	pthread_mutex_unlock(&event_lock);
+		// 	return -1;
+		// }
+		// if(curr_value.it_value.tv_sec == 0 && curr_value.it_value.tv_nsec == 0){
+		// 	struct itimerspec new_value;
+		// 	new_value.it_interval.tv_sec = 0;
+		// 	new_value.it_interval.tv_nsec = 0;
+		// 	new_value.it_value.tv_sec = timer_spec.tv_sec;
+		// 	new_value.it_value.tv_nsec = timer_spec.tv_nsec;
+		// 	if(timerfd_settime(timerfd, 0, &new_value, NULL)==-1){
+		// 		SPDK_ERRLOG("timerfd_settime failed\n");
+		// 		pthread_mutex_unlock(&event_lock);
+		// 		return -1;
+		// 	}
+		// 	set_timer = true;
+		// 	// SPDK_ERRLOG("set new timer success\n");
+		// 	pthread_mutex_unlock(&event_lock);
+		// 	return 0;
+		// }		
+		head = (struct timerlist *)malloc(sizeof(struct timerlist));
+		if(head == NULL){
+			SPDK_ERRLOG("malloc failed\n");
+			pthread_mutex_unlock(&event_lock);
+			return -1;
+		}
+		head->ts = timer_spec;
+		head->next = NULL;
+		// length++;
+		// SPDK_ERRLOG("set new timer to list success, length: %d\n", length);
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	else{
+		struct timerlist *tmp = head;
+		while(tmp->next != NULL){
+			tmp = tmp->next;
+		}
+		tmp->next = (struct timerlist *)malloc(sizeof(struct timerlist));
+		if(tmp->next == NULL){
+			SPDK_ERRLOG("malloc failed\n");
+			pthread_mutex_unlock(&event_lock);
+			return -1;
+		}
+		tmp->next->ts = timer_spec;
+		tmp->next->next = NULL;
+		// length++;
+		// SPDK_ERRLOG("set new timer to list success, length: %d\n", length);
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	pthread_mutex_unlock(&event_lock);
+	return -1;
+}
+
+struct timespec* spdk_get_new_timer(void){
+	if(head == NULL){
+		return NULL;
+	}
+	struct timespec *ts = &(head->ts);
+	return ts;
+}
+
+void spdk_del_head_timer(void){
+	if(head == NULL){
+		return;
+	}
+	struct timerlist *tmp = head;
+	head = head->next;
+	free(tmp);
+	// length--;
+	// SPDK_ERRLOG("del old timer success, length: %d\n", length);
+	return;
+}
+
+int start_next_timer(int success_number){
+	// return 0;
+	pthread_mutex_lock(&event_lock);
+	// SPDK_ERRLOG("success number: %d\n", success_number);
+	while(success_number > 1){
+		spdk_del_head_timer();
+		success_number--;
+	}
+	struct timespec *timer_spec = spdk_get_new_timer();
+	if(timer_spec == NULL){
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	int timerfd = spdk_get_int_timerfd();
+	struct itimerspec curr_value;
+	if(timerfd_gettime(timerfd, &curr_value)==-1){
+		SPDK_ERRLOG("timerfd_gettime failed\n");
+		pthread_mutex_unlock(&event_lock);
+		return -1;
+	}
+	// if(curr_value.it_value.tv_sec == 0 && curr_value.it_value.tv_nsec == 0){
+	if(1) {
+		struct itimerspec new_value;
+		new_value.it_interval.tv_sec = 0;
+		new_value.it_interval.tv_nsec = 0;
+		new_value.it_value.tv_sec = timer_spec->tv_sec;
+		new_value.it_value.tv_nsec = timer_spec->tv_nsec;
+		if(timerfd_settime(timerfd, 0, &new_value, NULL)==-1){
+			SPDK_ERRLOG("timerfd_settime failed\n");
+			pthread_mutex_unlock(&event_lock);
+			return -1;
+		}
+		set_timer = true;
+		// SPDK_ERRLOG("start head timer success\n");
+		spdk_del_head_timer();
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}else{
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+}
+
+#endif
 
 static void *
 spdk_fio_poll_ctrlrs(void *arg)
@@ -741,6 +948,27 @@ spdk_fio_setup(struct thread_data *td)
 	return rc;
 }
 
+#ifdef INT_MODE
+static void
+nvme_ctrlr_get_interrupt_done(void *arg, const struct spdk_nvme_cpl *cpl){
+	struct spdk_nvme_ctrlr *ctrlr = (struct spdk_nvme_ctrlr *)arg;
+
+	if (spdk_nvme_cpl_is_error(cpl)) {
+		if ((cpl->status.sct == SPDK_NVME_SCT_GENERIC) &&
+		    (cpl->status.sc == SPDK_NVME_SC_INVALID_FIELD)) {
+			// NVME_CTRLR_DEBUGLOG(ctrlr, "Keep alive timeout Get Feature is not supported\n");
+		} else {
+			// NVME_CTRLR_ERRLOG(ctrlr, "Keep alive timeout Get Feature failed: SC %x SCT %x\n",
+			// 		  cpl->status.sc, cpl->status.sct);
+			// ctrlr->opts.keep_alive_timeout_ms = 0;
+			// nvme_ctrlr_set_state(ctrlr, NVME_CTRLR_STATE_ERROR, NVME_TIMEOUT_INFINITE);
+			return;
+		}
+	} else {
+		SPDK_ERRLOG("Get Feature success: %lu\n", cpl->cdw0);
+	}
+}
+#endif
 static int
 spdk_fio_open(struct thread_data *td, struct fio_file *f)
 {
@@ -751,20 +979,107 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 
 	assert(fio_qpair->qpair == NULL);
 	spdk_nvme_ctrlr_get_default_io_qpair_opts(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
-	qpopts.delay_cmd_submit = true;
+#ifdef INT_MODE
+	qpopts.interupt_mode = true;
+#endif
+	qpopts.delay_cmd_submit = true; // 第一次调用cq才提交命令
 	if (fio_options->enable_wrr) {
 		qpopts.qprio = fio_options->wrr_priority;
 	}
 	qpopts.disable_pcie_sgl_merge = fio_options->disable_pcie_sgl_merge;
+	int efd = 0;
+	fio_qpair->qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts), &efd);
+#ifdef FRE_CONTROL_MODE
+	int cpu_id = 12; 
+	cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
 
-	fio_qpair->qpair = spdk_nvme_ctrlr_alloc_io_qpair(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
-	if (!fio_qpair->qpair) {
-		SPDK_ERRLOG("Cannot allocate nvme io_qpair any more\n");
-		g_error = true;
-		free(fio_qpair);
+    // 将当前线程绑定到指定的 CPU
+    pthread_t thread = pthread_self();
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
+        SPDK_ERRLOG("pthread_setaffinity_np");
+    }
+    else{
+		// 获取当前频率
+		uint64_t cur_freq = cpufreq_get_freq_kernel(cpu_id);
+		// uint64_t min_freq, max_freq;
+		printf("Current frequency of CPU %d: %lu kHz\n", cpu_id, cur_freq);
+		// min_freq = cpufreq_get_freq_min(cpu_id);
+		// max_freq = cpufreq_get_freq_max(cpu_id);
+		struct cpufreq_policy* policy;
+		policy = cpufreq_get_policy(cpu_id);
+		if (policy != NULL) {
+			printf("CPU %u:\n", cpu_id);
+			printf("  Min frequency: %lu kHz\n", policy->min);
+			printf("  Max frequency: %lu kHz\n", policy->max);
+			printf("  Current governor: %s\n", policy->governor);
+		} else {
+			perror("cpufreq_get_policy");
+		}
+		cpufreq_put_policy(policy);
+		// cpufreq_modify_policy_max(cpu_id, 2000000);
+		// cpufreq_set_frequency(cpu_id, 500000UL);
+		cur_freq = cpufreq_get_freq_kernel(cpu_id);
+		printf("Current frequency of CPU %d: %lu kHz\n", cpu_id, cur_freq);
+		// printf("Min frequency: %lu kHz, Max frequency: %lu kHz\n", min_freq, max_freq);
+	}
+	cpu_stat.idle = 0;
+	cpu_stat.total = 0;
+
+#endif
+#ifdef INT_MODE
+	int cpu_id = 12; 
+	cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
+
+    // 将当前线程绑定到指定的 CPU
+    pthread_t thread = pthread_self();
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
+        SPDK_ERRLOG("pthread_setaffinity_np");
+    }
+	cpufreq_set_frequency(cpu_id, 1000000UL);
+	spdk_nvme_ctrlr_cmd_set_feature(fio_ctrlr->ctrlr, SPDK_NVME_FEAT_INTERRUPT_COALESCING, 0, 0, NULL, 0, nvme_ctrlr_get_interrupt_done, fio_ctrlr->ctrlr);
+	SPDK_ERRLOG("efd = %d\n", efd);
+	spdk_get_int_efd(efd);
+	sleep(1);
+	// int flags = fcntl(efd, F_GETFL);
+	// if (flags == -1) {
+	// 	perror("fcntl F_GETFL");
+	// 	exit(EXIT_FAILURE);
+	// }
+	// flags &= ~O_NONBLOCK;
+	// if (fcntl(efd, F_SETFL, flags) == -1) {
+	// 	perror("fcntl F_SETFL");
+	// 	exit(EXIT_FAILURE);
+	// }
+	// if (!fio_qpair->qpair) {
+	// 	SPDK_ERRLOG("Cannot allocate nvme io_qpair any more\n");
+	// 	g_error = true;
+	// 	free(fio_qpair);
+	// 	return -1;
+	// }
+#endif
+#ifdef INT_POLL_MODE
+	int cpu_id = 13; 
+	cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
+
+    // 将当前线程绑定到指定的 CPU
+    pthread_t thread = pthread_self();
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
+        SPDK_ERRLOG("pthread_setaffinity_np");
+    }
+	pthread_mutex_init(&event_lock, NULL);
+	spdk_ssd_io_param_init();
+	efd = spdk_get_int_timerfd();
+	if(efd < 0){
+		SPDK_ERRLOG("efd < 0\n");
 		return -1;
 	}
-
+#endif
 	if (fio_options->print_qid_mappings == 1) {
 		log_info("job %s: %s qid %d\n", td->o.name, f->file_name,
 			 spdk_nvme_qpair_get_id(fio_qpair->qpair));
@@ -781,6 +1096,10 @@ spdk_fio_close(struct thread_data *td, struct fio_file *f)
 	assert(fio_qpair->qpair != NULL);
 	spdk_nvme_ctrlr_free_io_qpair(fio_qpair->qpair);
 	fio_qpair->qpair = NULL;
+#ifdef FRE_CONTROL_MODE
+	double idle_rate = cpu_stat.idle * 100.0 / cpu_stat.total;
+	SPDK_ERRLOG("总轮询数目 %llu，空闲轮询数目：%llu 占比：%lf%%\n", cpu_stat.total, cpu_stat.idle, idle_rate);
+#endif
 	return 0;
 }
 
@@ -1177,6 +1496,10 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 
 	switch (io_u->ddir) {
 	case DDIR_READ:
+#ifdef INT_POLL_MODE
+		struct timespec tsread = spdk_get_read_predict_delay(io_u->xfer_buflen);
+		spdk_set_new_timer(tsread);
+#endif		
 		if (!g_spdk_enable_sgl) {
 			rc = spdk_nvme_ns_cmd_read_with_md(ns, fio_qpair->qpair, io_u->buf, md_buf, lba, lba_count,
 							   spdk_fio_completion_cb, fio_req,
@@ -1189,6 +1512,10 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 		break;
 	case DDIR_WRITE:
+#ifdef INT_POLL_MODE
+		struct timespec tswrite = spdk_get_write_predict_delay(io_u->xfer_buflen);
+		spdk_set_new_timer(tswrite);
+#endif	
 		if (!g_spdk_enable_sgl) {
 			if (!fio_qpair->zone_append_enabled) {
 				rc = spdk_nvme_ns_cmd_write_with_md(ns, fio_qpair->qpair, io_u->buf, md_buf, lba,
@@ -1232,6 +1559,11 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 		break;
 	case DDIR_TRIM:
+#ifdef INT_POLL_MODE
+		struct timespec ts = spdk_get_write_predict_delay(4096);
+		spdk_set_new_timer(ts);
+		// SPDK_ERRLOG("TRIM命令被执行");
+#endif	
 		if (td->io_ops->flags & FIO_ASYNCIO_SYNC_TRIM) {
 			do_io_u_trim(td, io_u);
 			io_u_mark_submit(td, 1);
@@ -1283,7 +1615,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		io_u->error = abs(rc);
 		return FIO_Q_COMPLETED;
 	}
-
+	// SPDK_ERRLOG("spdk_fio_queue填充了一个cmd %u\n", io_u->ddir);
 	return FIO_Q_QUEUED;
 }
 
@@ -1317,7 +1649,13 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	if (fio_thread->fio_qpair_current) {
 		fio_qpair = TAILQ_NEXT(fio_thread->fio_qpair_current, link);
 	}
-
+#ifdef INT_MODE
+	int efd = spdk_get_int_efd(0);
+#endif
+#ifdef INT_POLL_MODE
+	int efd = spdk_get_int_timerfd();
+	bool first_choice = true;
+#endif
 	for (;;) {
 		if (fio_qpair == NULL) {
 			fio_qpair = TAILQ_FIRST(&fio_thread->fio_qpair);
@@ -1332,9 +1670,115 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 				fio_qpair = TAILQ_NEXT(fio_qpair, link);
 				continue;
 			}
+#ifdef FRE_CONTROL_MODE
+			uint64_t count = fio_thread->iocq_count;
+#endif
+
+#ifdef INT_MODE
+			fd_set readfds;
+			FD_ZERO(&readfds);
+			FD_SET(efd, &readfds);
+			struct timeval time_out;
+			time_out.tv_sec = 0;  // 设置超时 100 微秒
+    		time_out.tv_usec = 10000;
+
+			// uint64_t num = fio_thread->iocq_count;
 
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 
+			// if(num != fio_thread->iocq_count)
+			// {
+			// 	SPDK_ERRLOG("获取到的完成数 %u\n", fio_thread->iocq_count - num + 1);
+			// }
+
+			int ret = select(efd + 1, &readfds, NULL, NULL, &time_out);
+			if (ret > 0) {
+				uint64_t value = 0;
+				int rc = read(efd, &value, sizeof(value));
+				// SPDK_ERRLOG("RESULT: %u\n", rc);
+				if(rc < 0){
+					// if(rc == -1 && errno == EAGAIN)
+					// {
+					// 	SPDK_ERRLOG("EAGAIN\n");
+					// }
+					SPDK_ERRLOG("Failed to read from eventfd %d  %d\n", rc, errno);
+					exit(1);
+				}
+				// SPDK_ERRLOG("Read value %lu\n", value);
+				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+			}else if(ret < 0){
+				SPDK_ERRLOG("Failed to read from eventfd %d  %d\n", ret, errno);
+				exit(1);
+			}
+			else{
+				SPDK_ERRLOG("已经超时了\n");
+				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+			}
+#endif
+#ifdef INT_POLL_MODE
+			// struct timespec start, end;
+			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+			uint64_t iocq_count = fio_thread->iocq_count;
+			if(first_choice && set_timer == false){
+				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+				start_next_timer(1);
+				first_choice = false;
+			}
+			uint64_t value = 0;
+			pthread_mutex_lock(&event_lock);
+			set_timer = false;
+			read(efd, &value, sizeof(value));
+			pthread_mutex_unlock(&event_lock);
+			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+			// SPDK_ERRLOG("poll耗时 %ld\n", (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec);
+			// iocq_count = fio_thread->iocq_count;
+			// uint32_t time = 0;
+			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+			while(iocq_count == fio_thread->iocq_count)
+			{
+				// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+				// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+				// time++;
+			}
+			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+			// uint64_t list_time = (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec;
+			// // if(list_time > 20000)
+			// 	SPDK_ERRLOG("获取完成poll耗时 %ld 轮询次数 %u 处理任务数 %lu\n", list_time, time, fio_thread->iocq_count - iocq_count);
+
+#endif
+#if !defined(INT_MODE) && !defined(INT_POLL_MODE)
+			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+#endif
+#ifdef FRE_CONTROL_MODE
+			cpu_stat.total++;
+			cpu_stat.idle += (fio_thread->iocq_count != count) ? 1 : 0;
+			// if(cpu_stat.total > 1000000){
+			// 	// uint64_t cur_freq = cpufreq_get_freq_kernel(12);
+			// 	// if(cpu_stat.idle == 0){
+			// 	// 	cpufreq_set_frequency(12, cur_freq + 10000);
+			// 	// }
+			// 	// else if(cpu_stat.idle > 750000){
+			// 	// 	cpufreq_set_frequency(12, cur_freq - cpu_stat.idle + 500000);
+			// 	// }
+			// 	cpu_stat.total = 0;
+			// 	cpu_stat.idle = 0;
+			// }
+#endif
+#ifdef INT_POLL_MODE
+			// num++;
+			// // SPDK_ERRLOG("获取到的完成数 %u\n", fio_thread->iocq_count - num + 1);
+			// while(num < fio_thread->iocq_count)
+			// {
+			// 	num++;
+			// 	spdk_del_head_timer();
+			// }
+			start_next_timer(fio_thread->iocq_count - iocq_count);
+			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+			// uint64_t list_time = (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec;
+			// if(list_time > 20000)
+				// SPDK_ERRLOG("获取完成poll耗时 %ld 轮询次数 %u 处理任务数 %lu\n", list_time, time, fio_thread->iocq_count - iocq_count);
+#endif
 			if (fio_thread->iocq_count >= min) {
 				/* reset the current handling qpair */
 				fio_thread->fio_qpair_current = fio_qpair;
@@ -1355,7 +1799,6 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			}
 		}
 	}
-
 	/* reset the current handling qpair */
 	fio_thread->fio_qpair_current = fio_qpair;
 	return fio_thread->iocq_count;

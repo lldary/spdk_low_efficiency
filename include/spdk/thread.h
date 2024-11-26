@@ -446,6 +446,8 @@ uint32_t spdk_thread_get_count(void);
  */
 struct spdk_thread *spdk_get_thread(void);
 
+int64_t spdk_get_int_efd(int aefd);
+
 /**
  * Get a thread's name.
  *

@@ -530,6 +530,8 @@ struct spdk_nvme_qpair {
 
 	/* In-band authentication state */
 	struct nvme_auth			auth;
+
+	bool interrupt_enabled;
 };
 
 struct spdk_nvme_poll_group {
@@ -1665,6 +1667,9 @@ struct spdk_nvme_ctrlr *nvme_transport_ctrlr_construct(const struct spdk_nvme_tr
 		const struct spdk_nvme_ctrlr_opts *opts,
 		void *devhandle);
 int nvme_transport_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr);
+
+int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, int efd);
+
 int nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx, bool direct_connect);
 int nvme_transport_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx);
 int nvme_transport_ctrlr_enable(struct spdk_nvme_ctrlr *ctrlr);

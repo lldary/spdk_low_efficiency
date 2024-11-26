@@ -1283,6 +1283,20 @@ spdk_get_thread(void)
 	return _get_thread();
 }
 
+int64_t spdk_get_int_efd(int aefd){
+	static int efd = 0;
+	if(efd == 0 && aefd > 0){
+		// efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+		efd = aefd;
+		if(efd < 0){
+			SPDK_ERRLOG("eventfd failed\n");
+			return -1;
+		}
+		return efd;
+	}
+	return efd;
+}
+
 const char *
 spdk_thread_get_name(const struct spdk_thread *thread)
 {

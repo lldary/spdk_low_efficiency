@@ -15,4 +15,6 @@ C_SRCS = fio_plugin.c
 
 SPDK_LIB_LIST = $(SOCK_MODULES_LIST) nvme vmd
 
+SYS_LIBS += -lcpufreq
+
 include $(SPDK_ROOT_DIR)/mk/spdk.fio.mk

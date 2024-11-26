@@ -390,6 +390,68 @@ nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 	}
 
 	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
+	qpair->interrupt_enabled = false;
+	if (qpair == NULL) {
+		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_create_io_qpair() failed\n");
+		spdk_nvme_ctrlr_free_qid(ctrlr, qid);
+		nvme_ctrlr_unlock(ctrlr);
+		return NULL;
+	}
+
+	TAILQ_INSERT_TAIL(&ctrlr->active_io_qpairs, qpair, tailq);
+
+	nvme_ctrlr_proc_add_io_qpair(qpair);
+
+	nvme_ctrlr_unlock(ctrlr);
+
+	return qpair;
+}
+
+static struct spdk_nvme_qpair *
+nvme_ctrlr_create_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
+			   const struct spdk_nvme_io_qpair_opts *opts, int *efd)
+{
+	int32_t					qid;
+	struct spdk_nvme_qpair			*qpair;
+	union spdk_nvme_cc_register		cc;
+
+	if (!ctrlr) {
+		return NULL;
+	}
+
+	nvme_ctrlr_lock(ctrlr);
+	cc.raw = ctrlr->process_init_cc.raw;
+
+	if (opts->qprio & ~SPDK_NVME_CREATE_IO_SQ_QPRIO_MASK) {
+		nvme_ctrlr_unlock(ctrlr);
+		return NULL;
+	}
+
+	/*
+	 * Only value SPDK_NVME_QPRIO_URGENT(0) is valid for the
+	 * default round robin arbitration method.
+	 */
+	if ((cc.bits.ams == SPDK_NVME_CC_AMS_RR) && (opts->qprio != SPDK_NVME_QPRIO_URGENT)) {
+		NVME_CTRLR_ERRLOG(ctrlr, "invalid queue priority for default round robin arbitration method\n");
+		nvme_ctrlr_unlock(ctrlr);
+		return NULL;
+	}
+
+	qid = spdk_nvme_ctrlr_alloc_qid(ctrlr);
+	if (qid < 0) {
+		nvme_ctrlr_unlock(ctrlr);
+		return NULL;
+	}
+	SPDK_ERRLOG("nvme_ctrlr_create_io_qpair_int: %d\n", *efd);
+	if(opts->interupt_mode)
+		*efd = nvme_transport_alloc_msix(ctrlr, qid, *efd);
+
+	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
+	if(opts->interupt_mode)
+		qpair->interrupt_enabled = true;
+	else
+		qpair->interrupt_enabled = false;
+
 	if (qpair == NULL) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_create_io_qpair() failed\n");
 		spdk_nvme_ctrlr_free_qid(ctrlr, qid);
@@ -495,6 +557,85 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 	}
 
 	qpair = nvme_ctrlr_create_io_qpair(ctrlr, &opts);
+
+	if (qpair == NULL || opts.create_only == true) {
+		goto unlock;
+	}
+
+	rc = spdk_nvme_ctrlr_connect_io_qpair(ctrlr, qpair);
+	if (rc != 0) {
+		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_connect_io_qpair() failed\n");
+		nvme_ctrlr_proc_remove_io_qpair(qpair);
+		TAILQ_REMOVE(&ctrlr->active_io_qpairs, qpair, tailq);
+		spdk_bit_array_set(ctrlr->free_io_qids, qpair->id);
+		nvme_transport_ctrlr_delete_io_qpair(ctrlr, qpair);
+		qpair = NULL;
+		goto unlock;
+	}
+
+unlock:
+	nvme_ctrlr_unlock(ctrlr);
+
+	return qpair;
+}
+
+struct spdk_nvme_qpair *
+spdk_nvme_ctrlr_alloc_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
+			       const struct spdk_nvme_io_qpair_opts *user_opts,
+			       size_t opts_size, int *efd)
+{
+
+	struct spdk_nvme_qpair		*qpair = NULL;
+	struct spdk_nvme_io_qpair_opts	opts;
+	int				rc;
+
+	nvme_ctrlr_lock(ctrlr);
+
+	if (spdk_unlikely(ctrlr->state != NVME_CTRLR_STATE_READY)) {
+		/* When controller is resetting or initializing, free_io_qids is deleted or not created yet.
+		 * We can't create IO qpair in that case */
+		goto unlock;
+	}
+
+	/*
+	 * Get the default options, then overwrite them with the user-provided options
+	 * up to opts_size.
+	 *
+	 * This allows for extensions of the opts structure without breaking
+	 * ABI compatibility.
+	 */
+	spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
+	if (user_opts) {
+		nvme_ctrlr_io_qpair_opts_copy(&opts, user_opts, spdk_min(opts.opts_size, opts_size));
+
+		/* If user passes buffers, make sure they're big enough for the requested queue size */
+		if (opts.sq.vaddr) {
+			if (opts.sq.buffer_size < (opts.io_queue_size * sizeof(struct spdk_nvme_cmd))) {
+				NVME_CTRLR_ERRLOG(ctrlr, "sq buffer size %" PRIx64 " is too small for sq size %zx\n",
+						  opts.sq.buffer_size, (opts.io_queue_size * sizeof(struct spdk_nvme_cmd)));
+				goto unlock;
+			}
+		}
+		if (opts.cq.vaddr) {
+			if (opts.cq.buffer_size < (opts.io_queue_size * sizeof(struct spdk_nvme_cpl))) {
+				NVME_CTRLR_ERRLOG(ctrlr, "cq buffer size %" PRIx64 " is too small for cq size %zx\n",
+						  opts.cq.buffer_size, (opts.io_queue_size * sizeof(struct spdk_nvme_cpl)));
+				goto unlock;
+			}
+		}
+		if(user_opts->interupt_mode){
+			opts.interupt_mode = true;
+			SPDK_ERRLOG("interupt_mode\n");
+		}
+	}
+
+	if (ctrlr->opts.enable_interrupts && opts.delay_cmd_submit) {
+		NVME_CTRLR_ERRLOG(ctrlr, "delay command submit cannot work with interrupts\n");
+		goto unlock;
+	}
+
+	qpair = nvme_ctrlr_create_io_qpair_int(ctrlr, &opts, efd);
+	opts.interupt_mode = false;
 
 	if (qpair == NULL || opts.create_only == true) {
 		goto unlock;
