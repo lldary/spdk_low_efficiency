@@ -924,6 +924,8 @@ int spdk_pci_device_unmap_bar(struct spdk_pci_device *dev, uint32_t bar,
  */
 int spdk_pci_device_enable_interrupt(struct spdk_pci_device *dev);
 
+int spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t efd_count);
+
 /**
  * Disable PCI device interrupts. (Experimental)
  *

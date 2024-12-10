@@ -221,3 +221,15 @@ dpdk_device_scan_allowed(struct rte_device *dev)
 {
 	return g_dpdk_fn_table->device_scan_allowed(dev);
 }
+
+int
+dpdk_pci_device_enable_interrupt_uintr(struct rte_pci_device *rte_dev)
+{
+	return g_dpdk_fn_table->pci_device_enable_interrupt_uintr(rte_dev);
+}
+
+int
+dpdk_pci_device_create_interrupt_efds_uintr(struct rte_pci_device *rte_dev, uint32_t count)
+{
+	return g_dpdk_fn_table->pci_device_create_interrupt_efds_uintr(rte_dev, count);
+}

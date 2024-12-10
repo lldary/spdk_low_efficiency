@@ -1,45 +1,45 @@
 #!/bin/bash
 # 用来跑测试脚本
 # cpufreq-set -c 12 -f 2000000
-# for queue_depth in {1,2,4,8,16,32,64,128}
-# do
-#     # 定义current_time 变量，格式化时间
-#     current_time=`date +"%Y-%m-%d %H:%M:%S"`
-#     echo $current_time
+for queue_depth in {1,2,4,8,16,32,64,128}
+do
+    # 定义current_time 变量，格式化时间
+    current_time=`date +"%Y-%m-%d %H:%M:%S"`
+    echo $current_time
 
-#     sleep 300
-#     current_time=`date +"%Y-%m-%d %H:%M:%S"`
-#     echo $current_time
+    sleep 300
+    current_time=`date +"%Y-%m-%d %H:%M:%S"`
+    echo $current_time
 
-#     echo "LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/write_128k_1_$queue_depth.fio --output=../spdk_int_poll_result_write_128k_$queue_depth.txt"
+    echo "LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/write_128k_1_$queue_depth.fio --output=../spdk_uintr_result_write_128k_$queue_depth.txt"
 
-#     LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/write_128k_1_$queue_depth.fio --output=../spdk_int_poll_result_write_128k_$queue_depth.txt
+    LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/write_128k_1_$queue_depth.fio --output=../spdk_uintr_result_write_128k_$queue_depth.txt
 
-#     current_time=`date +"%Y-%m-%d %H:%M:%S"`
-#     echo ""
-#     echo $current_time
-#     sleep 60
-# done
+    current_time=`date +"%Y-%m-%d %H:%M:%S"`
+    echo ""
+    echo $current_time
+    sleep 60
+done
 
-# for queue_depth in {1,2,4,8,16,32,64,128}
-# do
-#     # 定义current_time 变量，格式化时间
-#     current_time=`date +"%Y-%m-%d %H:%M:%S"`
-#     echo $current_time
+for queue_depth in {1,2,4,8,16,32,64,128}
+do
+    # 定义current_time 变量，格式化时间
+    current_time=`date +"%Y-%m-%d %H:%M:%S"`
+    echo $current_time
 
-#     sleep 300
-#     current_time=`date +"%Y-%m-%d %H:%M:%S"`
-#     echo $current_time
+    sleep 300
+    current_time=`date +"%Y-%m-%d %H:%M:%S"`
+    echo $current_time
 
-#     echo "LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/read_128k_1_$queue_depth.fio --output=../spdk_int_poll_result_read_128k_$queue_depth.txt"
+    echo "LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/read_128k_1_$queue_depth.fio --output=../spdk_uintr_result_read_128k_$queue_depth.txt"
 
-#     LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/read_128k_1_$queue_depth.fio --output=../spdk_int_poll_result_read_128k_$queue_depth.txt
+    LD_PRELOAD=./build/fio/spdk_nvme ../fio/fio ../test_fio/read_128k_1_$queue_depth.fio --output=../spdk_uintr_result_read_128k_$queue_depth.txt
 
-#     current_time=`date +"%Y-%m-%d %H:%M:%S"`
-#     echo ""
-#     echo $current_time
-#     sleep 60
-# done
+    current_time=`date +"%Y-%m-%d %H:%M:%S"`
+    echo ""
+    echo $current_time
+    sleep 60
+done
 
 
 # cpufreq-set -c 12 -f 2300000

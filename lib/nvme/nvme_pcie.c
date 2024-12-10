@@ -1091,7 +1091,7 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 // TODO: 好好思考一下到底放到哪里
 // #include "env_dpdk/pci_dpdk.h"
 #include <linux/vfio.h>
-
+#define USER_INT
 static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t index, int efd)
 {
 	int rc;
@@ -1100,7 +1100,11 @@ static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t i
 	struct spdk_pci_device *pci_dev = pctrlr->devhandle;
 	// TODO: 保存msix中断的信息好像是不必要的
 	// spdk_pci_device_enable_interrupt(pci_dev);
+#ifdef USER_INT	
+	spdk_pci_device_enable_interrupts_uintr(pci_dev, index+1);
+#else
 	spdk_pci_device_enable_interrupts(pci_dev, index+1);
+#endif
 	// if(dpdk_pci_device_interrupt_cap_multi(pci_dev->dev_handle) != 1) {
 	// 	SPDK_ERRLOG("MSI-X is not supported\n");
 	// 	return -1;

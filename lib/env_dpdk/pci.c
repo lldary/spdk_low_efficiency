@@ -846,6 +846,45 @@ spdk_pci_device_enable_interrupts(struct spdk_pci_device *dev, uint32_t efd_coun
 }
 
 int
+spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t efd_count)
+{
+	struct rte_pci_device *rte_dev = dev->dev_handle;
+	int rc;
+
+	if (efd_count == 0) {
+		SPDK_ERRLOG("Invalid efd_count (%u)\n", efd_count);
+		return -EINVAL;
+	}
+
+	/* Detect if device has MSI-X capability */
+	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1) {
+		SPDK_ERRLOG("VFIO MSI-X capability not present for device %s\n",
+			    dpdk_pci_device_get_name(rte_dev));
+		return -ENOTSUP;
+	}
+
+	SPDK_ERRLOG("Using userspace interrupts for device %s\n", dpdk_pci_device_get_name(rte_dev));
+
+	/* Create event file descriptors */
+	rc = dpdk_pci_device_create_interrupt_efds_uintr(rte_dev, efd_count);
+	if (rc) {
+		SPDK_ERRLOG("Can't setup eventfd (%u)\n", efd_count);
+		return rc;
+	}
+
+	/* Bind each event fd to each interrupt vector */
+	rc = dpdk_pci_device_enable_interrupt_uintr(rte_dev);
+	if (rc) {
+		SPDK_ERRLOG("Failed to enable interrupt for PCI device %s\n",
+			    dpdk_pci_device_get_name(rte_dev));
+		dpdk_pci_device_delete_interrupt_efds(rte_dev);
+		return rc;
+	}
+
+	return 0;
+}
+
+int
 spdk_pci_device_disable_interrupts(struct spdk_pci_device *dev)
 {
 	struct rte_pci_device *rte_dev = dev->dev_handle;

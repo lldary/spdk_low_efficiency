@@ -159,6 +159,12 @@ pci_device_enable_interrupt_2211(struct rte_pci_device *rte_dev)
 }
 
 static int
+pci_device_enable_interrupt_uintr_2211(struct rte_pci_device *rte_dev)
+{
+	return rte_intr_enable_uintr(rte_dev->intr_handle);
+}
+
+static int
 pci_device_disable_interrupt_2211(struct rte_pci_device *rte_dev)
 {
 	return rte_intr_disable(rte_dev->intr_handle);
@@ -174,6 +180,12 @@ static int
 pci_device_create_interrupt_efds_2211(struct rte_pci_device *rte_dev, uint32_t count)
 {
 	return rte_intr_efd_enable(rte_dev->intr_handle, count);
+}
+
+static int
+pci_device_create_interrupt_efds_uintr_2211(struct rte_pci_device *rte_dev, uint32_t count)
+{
+	return rte_intr_efd_enable_uintr(rte_dev->intr_handle, count);
 }
 
 static void
@@ -241,9 +253,11 @@ struct dpdk_fn_table fn_table_2211 = {
 	.pci_device_write_config	= pci_device_write_config_2211,
 	.pci_driver_register		= pci_driver_register_2211,
 	.pci_device_enable_interrupt	= pci_device_enable_interrupt_2211,
+	.pci_device_enable_interrupt_uintr = pci_device_enable_interrupt_uintr_2211,
 	.pci_device_disable_interrupt	= pci_device_disable_interrupt_2211,
 	.pci_device_get_interrupt_efd	= pci_device_get_interrupt_efd_2211,
 	.pci_device_create_interrupt_efds = pci_device_create_interrupt_efds_2211,
+	.pci_device_create_interrupt_efds_uintr = pci_device_create_interrupt_efds_uintr_2211,
 	.pci_device_delete_interrupt_efds = pci_device_delete_interrupt_efds_2211,
 	.pci_device_get_interrupt_efd_by_index = pci_device_get_interrupt_efd_by_index_2211,
 	.pci_device_interrupt_cap_multi	= pci_device_interrupt_cap_multi_2211,

@@ -39,8 +39,37 @@
 
 #define NVME_IO_ALIGN		4096
 
-// #define INT_MODE
+#define INT_MODE
 // #define FRE_CONTROL_MODE
+#define USER_INT
+#ifdef USER_INT
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <x86gprintrin.h>
+
+
+#include <pthread.h>
+#include <sched.h>
+
+#ifndef __NR_uintr_register_handler
+#define __NR_uintr_register_handler	471
+#define __NR_uintr_unregister_handler	472
+#define __NR_uintr_create_fd		473
+#define __NR_uintr_register_sender	474
+#define __NR_uintr_unregister_sender	475
+#define __NR_uintr_wait			476
+#endif
+
+#define uintr_register_handler(handler, flags)	syscall(__NR_uintr_register_handler, handler, flags)
+#define uintr_unregister_handler(flags)		syscall(__NR_uintr_unregister_handler, flags)
+#define uintr_create_fd(vector, flags)		syscall(__NR_uintr_create_fd, vector, flags)
+#define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
+#define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
+#define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+#endif
+
 #ifdef FRE_CONTROL_MODE
 #include <cpufreq.h>
 struct cpu_statistic{
@@ -50,7 +79,7 @@ struct cpu_statistic{
 struct cpu_statistic cpu_stat;
 
 #endif
-#define INT_POLL_MODE
+// #define INT_POLL_MODE
 
 static bool g_spdk_env_initialized;
 static bool g_log_flag_error;
@@ -964,7 +993,7 @@ nvme_ctrlr_get_interrupt_done(void *arg, const struct spdk_nvme_cpl *cpl){
 			return;
 		}
 	} else {
-		SPDK_ERRLOG("Get Feature success: %lu\n", cpl->cdw0);
+		SPDK_ERRLOG("Get Feature success: %u\n", cpl->cdw0);
 	}
 }
 #endif
@@ -1689,7 +1718,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// {
 			// 	SPDK_ERRLOG("获取到的完成数 %u\n", fio_thread->iocq_count - num + 1);
 			// }
-
+#ifndef USER_INT
 			int ret = select(efd + 1, &readfds, NULL, NULL, &time_out);
 			if (ret > 0) {
 				uint64_t value = 0;
@@ -1713,6 +1742,14 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 				SPDK_ERRLOG("已经超时了\n");
 				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 			}
+#else
+			// struct timespec start, end;
+			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+			if(fio_thread->iocq_count == 0)
+				uintr_wait(100, 0);
+			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+			// SPDK_ERRLOG("poll耗时 %ld  ret = %d\n", (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec, x);
+#endif
 #endif
 #ifdef INT_POLL_MODE
 			// struct timespec start, end;
