@@ -43,8 +43,6 @@
 
 // #define FRE_CONTROL_MODE
 
-
-
 #ifdef SPDK_CONFIG_UINTR_MODE
 #include <stdint.h>
 #include <stdio.h>
