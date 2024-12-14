@@ -40,10 +40,12 @@
 
 #define NVME_IO_ALIGN		4096
 
-#define SPDK_CONFIG_INT_MODE
+
 // #define FRE_CONTROL_MODE
-#define USER_INT
-#ifdef USER_INT
+
+
+
+#ifdef SPDK_CONFIG_UINTR_MODE
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1523,6 +1525,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 	}
 
+
 	switch (io_u->ddir) {
 	case DDIR_READ:
 #ifdef SPDK_CONFIG_INT_POLL_MODE
@@ -1719,7 +1722,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// {
 			// 	SPDK_ERRLOG("获取到的完成数 %u\n", fio_thread->iocq_count - num + 1);
 			// }
-#ifndef USER_INT
+#ifndef SPDK_CONFIG_UINTR_MODE
 			int ret = select(efd + 1, &readfds, NULL, NULL, &time_out);
 			if (ret > 0) {
 				uint64_t value = 0;

@@ -403,13 +403,15 @@ for i in "$@"; do
 			CONFIG[UINTR_MODE]=n
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=n
+			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--set-uintrmode)
 			echo "Setting user interrupt mode for SPDK to use user interrupt mode"
-			CONFIG[INT_MODE]=n
+			CONFIG[INT_MODE]=y
 			CONFIG[UINTR_MODE]=y
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=n
+			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--set-intpollmode)
 			echo "Setting interrupt poll mode for SPDK to use interrupt poll mode"
@@ -417,6 +419,7 @@ for i in "$@"; do
 			CONFIG[UINTR_MODE]=n
 			CONFIG[INT_POLL_MODE]=y
 			CONFIG[UINTR_POLL_MODE]=n
+			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--set-uintrpollmode)
 			echo "Setting user interrupt poll mode for SPDK to use user interrupt poll mode"
@@ -424,6 +427,7 @@ for i in "$@"; do
 			CONFIG[UINTR_MODE]=n
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=y
+			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--disable-cet)
 			CONFIG[CET]=n
