@@ -43,6 +43,10 @@ function usage() {
 	echo " --enable-pgo-capture[=PATH]      Enable generation of profile guided optimization data"
 	echo " --enable-pgo-use[=PATH]   Use previously captured profile guided optimization data"
 	echo " --enable-cet              Enable Intel Control-flow Enforcement Technology (CET)"
+	echo " --set-intmode             Set interrupt mode for SPDK to use interrupt mode"
+	echo " --set-uintrmode           Set interrupt mode for SPDK to use user interrupt mode"
+	echo " --set-intpollmode         Set interrupt mode for SPDK to use interrupt poll mode"
+	echo " --set-uintrpollmode       Set interrupt mode for SPDK to use user interrupt poll mode"
 	echo " --disable-tests           Disable building of functional tests"
 	echo " --disable-unit-tests      Disable building of unit tests"
 	echo " --disable-examples        Disable building of examples"
@@ -392,6 +396,34 @@ for i in "$@"; do
 			;;
 		--enable-cet)
 			CONFIG[CET]=y
+			;;
+		--set-intmode)
+			echo "Setting interrupt mode for SPDK to use interrupt mode"
+			CONFIG[INT_MODE]=y
+			CONFIG[UINTR_MODE]=n
+			CONFIG[INT_POLL_MODE]=n
+			CONFIG[UINTR_POLL_MODE]=n
+			;;
+		--set-uintrmode)
+			echo "Setting user interrupt mode for SPDK to use user interrupt mode"
+			CONFIG[INT_MODE]=n
+			CONFIG[UINTR_MODE]=y
+			CONFIG[INT_POLL_MODE]=n
+			CONFIG[UINTR_POLL_MODE]=n
+			;;
+		--set-intpollmode)
+			echo "Setting interrupt poll mode for SPDK to use interrupt poll mode"
+			CONFIG[INT_MODE]=n
+			CONFIG[UINTR_MODE]=n
+			CONFIG[INT_POLL_MODE]=y
+			CONFIG[UINTR_POLL_MODE]=n
+			;;
+		--set-uintrpollmode)
+			echo "Setting user interrupt poll mode for SPDK to use user interrupt poll mode"
+			CONFIG[INT_MODE]=n
+			CONFIG[UINTR_MODE]=n
+			CONFIG[INT_POLL_MODE]=n
+			CONFIG[UINTR_POLL_MODE]=y
 			;;
 		--disable-cet)
 			CONFIG[CET]=n

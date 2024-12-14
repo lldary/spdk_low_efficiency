@@ -4,6 +4,7 @@
  */
 
 #include "spdk/stdinc.h"
+#include "spdk/config.h"
 
 #include "spdk/nvme.h"
 #include "spdk/nvme_zns.h"
@@ -39,7 +40,7 @@
 
 #define NVME_IO_ALIGN		4096
 
-#define INT_MODE
+#define SPDK_CONFIG_INT_MODE
 // #define FRE_CONTROL_MODE
 #define USER_INT
 #ifdef USER_INT
@@ -79,7 +80,7 @@ struct cpu_statistic{
 struct cpu_statistic cpu_stat;
 
 #endif
-// #define INT_POLL_MODE
+// #define SPDK_CONFIG_INT_POLL_MODE
 
 static bool g_spdk_env_initialized;
 static bool g_log_flag_error;
@@ -190,7 +191,7 @@ struct spdk_fio_probe_ctx {
 	struct fio_file		*f; /* fio_file given by user */
 };
 
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 struct ssd_io_param {
 	double read_seq_base_cost;
 	double read_ran_base_cost;
@@ -976,7 +977,7 @@ spdk_fio_setup(struct thread_data *td)
 	return rc;
 }
 
-#ifdef INT_MODE
+#ifdef SPDK_CONFIG_INT_MODE
 static void
 nvme_ctrlr_get_interrupt_done(void *arg, const struct spdk_nvme_cpl *cpl){
 	struct spdk_nvme_ctrlr *ctrlr = (struct spdk_nvme_ctrlr *)arg;
@@ -1007,7 +1008,7 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 
 	assert(fio_qpair->qpair == NULL);
 	spdk_nvme_ctrlr_get_default_io_qpair_opts(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
-#ifdef INT_MODE
+#ifdef SPDK_CONFIG_INT_MODE
 	qpopts.interupt_mode = true;
 #endif
 	qpopts.delay_cmd_submit = true; // 第一次调用cq才提交命令
@@ -1056,7 +1057,7 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 	cpu_stat.total = 0;
 
 #endif
-#ifdef INT_MODE
+#ifdef SPDK_CONFIG_INT_MODE
 	int cpu_id = 13; 
 	cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
@@ -1089,7 +1090,7 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 	// 	return -1;
 	// }
 #endif
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 	int cpu_id = 13; 
 	cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
@@ -1524,7 +1525,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 
 	switch (io_u->ddir) {
 	case DDIR_READ:
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 		struct timespec tsread = spdk_get_read_predict_delay(io_u->xfer_buflen);
 		spdk_set_new_timer(tsread);
 #endif		
@@ -1540,7 +1541,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 		break;
 	case DDIR_WRITE:
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 		struct timespec tswrite = spdk_get_write_predict_delay(io_u->xfer_buflen);
 		spdk_set_new_timer(tswrite);
 #endif	
@@ -1587,7 +1588,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 		break;
 	case DDIR_TRIM:
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 		struct timespec ts = spdk_get_write_predict_delay(4096);
 		spdk_set_new_timer(ts);
 		// SPDK_ERRLOG("TRIM命令被执行");
@@ -1677,10 +1678,10 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	if (fio_thread->fio_qpair_current) {
 		fio_qpair = TAILQ_NEXT(fio_thread->fio_qpair_current, link);
 	}
-#ifdef INT_MODE
+#ifdef SPDK_CONFIG_INT_MODE
 	int efd = spdk_get_int_efd(0);
 #endif
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 	int efd = spdk_get_int_timerfd();
 	bool first_choice = true;
 #endif
@@ -1702,7 +1703,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			uint64_t count = fio_thread->iocq_count;
 #endif
 
-#ifdef INT_MODE
+#ifdef SPDK_CONFIG_INT_MODE
 			fd_set readfds;
 			FD_ZERO(&readfds);
 			FD_SET(efd, &readfds);
@@ -1752,7 +1753,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// SPDK_ERRLOG("poll耗时 %ld  ret = %d\n", (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec, x);
 #endif
 #endif
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 			// struct timespec start, end;
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 			uint64_t iocq_count = fio_thread->iocq_count;
@@ -1784,7 +1785,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// 	SPDK_ERRLOG("获取完成poll耗时 %ld 轮询次数 %u 处理任务数 %lu\n", list_time, time, fio_thread->iocq_count - iocq_count);
 
 #endif
-#if !defined(INT_MODE) && !defined(INT_POLL_MODE)
+#if !defined(SPDK_CONFIG_INT_MODE) && !defined(SPDK_CONFIG_INT_POLL_MODE)
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 #endif
 #ifdef FRE_CONTROL_MODE
@@ -1802,7 +1803,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// 	cpu_stat.idle = 0;
 			// }
 #endif
-#ifdef INT_POLL_MODE
+#ifdef SPDK_CONFIG_INT_POLL_MODE
 			// num++;
 			// // SPDK_ERRLOG("获取到的完成数 %u\n", fio_thread->iocq_count - num + 1);
 			// while(num < fio_thread->iocq_count)
