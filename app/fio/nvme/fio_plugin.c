@@ -1710,7 +1710,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			FD_SET(efd, &readfds);
 			struct timeval time_out;
 			time_out.tv_sec = 0;  // 设置超时 100 微秒
-    		time_out.tv_usec = 10000;
+    		time_out.tv_usec = 300000;
 
 			// uint64_t num = fio_thread->iocq_count;
 
@@ -1741,8 +1741,9 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 				exit(1);
 			}
 			else{
-				SPDK_ERRLOG("已经超时了\n");
+				SPDK_ERRLOG("已经超时了 fio_thread->iocq_count = %u\n", fio_thread->iocq_count);
 				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+				SPDK_ERRLOG("超时读取 fio_thread->iocq_count = %u\n", fio_thread->iocq_count);
 			}
 #else
 			// struct timespec start, end;
