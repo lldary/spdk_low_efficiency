@@ -1749,7 +1749,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// struct timespec start, end;
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 			if(fio_thread->iocq_count == 0)
-				uintr_wait(100, 0);
+				uintr_wait(300000, 0);
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 			// SPDK_ERRLOG("poll耗时 %ld  ret = %d\n", (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec, x);
