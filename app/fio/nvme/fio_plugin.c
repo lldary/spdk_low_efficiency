@@ -69,6 +69,9 @@
 #define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
 #define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
 #define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+
+uint32_t uintr_count = 0;
+
 #endif
 
 #ifdef FRE_CONTROL_MODE
@@ -238,7 +241,7 @@ void spdk_ssd_io_param_init(void){
 struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
-	delay.tv_nsec = max(floor(0.1 * (io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 0);
+	delay.tv_nsec = max(floor(0.1 * (io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 1);
 	// SPDK_ERRLOG("write predict delay: %ld\n", delay.tv_nsec);
 	return delay;
 }
@@ -246,8 +249,8 @@ struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 struct timespec spdk_get_read_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
-	delay.tv_nsec = max(floor(0.1 * (io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) - 8000, 0); // TODO: 时间预估一个简单模型
-	// SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
+	delay.tv_nsec = max(floor(0.1 * (io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) - 8000, 1); // TODO: 时间预估一个简单模型
+	SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
 	return delay;
 }
 
@@ -998,6 +1001,14 @@ nvme_ctrlr_get_interrupt_done(void *arg, const struct spdk_nvme_cpl *cpl){
 	}
 }
 #endif
+#ifdef SPDK_CONFIG_UINTR_MODE
+void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
+uintr_get_handler(struct __uintr_frame *ui_frame,
+	      unsigned long long vector)
+{
+	uintr_count++;
+}
+#endif
 static int
 spdk_fio_open(struct thread_data *td, struct fio_file *f)
 {
@@ -1010,6 +1021,13 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 	spdk_nvme_ctrlr_get_default_io_qpair_opts(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
 #ifdef SPDK_CONFIG_INT_MODE
 	qpopts.interupt_mode = true;
+#ifdef SPDK_CONFIG_UINTR_MODE
+	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
+	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
+		SPDK_ERRLOG("Interrupt handler register error");
+		exit(EXIT_FAILURE);
+	}
+#endif
 #endif
 	qpopts.delay_cmd_submit = true; // 第一次调用cq才提交命令
 	if (fio_options->enable_wrr) {
@@ -1748,8 +1766,10 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 #else
 			// struct timespec start, end;
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-			if(fio_thread->iocq_count == 0)
+			static uint32_t temp = 0;
+			if(temp == uintr_count)
 				uintr_wait(300000, 0);
+			temp = uintr_count;
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 			// SPDK_ERRLOG("poll耗时 %ld  ret = %d\n", (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec, x);
