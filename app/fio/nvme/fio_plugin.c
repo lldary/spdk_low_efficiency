@@ -1022,8 +1022,8 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 #ifdef SPDK_CONFIG_INT_MODE
 	qpopts.interupt_mode = true;
 #ifdef SPDK_CONFIG_UINTR_MODE
-	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
-	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
+	#define UINTR_HANDLER_FLAG_WAITING_SENDER	0x2000 // TODO: 这个定义也一直需要吗？
+	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_SENDER)) {
 		SPDK_ERRLOG("Interrupt handler register error");
 		exit(EXIT_FAILURE);
 	}
