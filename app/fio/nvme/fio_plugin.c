@@ -241,11 +241,7 @@ void spdk_ssd_io_param_init(void){
 struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
-<<<<<<< HEAD
 	delay.tv_nsec = max(floor((io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 1);
-=======
-	delay.tv_nsec = max(floor(0.1 * (io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 1);
->>>>>>> 64a93ca301868a8521f1045a3f98dd8ac234d740
 	// SPDK_ERRLOG("write predict delay: %ld\n", delay.tv_nsec);
 	return delay;
 }
@@ -253,13 +249,8 @@ struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 struct timespec spdk_get_read_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
-<<<<<<< HEAD
 	delay.tv_nsec = max(floor((io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) -8000, 1); // TODO: 时间预估一个简单模型
 	// SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
-=======
-	delay.tv_nsec = max(floor(0.1 * (io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) - 8000, 1); // TODO: 时间预估一个简单模型
-	SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
->>>>>>> 64a93ca301868a8521f1045a3f98dd8ac234d740
 	return delay;
 }
 
