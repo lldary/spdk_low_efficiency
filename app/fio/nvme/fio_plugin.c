@@ -1022,8 +1022,8 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 #ifdef SPDK_CONFIG_INT_MODE
 	qpopts.interupt_mode = true;
 #ifdef SPDK_CONFIG_UINTR_MODE
-	#define UINTR_HANDLER_FLAG_WAITING_SENDER	0x2000 // TODO: 这个定义也一直需要吗？
-	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_SENDER)) {
+	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
+	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
 		SPDK_ERRLOG("Interrupt handler register error");
 		exit(EXIT_FAILURE);
 	}
@@ -1723,13 +1723,6 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 #endif
 
 #ifdef SPDK_CONFIG_INT_MODE
-			fd_set readfds;
-			FD_ZERO(&readfds);
-			FD_SET(efd, &readfds);
-			struct timeval time_out;
-			time_out.tv_sec = 0;  // 设置超时 100 微秒
-    		time_out.tv_usec = 300000;
-
 			// uint64_t num = fio_thread->iocq_count;
 
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
@@ -1739,6 +1732,12 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// 	SPDK_ERRLOG("获取到的完成数 %u\n", fio_thread->iocq_count - num + 1);
 			// }
 #ifndef SPDK_CONFIG_UINTR_MODE
+			fd_set readfds;
+			FD_ZERO(&readfds);
+			FD_SET(efd, &readfds);
+			struct timeval time_out;
+			time_out.tv_sec = 0;  // 设置超时 100 微秒
+    		time_out.tv_usec = 300000;
 			int ret = select(efd + 1, &readfds, NULL, NULL, &time_out);
 			if (ret > 0) {
 				uint64_t value = 0;
