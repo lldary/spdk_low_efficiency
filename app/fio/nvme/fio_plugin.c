@@ -69,6 +69,9 @@
 #define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
 #define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
 #define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+
+uint32_t uintr_count = 0;
+
 #endif
 
 #ifdef FRE_CONTROL_MODE
@@ -238,7 +241,11 @@ void spdk_ssd_io_param_init(void){
 struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
+<<<<<<< HEAD
 	delay.tv_nsec = max(floor((io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 1);
+=======
+	delay.tv_nsec = max(floor(0.1 * (io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 1);
+>>>>>>> 64a93ca301868a8521f1045a3f98dd8ac234d740
 	// SPDK_ERRLOG("write predict delay: %ld\n", delay.tv_nsec);
 	return delay;
 }
@@ -246,8 +253,13 @@ struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 struct timespec spdk_get_read_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
+<<<<<<< HEAD
 	delay.tv_nsec = max(floor((io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) -8000, 1); // TODO: 时间预估一个简单模型
 	// SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
+=======
+	delay.tv_nsec = max(floor(0.1 * (io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) - 8000, 1); // TODO: 时间预估一个简单模型
+	SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
+>>>>>>> 64a93ca301868a8521f1045a3f98dd8ac234d740
 	return delay;
 }
 
@@ -340,7 +352,7 @@ void spdk_del_head_timer(void){
 	return;
 }
 
-int start_next_timer(int success_number){
+int start_next_timer(int success_number, bool reset){
 	// return 0;
 	pthread_mutex_lock(&event_lock);
 	// SPDK_ERRLOG("success number: %d\n", success_number);
@@ -376,7 +388,24 @@ int start_next_timer(int success_number){
 		spdk_del_head_timer();
 		pthread_mutex_unlock(&event_lock);
 		return 0;
-	}else{
+	}else if(reset){
+		struct itimerspec new_value;
+		new_value.it_interval.tv_sec = 0;
+		new_value.it_interval.tv_nsec = 0;
+		new_value.it_value.tv_sec = timer_spec->tv_sec;
+		new_value.it_value.tv_nsec = timer_spec->tv_nsec;
+		if(timerfd_settime(timerfd, 0, &new_value, NULL)==-1){
+			SPDK_ERRLOG("timerfd_settime failed\n");
+			pthread_mutex_unlock(&event_lock);
+			return -1;
+		}
+		set_timer = true;
+		// SPDK_ERRLOG("start head timer success\n");
+		spdk_del_head_timer();
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	else{
 		pthread_mutex_unlock(&event_lock);
 		return 0;
 	}
@@ -998,6 +1027,14 @@ nvme_ctrlr_get_interrupt_done(void *arg, const struct spdk_nvme_cpl *cpl){
 	}
 }
 #endif
+#ifdef SPDK_CONFIG_UINTR_MODE
+void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
+uintr_get_handler(struct __uintr_frame *ui_frame,
+	      unsigned long long vector)
+{
+	uintr_count++;
+}
+#endif
 static int
 spdk_fio_open(struct thread_data *td, struct fio_file *f)
 {
@@ -1010,6 +1047,13 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 	spdk_nvme_ctrlr_get_default_io_qpair_opts(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
 #ifdef SPDK_CONFIG_INT_MODE
 	qpopts.interupt_mode = true;
+#ifdef SPDK_CONFIG_UINTR_MODE
+	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
+	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
+		SPDK_ERRLOG("Interrupt handler register error");
+		exit(EXIT_FAILURE);
+	}
+#endif
 #endif
 	qpopts.delay_cmd_submit = true; // 第一次调用cq才提交命令
 	if (fio_options->enable_wrr) {
@@ -1685,6 +1729,8 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 #ifdef SPDK_CONFIG_INT_POLL_MODE
 	int efd = spdk_get_int_timerfd();
 	bool first_choice = true;
+	if(max != 1)
+		SPDK_ERRLOG("MIN = %u MAX = %u\n", min, max);
 #endif
 	for (;;) {
 		if (fio_qpair == NULL) {
@@ -1705,13 +1751,6 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 #endif
 
 #ifdef SPDK_CONFIG_INT_MODE
-			fd_set readfds;
-			FD_ZERO(&readfds);
-			FD_SET(efd, &readfds);
-			struct timeval time_out;
-			time_out.tv_sec = 0;  // 设置超时 100 微秒
-    		time_out.tv_usec = 300000;
-
 			// uint64_t num = fio_thread->iocq_count;
 
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
@@ -1721,6 +1760,12 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// 	SPDK_ERRLOG("获取到的完成数 %u\n", fio_thread->iocq_count - num + 1);
 			// }
 #ifndef SPDK_CONFIG_UINTR_MODE
+			fd_set readfds;
+			FD_ZERO(&readfds);
+			FD_SET(efd, &readfds);
+			struct timeval time_out;
+			time_out.tv_sec = 0;  // 设置超时 100 微秒
+    		time_out.tv_usec = 300000;
 			int ret = select(efd + 1, &readfds, NULL, NULL, &time_out);
 			if (ret > 0) {
 				uint64_t value = 0;
@@ -1748,8 +1793,10 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 #else
 			// struct timespec start, end;
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-			if(fio_thread->iocq_count == 0)
+			static uint32_t temp = 0;
+			if(temp == uintr_count)
 				uintr_wait(300000, 0);
+			temp = uintr_count;
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 			// SPDK_ERRLOG("poll耗时 %ld  ret = %d\n", (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec, x);
@@ -1759,22 +1806,27 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// struct timespec start, end;
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 			uint64_t iocq_count = fio_thread->iocq_count;
+			static bool init_choice = false; // TODO: 多线程下会有问题
 			if(first_choice){
 				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
-				start_next_timer(1);
+				if(init_choice == false){
+					init_choice = true;
+					start_next_timer(fio_thread->iocq_count - iocq_count, true);
+				}
 				first_choice = false;
 			}
 			uint64_t value = 0;
 			pthread_mutex_lock(&event_lock);
 			set_timer = false;
-			read(efd, &value, sizeof(value));
+			if(fio_thread->iocq_count < min)
+				read(efd, &value, sizeof(value));
 			pthread_mutex_unlock(&event_lock);
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 			// SPDK_ERRLOG("poll耗时 %ld\n", (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec);
 			// iocq_count = fio_thread->iocq_count;
 			// uint32_t time = 0;
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-			while(iocq_count == fio_thread->iocq_count)
+			while(fio_thread->iocq_count < min)
 			{
 				// clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
@@ -1813,7 +1865,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// 	num++;
 			// 	spdk_del_head_timer();
 			// }
-			start_next_timer(fio_thread->iocq_count - iocq_count);
+			start_next_timer(fio_thread->iocq_count - iocq_count, false);
 			// clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 			// uint64_t list_time = (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec;
 			// if(list_time > 20000)
