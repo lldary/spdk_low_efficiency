@@ -429,19 +429,19 @@ static struct ssd_io_param io_param;
 
 void spdk_ssd_io_param_init(void){
 	// TODO: 初始化数据
-	io_param.read_size_cost_rate = 1000000000 / 533725184.0;
-	io_param.write_size_cost_rate = 1000000000 / 435159040.0;
-	io_param.read_seq_base_cost = 1000000000 / 29770.14 - io_param.read_size_cost_rate * 4096;
-	io_param.write_seq_base_cost = 1000000000 / 45463.07 - io_param.write_size_cost_rate * 4096;
-	io_param.read_ran_base_cost = 1000000000 / 31125.4 - io_param.read_size_cost_rate * 4096;
-	io_param.write_ran_base_cost = 1000000000 / 53734 - io_param.write_size_cost_rate * 4096;
+	io_param.read_size_cost_rate = 1000000000 / 5949000000.0;
+	io_param.write_size_cost_rate = 1000000000 / 5303000000.0;
+	io_param.read_seq_base_cost = 1000000000 / 586930.05 - io_param.read_size_cost_rate * 4096;
+	io_param.write_seq_base_cost = 1000000000 / 1069923.92 - io_param.write_size_cost_rate * 4096;
+	io_param.read_ran_base_cost = 1000000000 / 586930.05 - io_param.read_size_cost_rate * 4096;
+	io_param.write_ran_base_cost = 1000000000 / 1069923.92 - io_param.write_size_cost_rate * 4096;
 }
 
 
 struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
-	delay.tv_nsec = max(floor(0.1 * (io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 1);
+	delay.tv_nsec = max(floor((io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)), 1);
 	// SPDK_ERRLOG("write predict delay: %ld\n", delay.tv_nsec);
 	return delay;
 }
@@ -449,8 +449,8 @@ struct timespec spdk_get_write_predict_delay(uint32_t io_size){
 struct timespec spdk_get_read_predict_delay(uint32_t io_size){
 	struct timespec delay;
 	delay.tv_sec = 0;
-	delay.tv_nsec = max(floor(0.1 * (io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) - 8000, 1); // TODO: 时间预估一个简单模型
-	SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
+	delay.tv_nsec = max(floor((io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)), 1); // TODO: 时间预估一个简单模型
+	// SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
 	return delay;
 }
 
@@ -590,9 +590,10 @@ inline void spdk_uintr_sleep(void){
 	sleep_stop_time.tv_nsec = global_timer_spec.tv_nsec + global_timer_spec_sleep.tv_nsec;
 	int32_t sleep_usec = (sleep_stop_time.tv_sec - now.tv_sec) * 1000000 + (sleep_stop_time.tv_nsec - now.tv_nsec) / 1000;
 	if(sleep_usec > 0){
-		SPDK_ERRLOG("sleep time: %d\n", sleep_usec);
+		// SPDK_ERRLOG("sleep time: %d\n", sleep_usec);
 		uintr_wait(sleep_usec, 0);
 	}
+	// SPDK_ERRLOG("sleep time: %d\n", sleep_usec);
 	// uintr_wait(sleep_usec, 0);
 }
 
@@ -1212,7 +1213,7 @@ nvme_ctrlr_get_interrupt_done(void *arg, const struct spdk_nvme_cpl *cpl){
 	}
 }
 #endif
-#ifdef SPDK_CONFIG_UINTR_MODE
+#if defined(SPDK_CONFIG_UINTR_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
 void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
@@ -1339,6 +1340,11 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 	}
 #endif
 #ifdef SPDK_CONFIG_UINTR_POLL_MODE
+	if (uintr_register_handler(uintr_get_handler, 0)) {
+		SPDK_ERRLOG("Interrupt handler register error");
+		exit(EXIT_FAILURE);
+	}
+	
 	int cpu_id = 10; 
 	cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
