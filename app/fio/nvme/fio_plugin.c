@@ -43,7 +43,7 @@
 
 // #define FRE_CONTROL_MODE
 
-#ifdef SPDK_CONFIG_UINTR_MODE
+#if defined(SPDK_CONFIG_UINTR_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -400,6 +400,200 @@ int start_next_timer(int success_number, bool reset){
 		pthread_mutex_unlock(&event_lock);
 		return 0;
 	}
+}
+
+#endif
+
+#ifdef SPDK_CONFIG_UINTR_POLL_MODE
+struct ssd_io_param {
+	double read_seq_base_cost;
+	double read_ran_base_cost;
+	double write_seq_base_cost;
+	double write_ran_base_cost;
+	double read_size_cost_rate;
+	double write_size_cost_rate;
+};
+
+struct timespec global_timer_spec;
+struct timespec global_timer_spec_sleep;
+
+
+pthread_mutex_t event_lock;
+
+bool set_timer = false;
+
+static struct ssd_io_param io_param;
+#include <sys/timerfd.h>
+#define CLOCK_MONOTONIC			1
+
+
+void spdk_ssd_io_param_init(void){
+	// TODO: 初始化数据
+	io_param.read_size_cost_rate = 1000000000 / 533725184.0;
+	io_param.write_size_cost_rate = 1000000000 / 435159040.0;
+	io_param.read_seq_base_cost = 1000000000 / 29770.14 - io_param.read_size_cost_rate * 4096;
+	io_param.write_seq_base_cost = 1000000000 / 45463.07 - io_param.write_size_cost_rate * 4096;
+	io_param.read_ran_base_cost = 1000000000 / 31125.4 - io_param.read_size_cost_rate * 4096;
+	io_param.write_ran_base_cost = 1000000000 / 53734 - io_param.write_size_cost_rate * 4096;
+}
+
+
+struct timespec spdk_get_write_predict_delay(uint32_t io_size){
+	struct timespec delay;
+	delay.tv_sec = 0;
+	delay.tv_nsec = max(floor(0.1 * (io_param.write_ran_base_cost + io_size * io_param.write_size_cost_rate)) - 8000, 1);
+	// SPDK_ERRLOG("write predict delay: %ld\n", delay.tv_nsec);
+	return delay;
+}
+
+struct timespec spdk_get_read_predict_delay(uint32_t io_size){
+	struct timespec delay;
+	delay.tv_sec = 0;
+	delay.tv_nsec = max(floor(0.1 * (io_param.read_ran_base_cost + io_size * io_param.read_size_cost_rate)) - 8000, 1); // TODO: 时间预估一个简单模型
+	SPDK_ERRLOG("read predict delay: %ld\n", delay.tv_nsec);
+	return delay;
+}
+
+struct timerlist{
+	struct timespec ts;
+	struct timerlist *next;
+};
+
+static struct timerlist *head = NULL;
+int length = 0;
+
+int spdk_set_new_timer(struct timespec timer_spec){
+	pthread_mutex_lock(&event_lock);
+	if(head == NULL){
+		// int timerfd = spdk_get_int_timerfd();
+		// struct itimerspec curr_value;
+		// if(timerfd_gettime(timerfd, &curr_value)==-1){
+		// 	SPDK_ERRLOG("timerfd_gettime failed\n");
+		// 	pthread_mutex_unlock(&event_lock);
+		// 	return -1;
+		// }
+		// if(curr_value.it_value.tv_sec == 0 && curr_value.it_value.tv_nsec == 0){
+		// 	struct itimerspec new_value;
+		// 	new_value.it_interval.tv_sec = 0;
+		// 	new_value.it_interval.tv_nsec = 0;
+		// 	new_value.it_value.tv_sec = timer_spec.tv_sec;
+		// 	new_value.it_value.tv_nsec = timer_spec.tv_nsec;
+		// 	if(timerfd_settime(timerfd, 0, &new_value, NULL)==-1){
+		// 		SPDK_ERRLOG("timerfd_settime failed\n");
+		// 		pthread_mutex_unlock(&event_lock);
+		// 		return -1;
+		// 	}
+		// 	set_timer = true;
+		// 	// SPDK_ERRLOG("set new timer success\n");
+		// 	pthread_mutex_unlock(&event_lock);
+		// 	return 0;
+		// }		
+		head = (struct timerlist *)malloc(sizeof(struct timerlist));
+		if(head == NULL){
+			SPDK_ERRLOG("malloc failed\n");
+			pthread_mutex_unlock(&event_lock);
+			return -1;
+		}
+		head->ts = timer_spec;
+		head->next = NULL;
+		// length++;
+		// SPDK_ERRLOG("set new timer to list success, length: %d\n", length);
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	else{
+		struct timerlist *tmp = head;
+		while(tmp->next != NULL){
+			tmp = tmp->next;
+		}
+		tmp->next = (struct timerlist *)malloc(sizeof(struct timerlist));
+		if(tmp->next == NULL){
+			SPDK_ERRLOG("malloc failed\n");
+			pthread_mutex_unlock(&event_lock);
+			return -1;
+		}
+		tmp->next->ts = timer_spec;
+		tmp->next->next = NULL;
+		// length++;
+		// SPDK_ERRLOG("set new timer to list success, length: %d\n", length);
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	pthread_mutex_unlock(&event_lock);
+	return -1;
+}
+
+struct timespec* spdk_get_new_timer(void){
+	if(head == NULL){
+		return NULL;
+	}
+	struct timespec *ts = &(head->ts);
+	return ts;
+}
+
+void spdk_del_head_timer(void){
+	if(head == NULL){
+		return;
+	}
+	struct timerlist *tmp = head;
+	head = head->next;
+	free(tmp);
+	// length--;
+	// SPDK_ERRLOG("del old timer success, length: %d\n", length);
+	return;
+}
+
+int start_next_timer(int success_number, bool reset){
+	// return 0;
+	pthread_mutex_lock(&event_lock);
+	static bool tmp = true;
+	if(success_number == 0){
+		
+		if(tmp){
+			tmp = false;
+			clock_gettime(CLOCK_MONOTONIC, &global_timer_spec);
+			struct timespec *timer_spec = spdk_get_new_timer();
+			if(timer_spec == NULL){
+				pthread_mutex_unlock(&event_lock);
+				return 0;
+			}
+			global_timer_spec_sleep = *timer_spec;
+			spdk_del_head_timer();
+			// return 0;
+		}
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	
+	// SPDK_ERRLOG("success number: %d\n", success_number);
+	while(success_number > 1){
+		spdk_del_head_timer();
+		success_number--;
+	}
+	struct timespec *timer_spec = spdk_get_new_timer();
+	if(timer_spec == NULL){
+		pthread_mutex_unlock(&event_lock);
+		return 0;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &global_timer_spec);
+	global_timer_spec_sleep = *timer_spec;
+	spdk_del_head_timer();
+	pthread_mutex_unlock(&event_lock);
+	return 0;
+}
+
+inline void spdk_uintr_sleep(void){
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	struct timespec sleep_stop_time;
+	sleep_stop_time.tv_sec = global_timer_spec.tv_sec + global_timer_spec_sleep.tv_sec;
+	sleep_stop_time.tv_nsec = global_timer_spec.tv_nsec + global_timer_spec_sleep.tv_nsec;
+	int32_t sleep_usec = (sleep_stop_time.tv_sec - now.tv_sec) * 1000000 + (sleep_stop_time.tv_nsec - now.tv_nsec) / 1000;
+	if(sleep_usec > 0){
+		SPDK_ERRLOG("sleep time: %d\n", sleep_usec);
+		uintr_wait(sleep_usec, 0);
+	}
+	// uintr_wait(sleep_usec, 0);
 }
 
 #endif
@@ -1126,7 +1320,7 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 	// }
 #endif
 #ifdef SPDK_CONFIG_INT_POLL_MODE
-	int cpu_id = 13; 
+	int cpu_id = 10; 
 	cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(cpu_id, &cpuset);
@@ -1143,6 +1337,20 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 		SPDK_ERRLOG("efd < 0\n");
 		return -1;
 	}
+#endif
+#ifdef SPDK_CONFIG_UINTR_POLL_MODE
+	int cpu_id = 10; 
+	cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
+
+    // 将当前线程绑定到指定的 CPU
+    pthread_t thread = pthread_self();
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
+        SPDK_ERRLOG("pthread_setaffinity_np");
+    }
+	pthread_mutex_init(&event_lock, NULL);
+	spdk_ssd_io_param_init();
 #endif
 	if (fio_options->print_qid_mappings == 1) {
 		log_info("job %s: %s qid %d\n", td->o.name, f->file_name,
@@ -1561,7 +1769,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 
 	switch (io_u->ddir) {
 	case DDIR_READ:
-#ifdef SPDK_CONFIG_INT_POLL_MODE
+#if defined(SPDK_CONFIG_INT_POLL_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
 		struct timespec tsread = spdk_get_read_predict_delay(io_u->xfer_buflen);
 		spdk_set_new_timer(tsread);
 #endif		
@@ -1577,7 +1785,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 		break;
 	case DDIR_WRITE:
-#ifdef SPDK_CONFIG_INT_POLL_MODE
+#if defined(SPDK_CONFIG_INT_POLL_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
 		struct timespec tswrite = spdk_get_write_predict_delay(io_u->xfer_buflen);
 		spdk_set_new_timer(tswrite);
 #endif	
@@ -1624,7 +1832,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 		break;
 	case DDIR_TRIM:
-#ifdef SPDK_CONFIG_INT_POLL_MODE
+#if defined(SPDK_CONFIG_INT_POLL_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
 		struct timespec ts = spdk_get_write_predict_delay(4096);
 		spdk_set_new_timer(ts);
 		// SPDK_ERRLOG("TRIM命令被执行");
@@ -1722,6 +1930,9 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	bool first_choice = true;
 	if(max != 1)
 		SPDK_ERRLOG("MIN = %u MAX = %u\n", min, max);
+#endif
+#ifdef SPDK_CONFIG_UINTR_POLL_MODE
+	bool first_choice = true;
 #endif
 	for (;;) {
 		if (fio_qpair == NULL) {
@@ -1830,6 +2041,28 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// 	SPDK_ERRLOG("获取完成poll耗时 %ld 轮询次数 %u 处理任务数 %lu\n", list_time, time, fio_thread->iocq_count - iocq_count);
 
 #endif
+#ifdef SPDK_CONFIG_UINTR_POLL_MODE
+			uint64_t iocq_count = fio_thread->iocq_count;
+			static bool init_choice = false; // TODO: 多线程下会有问题
+			if(first_choice){
+				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+				if(init_choice == false){
+					init_choice = true;
+					start_next_timer(fio_thread->iocq_count - iocq_count, true);
+				}
+				first_choice = false;
+			}
+			uint64_t value = 0;
+			pthread_mutex_lock(&event_lock);
+			set_timer = false;
+			if(fio_thread->iocq_count < min)
+				spdk_uintr_sleep();
+			pthread_mutex_unlock(&event_lock);
+			while(fio_thread->iocq_count < min)
+			{
+				spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
+			}
+#endif
 #if !defined(SPDK_CONFIG_INT_MODE) && !defined(SPDK_CONFIG_INT_POLL_MODE)
 			spdk_nvme_qpair_process_completions(fio_qpair->qpair, max - fio_thread->iocq_count);
 #endif
@@ -1861,6 +2094,9 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			// uint64_t list_time = (end.tv_sec - start.tv_sec) * 1000000000L + end.tv_nsec - start.tv_nsec;
 			// if(list_time > 20000)
 				// SPDK_ERRLOG("获取完成poll耗时 %ld 轮询次数 %u 处理任务数 %lu\n", list_time, time, fio_thread->iocq_count - iocq_count);
+#endif
+#ifdef SPDK_CONFIG_UINTR_POLL_MODE
+			start_next_timer(fio_thread->iocq_count - iocq_count, false);
 #endif
 			if (fio_thread->iocq_count >= min) {
 				/* reset the current handling qpair */
