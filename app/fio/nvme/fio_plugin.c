@@ -593,6 +593,9 @@ inline void spdk_uintr_sleep(void){
 		// SPDK_ERRLOG("sleep time: %d\n", sleep_usec);
 		uintr_wait(sleep_usec, 0);
 	}
+	else{
+		uintr_wait(2, 0);
+	}
 	// SPDK_ERRLOG("sleep time: %d\n", sleep_usec);
 	// uintr_wait(sleep_usec, 0);
 }
