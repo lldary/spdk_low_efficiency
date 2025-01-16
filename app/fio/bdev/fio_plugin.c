@@ -24,6 +24,7 @@
 #include "config-host.h"
 #include "fio.h"
 #include "optgroup.h"
+#include <cpufreq.h>
 
 #ifdef for_each_rw_ddir
 #define FIO_HAS_ZBD (FIO_IOOPS_VERSION >= 26)
@@ -867,7 +868,12 @@ spdk_fio_init(struct thread_data *td)
 	int rc;
 
 #ifdef SPDK_CONFIG_UINTR_MODE
-	int cpu_id = td->thread_number % 10 + 20; 
+	int cpu_id = td->thread_number % 10 + 20;
+	cpufreq_set_frequency(cpu_id, 800000UL);
+#else
+	int cpu_id = td->thread_number % 10 + 30;
+#endif 
+
 	cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(cpu_id, &cpuset);
@@ -883,7 +889,6 @@ spdk_fio_init(struct thread_data *td)
 		SPDK_ERRLOG("Interrupt handler register error");
 		exit(EXIT_FAILURE);
 	}
-#endif
 
 	if (spdk_fio_init_spdk_env(td) != 0) {
 		return -1;
