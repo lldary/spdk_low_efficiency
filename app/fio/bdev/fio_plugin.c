@@ -1189,7 +1189,9 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 			// printf("Data available to read on fd %d\n", events[i].data.fd);
 			// 读取数据
 			uint64_t value;
-			read(events[i].data.fd, &value, sizeof(value));
+			int rc = 0;
+			while(rc >= 0) 
+				rc = read(events[i].data.fd, &value, sizeof(value));
 		}
 	}
 	// close(epfd);

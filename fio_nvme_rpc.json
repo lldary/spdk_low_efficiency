@@ -22,34 +22,41 @@
 "params": {
 "trtype": "PCIe",
 "name":"Nvme2",
-"traddr":"0000:97:00.0"
+"traddr":"0000:96:00.0"
 }
 },{
 "method": "bdev_nvme_attach_controller",
 "params": {
 "trtype": "PCIe",
 "name":"Nvme3",
-"traddr":"0000:be:00.0"
+"traddr":"0000:97:00.0"
 }
 },{
 "method": "bdev_nvme_attach_controller",
 "params": {
 "trtype": "PCIe",
 "name":"Nvme4",
-"traddr":"0000:bf:00.0"
+"traddr":"0000:be:00.0"
 }
 },{
 "method": "bdev_nvme_attach_controller",
 "params": {
 "trtype": "PCIe",
 "name":"Nvme5",
-"traddr":"0000:c0:00.0"
+"traddr":"0000:bf:00.0"
 }
 },{
 "method": "bdev_nvme_attach_controller",
 "params": {
 "trtype": "PCIe",
 "name":"Nvme6",
+"traddr":"0000:c0:00.0"
+}
+},{
+"method": "bdev_nvme_attach_controller",
+"params": {
+"trtype": "PCIe",
+"name":"Nvme7",
 "traddr":"0000:c1:00.0"
 }
 }
