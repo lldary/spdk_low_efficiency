@@ -37,6 +37,69 @@
 #define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
 #endif
 
+#ifdef SPDK_CONFIG_UINTR_MODE
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <x86gprintrin.h>
+
+
+#include <pthread.h>
+#include <sched.h>
+
+#ifndef __NR_uintr_register_handler
+#define __NR_uintr_register_handler	471
+#define __NR_uintr_unregister_handler	472
+#define __NR_uintr_create_fd		473
+#define __NR_uintr_register_sender	474
+#define __NR_uintr_unregister_sender	475
+#define __NR_uintr_wait			476
+#endif
+
+#define uintr_register_handler(handler, flags)	syscall(__NR_uintr_register_handler, handler, flags)
+#define uintr_unregister_handler(flags)		syscall(__NR_uintr_unregister_handler, flags)
+#define uintr_create_fd(vector, flags)		syscall(__NR_uintr_create_fd, vector, flags)
+#define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
+#define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
+#define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+
+volatile uint32_t uintr_index = 0;
+volatile uint32_t uintr_count[7] = {0};
+#endif
+
+#if defined(SPDK_CONFIG_INT_POLL_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
+bool is128 = false; // IO大小获知
+#endif
+
+#ifdef SPDK_CONFIG_UINTR_POLL_MODE
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <x86gprintrin.h>
+
+
+#include <pthread.h>
+#include <sched.h>
+
+#ifndef __NR_uintr_register_handler
+#define __NR_uintr_register_handler	471
+#define __NR_uintr_unregister_handler	472
+#define __NR_uintr_create_fd		473
+#define __NR_uintr_register_sender	474
+#define __NR_uintr_unregister_sender	475
+#define __NR_uintr_wait			476
+#endif
+
+#define uintr_register_handler(handler, flags)	syscall(__NR_uintr_register_handler, handler, flags)
+#define uintr_unregister_handler(flags)		syscall(__NR_uintr_unregister_handler, flags)
+#define uintr_create_fd(vector, flags)		syscall(__NR_uintr_create_fd, vector, flags)
+#define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
+#define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
+#define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+#endif
+
 struct spdk_fio_options {
 	void *pad;
 	char *conf;
@@ -74,8 +137,8 @@ struct spdk_fio_thread {
 	struct io_u		**iocq;		/* io completion queue */
 	unsigned int		iocq_count;	/* number of iocq entries filled by last getevents */
 	unsigned int		iocq_size;	/* number of iocq entries allocated */
-
 	TAILQ_ENTRY(spdk_fio_thread)	link;
+	int fd;
 };
 
 struct spdk_fio_zone_cb_arg {
@@ -738,7 +801,15 @@ spdk_fio_bdev_open(void *arg)
 
 		target->bdev = spdk_bdev_desc_get_bdev(target->desc);
 
-		target->ch = spdk_bdev_get_io_channel(target->desc);
+#define __bdev_to_io_dev(bdev) (((char *)bdev) + 1)
+#ifdef SPDK_CONFIG_INT_MODE
+		// TODO: 设置中断模式
+		SPDK_ERRLOG("中断模式\n");
+		bool interrupt_mode = true;
+#else
+		bool interrupt_mode = false;
+#endif
+		target->ch = spdk_bdev_get_io_channel_int(target->desc, interrupt_mode);
 		if (!target->ch) {
 			SPDK_ERRLOG("Unable to get I/O channel for bdev.\n");
 			spdk_bdev_close(target->desc);
@@ -764,6 +835,22 @@ spdk_fio_bdev_open(void *arg)
 	}
 }
 
+#ifdef SPDK_CONFIG_UINTR_MODE
+
+// 函数声明
+void __attribute__((interrupt)) __attribute__((target("general-regs-only", "inline-all-stringops")))
+uintr_get_handler(struct __uintr_frame *ui_frame, unsigned long long vector);
+
+
+void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
+uintr_get_handler(struct __uintr_frame *ui_frame,
+	      unsigned long long vector)
+{
+	int temp = (vector) % 7;
+	uintr_count[temp]++;
+}
+#endif
+
 /* Called for each thread, on that thread, shortly after the thread
  * starts.
  *
@@ -778,6 +865,25 @@ spdk_fio_init(struct thread_data *td)
 {
 	struct spdk_fio_thread *fio_thread;
 	int rc;
+
+#ifdef SPDK_CONFIG_UINTR_MODE
+	int cpu_id = td->thread_number % 10 + 20; 
+	cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
+
+    // 将当前线程绑定到指定的 CPU
+    pthread_t thread = pthread_self();
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
+        SPDK_ERRLOG("pthread_setaffinity_np");
+    }
+	SPDK_ERRLOG("开始注册用户态中断处理函数\n");
+	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
+	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
+		SPDK_ERRLOG("Interrupt handler register error");
+		exit(EXIT_FAILURE);
+	}
+#endif
 
 	if (spdk_fio_init_spdk_env(td) != 0) {
 		return -1;
@@ -795,6 +901,7 @@ spdk_fio_init(struct thread_data *td)
 
 	fio_thread = td->io_ops_data;
 	assert(fio_thread);
+	fio_thread->fd = 0;
 	fio_thread->failed = false;
 
 	spdk_thread_send_msg(fio_thread->thread, spdk_fio_bdev_open, td);
@@ -940,6 +1047,14 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		return FIO_Q_COMPLETED;
 	}
 
+#if defined(SPDK_CONFIG_UINTR_POLL_MODE) || defined(SPDK_CONFIG_INT_POLL_MODE)
+	if(io_u->xfer_buflen == 128 * 1024){
+		is128 = true;
+	} else {
+		is128 = false;
+	}
+#endif
+
 	switch (io_u->ddir) {
 	case DDIR_READ:
 		rc = spdk_bdev_read(target->desc, target->ch,
@@ -1006,6 +1121,79 @@ spdk_fio_poll_thread(struct spdk_fio_thread *fio_thread)
 	return spdk_thread_poll(fio_thread->thread, 0, 0);
 }
 
+static size_t
+spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
+{
+#ifdef SPDK_CONFIG_INT_MODE
+#ifdef SPDK_CONFIG_UINTR_MODE
+	static uint32_t temp = 0;
+	// SPDK_ERRLOG("uint_count = %d\n", uintr_count);
+	uint64_t i = 0;
+	// uintr_wait(100, 0);
+	uint64_t total_count = 0;
+	for(i = 0; i < 7; i++){
+		total_count += uintr_count[i];
+	}
+	while(temp == total_count){
+		total_count = 0;
+		for(i = 0; i < 7; i++){
+			total_count += uintr_count[i];
+		}
+	}
+	temp = total_count;
+
+#else
+	int max_fd = 0;
+	struct spdk_fio_target *target = NULL;
+	// int fd_array[10] = {0};
+	uint32_t i = 0;
+	int epfd = fio_thread->fd;
+	if(epfd == 0){
+		epfd = epoll_create1(0);
+		if (epfd == -1) {
+			SPDK_ERRLOG("epoll_create1 failed");
+			exit(EXIT_FAILURE);
+		}
+		TAILQ_FOREACH(target, &fio_thread->targets, link) {
+			int fd = get_channel_fd(target->ch);
+			// fd_array[i++] = fd;
+			SPDK_ERRLOG("fd = %d\n", fd);
+			if (fd >= 0) {
+				struct epoll_event ev;
+				ev.events = EPOLLIN;  // 监听可读事件
+				ev.data.fd = fd;  // 关联的文件描述符
+				if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+					SPDK_ERRLOG("epoll_ctl failed");
+					exit(EXIT_FAILURE);
+				}
+			}
+			max_fd = fd > max_fd ? fd : max_fd;
+		}
+		fio_thread->fd = epfd;
+	}	
+	struct epoll_event events[10];
+	int nfds = epoll_wait(epfd, events, 10, -1);
+	if (nfds == -1) {
+		perror("epoll_wait failed");
+		exit(EXIT_FAILURE);
+	}
+
+	for (int i = 0; i < nfds; i++) {
+		if (events[i].events & EPOLLIN) {
+			// printf("Data available to read on fd %d\n", events[i].data.fd);
+			// 读取数据
+			uint64_t value;
+			read(events[i].data.fd, &value, sizeof(value));
+		}
+	}
+	// close(epfd);
+#endif
+	return spdk_thread_poll(fio_thread->thread, 0, 0);
+#else
+	return spdk_thread_poll(fio_thread->thread, 0, 0);
+#endif
+}
+
 static int
 spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		   unsigned int max, const struct timespec *t)
@@ -1021,8 +1209,58 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 
 	fio_thread->iocq_count = 0;
 
+#ifdef SPDK_CONFIG_INT_POLL_MODE
+	spdk_fio_poll_thread_int(fio_thread);
+
+	if (fio_thread->iocq_count >= min) {
+		return fio_thread->iocq_count;
+	}
+	if(is128){
+		struct timespec sleep_time;
+		sleep_time.tv_sec = 0;
+		sleep_time.tv_nsec = 22000;
+		nanosleep(&sleep_time, NULL);
+	} else {
+		struct timespec sleep_time;
+		sleep_time.tv_sec = 0;
+		sleep_time.tv_nsec = 2000;
+		nanosleep(&sleep_time, NULL);
+	}
+#endif
+#ifdef SPDK_CONFIG_UINTR_POLL_MODE
+	spdk_fio_poll_thread_int(fio_thread);
+
+	if (fio_thread->iocq_count >= min) {
+		return fio_thread->iocq_count;
+	}
+	if(is128){
+		uintr_wait(22, 0);
+	} else {
+		uintr_wait(2, 0);
+	}
+#endif
+
+#if defined(SPDK_CONFIG_INT_MODE) || defined(SPDK_CONFIG_UINTR_MODE)
+	static bool temp = true;
+	if(false){
+		temp = false;
+		for(;;){
+			spdk_thread_poll(fio_thread->thread, 0, 0);
+			if (fio_thread->iocq_count >= min) {
+				return fio_thread->iocq_count;
+			}
+		}
+	}else{
+		spdk_thread_poll(fio_thread->thread, 0, 0);
+	}
+	if (fio_thread->iocq_count >= min) {
+		return fio_thread->iocq_count;
+	}
+	// SPDK_ERRLOG("中断模式\n");
+#endif
+
 	for (;;) {
-		spdk_fio_poll_thread(fio_thread);
+		spdk_fio_poll_thread_int(fio_thread);
 
 		if (fio_thread->iocq_count >= min) {
 			return fio_thread->iocq_count;

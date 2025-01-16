@@ -4172,8 +4172,23 @@ bdev_channel_create(void *io_device, void *ctx_buf)
 	struct spdk_bdev_shared_resource *shared_resource;
 	struct lba_range		*range;
 
+	bool interrupt = *((uint64_t*)spdk_io_channel_from_ctx(ctx_buf));
+	SPDK_ERRLOG("Creating I/O channel for bdev %s on thread %p interrupt: %d\n", bdev->name, spdk_get_thread(), interrupt);
+
 	ch->bdev = bdev;
-	ch->channel = bdev->fn_table->get_io_channel(bdev->ctxt);
+	if(interrupt){
+		if (bdev->fn_table->get_io_channel_int)
+		{
+			ch->channel = bdev->fn_table->get_io_channel_int(bdev->ctxt, true);
+			*(int*)((uint64_t*)spdk_io_channel_from_ctx(ctx_buf) + 8) = *(int*)((uint64_t*)(ch->channel) + 8);
+			SPDK_ERRLOG("Creating I/O channel success fd: %d\n", *(int*)((uint64_t*)spdk_io_channel_from_ctx(ctx_buf) + 8));
+		}
+		else
+			ch->channel = bdev->fn_table->get_io_channel(bdev->ctxt);
+	}
+	else{
+		ch->channel = bdev->fn_table->get_io_channel(bdev->ctxt);
+	}
 	if (!ch->channel) {
 		return -1;
 	}
@@ -4786,6 +4801,13 @@ struct spdk_io_channel *
 spdk_bdev_get_io_channel(struct spdk_bdev_desc *desc)
 {
 	return spdk_get_io_channel(__bdev_to_io_dev(spdk_bdev_desc_get_bdev(desc)));
+}
+
+struct spdk_io_channel *
+spdk_bdev_get_io_channel_int(struct spdk_bdev_desc *desc, bool interrupt)
+{
+	// return spdk_get_io_channel(__bdev_to_io_dev(spdk_bdev_desc_get_bdev(desc)));
+	return spdk_get_io_channel_int(__bdev_to_io_dev(spdk_bdev_desc_get_bdev(desc)), interrupt);
 }
 
 void *

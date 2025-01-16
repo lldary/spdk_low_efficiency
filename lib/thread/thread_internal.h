@@ -18,6 +18,7 @@
  *  spdk_io_channel function calls.
  */
 struct spdk_io_channel {
+	uint64_t interrupt_mode;
 	struct spdk_thread		*thread;
 	struct io_device		*dev;
 	uint32_t			ref;
@@ -25,7 +26,8 @@ struct spdk_io_channel {
 	RB_ENTRY(spdk_io_channel)	node;
 	spdk_io_channel_destroy_cb	destroy_cb;
 
-	uint8_t				_padding[40];
+	uint32_t fd;
+	uint8_t				_padding[28];
 	/*
 	 * Modules will allocate extra memory off the end of this structure
 	 *  to store references to hardware-specific references (i.e. NVMe queue

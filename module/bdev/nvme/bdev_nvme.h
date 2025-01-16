@@ -85,6 +85,8 @@ typedef void (*bdev_nvme_ctrlr_op_cb)(void *cb_arg, int rc);
 typedef void (*nvme_ctrlr_disconnected_cb)(struct nvme_ctrlr *nvme_ctrlr);
 
 struct nvme_ctrlr {
+	/* 中断模式指示 */
+	uint64_t					interrupt_mode;
 	/**
 	 * points to pinned, physically contiguous memory region;
 	 * contains 4KB IDENTIFY structure for controller which is
@@ -178,6 +180,10 @@ struct nvme_qpair {
 	struct spdk_nvme_qpair		*qpair;
 	struct nvme_poll_group		*group;
 	struct nvme_ctrlr_channel	*ctrlr_ch;
+
+	int efd;
+	/* 添加是否开启中断 */
+	bool				interrupt_mode;
 
 	/* The following is used to update io_path cache of nvme_bdev_channels. */
 	TAILQ_HEAD(, nvme_io_path)	io_path_list;

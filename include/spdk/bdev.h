@@ -958,6 +958,18 @@ uint64_t spdk_bdev_get_weighted_io_time(const struct spdk_bdev *bdev);
 struct spdk_io_channel *spdk_bdev_get_io_channel(struct spdk_bdev_desc *desc);
 
 /**
+ * Obtain an I/O channel for the block device opened by the specified
+ * descriptor. I/O channels are bound to threads, so the resulting I/O
+ * channel may only be used from the thread it was originally obtained
+ * from.
+ *
+ * \param desc Block device descriptor.
+ *
+ * \return A handle to the I/O channel or NULL on failure.
+ */
+struct spdk_io_channel *spdk_bdev_get_io_channel_int(struct spdk_bdev_desc *desc, bool interrupt);
+
+/**
  * Obtain a bdev module context for the block device opened by the specified
  * descriptor.
  *

@@ -869,6 +869,53 @@ _bdev_nvme_add_io_path(struct nvme_bdev_channel *nbdev_ch, struct nvme_ns *nvme_
 	return 0;
 }
 
+static int
+_bdev_nvme_add_io_path_int(struct nvme_bdev_channel *nbdev_ch, struct nvme_ns *nvme_ns, bool interrupt, int *efd)
+{
+	struct nvme_io_path *io_path;
+	struct spdk_io_channel *ch;
+	struct nvme_ctrlr_channel *ctrlr_ch;
+	struct nvme_qpair *nvme_qpair;
+
+	if (*efd != 0) {
+		SPDK_ERRLOG("efd is already set.\n");
+		return -EINVAL;
+	}
+	
+	io_path = nvme_io_path_alloc();
+	if (io_path == NULL) {
+		return -ENOMEM;
+	}
+
+	io_path->nvme_ns = nvme_ns;
+
+	ch = spdk_get_io_channel_int(nvme_ns->ctrlr, interrupt);
+	if (ch == NULL) {
+		nvme_io_path_free(io_path);
+		SPDK_ERRLOG("Failed to alloc io_channel.\n");
+		return -ENOMEM;
+	}
+
+	*efd = *(int *)(((uint64_t*)ch) + 8);
+	SPDK_ERRLOG("efd: %d\n", *efd);
+
+	ctrlr_ch = spdk_io_channel_get_ctx(ch);
+
+	nvme_qpair = ctrlr_ch->qpair;
+	assert(nvme_qpair != NULL);
+
+	io_path->qpair = nvme_qpair;
+	TAILQ_INSERT_TAIL(&nvme_qpair->io_path_list, io_path, tailq);
+
+	io_path->nbdev_ch = nbdev_ch;
+	STAILQ_INSERT_TAIL(&nbdev_ch->io_path_list, io_path, stailq);
+
+	bdev_nvme_clear_current_io_path(nbdev_ch);
+
+	return 0;
+}
+
+
 static void
 bdev_nvme_clear_retry_io_path(struct nvme_bdev_channel *nbdev_ch,
 			      struct nvme_io_path *io_path)
@@ -939,6 +986,9 @@ bdev_nvme_create_bdev_channel_cb(void *io_device, void *ctx_buf)
 	struct nvme_ns *nvme_ns;
 	int rc;
 
+	bool interrupt = *((uint64_t*)spdk_io_channel_from_ctx(ctx_buf));
+	SPDK_ERRLOG("Creating bdev channel for bdev %s interrupt: %d\n", nbdev->disk.name, interrupt);
+
 	STAILQ_INIT(&nbdev_ch->io_path_list);
 	TAILQ_INIT(&nbdev_ch->retry_io_list);
 
@@ -948,8 +998,10 @@ bdev_nvme_create_bdev_channel_cb(void *io_device, void *ctx_buf)
 	nbdev_ch->mp_selector = nbdev->mp_selector;
 	nbdev_ch->rr_min_io = nbdev->rr_min_io;
 
+	int efd = 0;
+
 	TAILQ_FOREACH(nvme_ns, &nbdev->nvme_ns_list, tailq) {
-		rc = _bdev_nvme_add_io_path(nbdev_ch, nvme_ns);
+		rc = _bdev_nvme_add_io_path_int(nbdev_ch, nvme_ns, interrupt, &efd);
 		if (rc != 0) {
 			pthread_mutex_unlock(&nbdev->mutex);
 
@@ -958,6 +1010,8 @@ bdev_nvme_create_bdev_channel_cb(void *io_device, void *ctx_buf)
 		}
 	}
 	pthread_mutex_unlock(&nbdev->mutex);
+
+	*(int*)((uint64_t*)spdk_io_channel_from_ctx(ctx_buf) + 8) = efd;
 
 	return 0;
 }
@@ -1954,7 +2008,16 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 	opts.io_queue_requests = spdk_max(g_opts.io_queue_requests, opts.io_queue_requests);
 	g_opts.io_queue_requests = opts.io_queue_requests;
 
-	qpair = spdk_nvme_ctrlr_alloc_io_qpair(nvme_ctrlr->ctrlr, &opts, sizeof(opts));
+	if(nvme_ctrlr->interrupt_mode)
+	{
+		opts.interupt_mode = true;
+		opts.async_mode = false;
+	} else
+	{
+		opts.interupt_mode = false;
+	}
+
+	qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(nvme_ctrlr->ctrlr, &opts, sizeof(opts), &(nvme_qpair->efd));
 	if (qpair == NULL) {
 		return -1;
 	}
@@ -1963,6 +2026,9 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 			   spdk_nvme_qpair_get_id(qpair), spdk_thread_get_id(nvme_ctrlr->thread));
 
 	assert(nvme_qpair->group != NULL);
+
+	// TODO: 中断下处理轮询组
+	SPDK_ERRLOG("create qpair %p\n", qpair);
 
 	rc = spdk_nvme_poll_group_add(nvme_qpair->group->group, qpair);
 	if (rc != 0) {
@@ -3605,8 +3671,15 @@ bdev_nvme_create_ctrlr_channel_cb(void *io_device, void *ctx_buf)
 {
 	struct nvme_ctrlr *nvme_ctrlr = io_device;
 	struct nvme_ctrlr_channel *ctrlr_ch = ctx_buf;
+	struct spdk_io_channel *ch = spdk_io_channel_from_ctx(ctx_buf);
+	SPDK_ERRLOG("Creating ctrlr channel for nvme_ctrlr %ld\n", *((uint64_t*)ch));
+	nvme_ctrlr->interrupt_mode = *((uint64_t*)ch);
 
-	return nvme_qpair_create(nvme_ctrlr, ctrlr_ch);
+	int re = nvme_qpair_create(nvme_ctrlr, ctrlr_ch);
+	if (re != 0)
+		return re;
+	*(int*)((uint64_t*)ch + 8) = ctrlr_ch->qpair->efd;
+	return 0;
 }
 
 static void
@@ -3828,6 +3901,14 @@ bdev_nvme_get_io_channel(void *ctx)
 	struct nvme_bdev *nvme_bdev = ctx;
 
 	return spdk_get_io_channel(nvme_bdev);
+}
+
+static struct spdk_io_channel *
+bdev_nvme_get_io_channel_int(void *ctx, bool interrupt)
+{
+	struct nvme_bdev *nvme_bdev = ctx;
+
+	return spdk_get_io_channel_int(nvme_bdev, interrupt);
 }
 
 static void *
@@ -4285,6 +4366,7 @@ static const struct spdk_bdev_fn_table nvmelib_fn_table = {
 	.submit_request			= bdev_nvme_submit_request,
 	.io_type_supported		= bdev_nvme_io_type_supported,
 	.get_io_channel			= bdev_nvme_get_io_channel,
+	.get_io_channel_int     = bdev_nvme_get_io_channel_int,
 	.dump_info_json			= bdev_nvme_dump_info_json,
 	.write_config_json		= bdev_nvme_write_config_json,
 	.get_spin_time			= bdev_nvme_get_spin_time,

@@ -717,6 +717,24 @@ void spdk_io_device_unregister(void *io_device, spdk_io_device_unregister_cb unr
 struct spdk_io_channel *spdk_get_io_channel(void *io_device);
 
 /**
+ * Get an I/O channel for the specified io_device to be used by the calling thread.
+ *
+ * The io_device context pointer specified must have previously been registered
+ * using spdk_io_device_register(). If an existing I/O channel does not exist
+ * yet for the given io_device on the calling thread, it will allocate an I/O
+ * channel and invoke the create_cb function pointer specified in spdk_io_device_register().
+ * If an I/O channel already exists for the given io_device on the calling thread,
+ * its reference is returned rather than creating a new I/O channel.
+ *
+ * \param io_device The pointer to io_device context.
+ *
+ * \return a pointer to the I/O channel for this device on success or NULL on failure.
+ */
+struct spdk_io_channel *spdk_get_io_channel_int(void *io_device, bool interrupt);
+
+int get_channel_fd(struct spdk_io_channel *ch);
+
+/**
  * Release a reference to an I/O channel. This happens asynchronously.
  *
  * This must be called on the same thread that called spdk_get_io_channel()

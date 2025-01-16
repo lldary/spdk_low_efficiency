@@ -2410,6 +2410,91 @@ spdk_get_io_channel(void *io_device)
 	return ch;
 }
 
+struct spdk_io_channel *
+spdk_get_io_channel_int(void *io_device, bool interrupt)
+{
+	struct spdk_io_channel *ch;
+	struct spdk_thread *thread;
+	struct io_device *dev;
+	int rc;
+
+	pthread_mutex_lock(&g_devlist_mutex);
+	dev = io_device_get(io_device);
+	if (dev == NULL) {
+		SPDK_ERRLOG("could not find io_device %p\n", io_device);
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	thread = _get_thread();
+	if (!thread) {
+		SPDK_ERRLOG("No thread allocated\n");
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	if (spdk_unlikely(thread->state == SPDK_THREAD_STATE_EXITED)) {
+		SPDK_ERRLOG("Thread %s is marked as exited\n", thread->name);
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	ch = thread_get_io_channel(thread, dev);
+	if (ch != NULL) {
+		ch->ref++;
+
+		SPDK_DEBUGLOG(thread, "Get io_channel %p for io_device %s (%p) on thread %s refcnt %u\n",
+			      ch, dev->name, dev->io_device, thread->name, ch->ref);
+
+		/*
+		 * An I/O channel already exists for this device on this
+		 *  thread, so return it.
+		 */
+		pthread_mutex_unlock(&g_devlist_mutex);
+		spdk_trace_record(TRACE_THREAD_IOCH_GET, 0, 0,
+				  (uint64_t)spdk_io_channel_get_ctx(ch), ch->ref);
+		return ch;
+	}
+
+	ch = calloc(1, sizeof(*ch) + dev->ctx_size);
+	if (ch == NULL) {
+		SPDK_ERRLOG("could not calloc spdk_io_channel\n");
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	ch->dev = dev;
+	ch->destroy_cb = dev->destroy_cb;
+	ch->thread = thread;
+	ch->ref = 1;
+	ch->destroy_ref = 0;
+	RB_INSERT(io_channel_tree, &thread->io_channels, ch);
+
+	SPDK_DEBUGLOG(thread, "Get io_channel %p for io_device %s (%p) on thread %s refcnt %u\n",
+		      ch, dev->name, dev->io_device, thread->name, ch->ref);
+
+	dev->refcnt++;
+
+	pthread_mutex_unlock(&g_devlist_mutex);
+
+	ch->interrupt_mode = interrupt;
+
+	rc = dev->create_cb(io_device, (uint8_t *)ch + sizeof(*ch));
+	if (rc != 0) {
+		pthread_mutex_lock(&g_devlist_mutex);
+		RB_REMOVE(io_channel_tree, &ch->thread->io_channels, ch);
+		dev->refcnt--;
+		free(ch);
+		SPDK_ERRLOG("could not create io_channel for io_device %s (%p): %s (rc=%d)\n",
+			    dev->name, io_device, spdk_strerror(-rc), rc);
+		pthread_mutex_unlock(&g_devlist_mutex);
+		return NULL;
+	}
+
+	spdk_trace_record(TRACE_THREAD_IOCH_GET, 0, 0, (uint64_t)spdk_io_channel_get_ctx(ch), 1);
+	return ch;
+}
+
 static void
 put_io_channel(void *arg)
 {
@@ -2505,6 +2590,12 @@ struct spdk_io_channel *
 spdk_io_channel_from_ctx(void *ctx)
 {
 	return (struct spdk_io_channel *)((uint8_t *)ctx - sizeof(struct spdk_io_channel));
+}
+
+int
+get_channel_fd(struct spdk_io_channel *ch)
+{
+	return *(int*)(((char *)ch) + 8 * sizeof(void *));
 }
 
 struct spdk_thread *
