@@ -883,13 +883,14 @@ spdk_fio_init(struct thread_data *td)
     if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
         SPDK_ERRLOG("pthread_setaffinity_np");
     }
+#ifdef SPDK_CONFIG_UINTR_MODE
 	SPDK_ERRLOG("开始注册用户态中断处理函数\n");
 	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
 	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
 		SPDK_ERRLOG("Interrupt handler register error");
 		exit(EXIT_FAILURE);
 	}
-
+#endif
 	if (spdk_fio_init_spdk_env(td) != 0) {
 		return -1;
 	}

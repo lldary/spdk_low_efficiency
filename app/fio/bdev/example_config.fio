@@ -1,6 +1,6 @@
 [global]
 ioengine=spdk_bdev
-spdk_json_conf=./fio_nvme_rpc.json
+spdk_json_conf=/home/led/workspace/spdk_low_efficiency/fio_nvme_rpc.json
 thread=1
 group_reporting=1
 direct=1
@@ -8,7 +8,7 @@ verify=0
 time_based=1
 ramp_time=0
 runtime=20
-iodepth=48
+iodepth=6
 numjobs=1
 rw=randread
 bs=4k
@@ -16,20 +16,10 @@ bs=4k
 [test]
 file_service_type=roundrobin
 filename=Nvme0n1
-[test1]
-file_service_type=roundrobin
 filename=Nvme1n1
-[test2]
-file_service_type=roundrobin
 filename=Nvme2n1
-[test3]
-file_service_type=roundrobin
 filename=Nvme3n1
-[test4]
-file_service_type=roundrobin
 filename=Nvme4n1
-[test5]
-file_service_type=roundrobin
 filename=Nvme5n1
 
 
