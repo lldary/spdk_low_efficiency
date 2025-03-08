@@ -66,7 +66,9 @@
 #define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
 
 volatile uint32_t uintr_index = 0;
-volatile uint32_t uintr_count[7] = {0};
+volatile uint32_t uintr_count[14] = {0};
+uint32_t uipi_list_count = 0;
+uint32_t uipi_list[1024] = {0};
 #endif
 
 #if defined(SPDK_CONFIG_INT_POLL_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
@@ -123,6 +125,7 @@ struct spdk_fio_target {
 	struct spdk_bdev	*bdev;
 	struct spdk_bdev_desc	*desc;
 	struct spdk_io_channel	*ch;
+	uint32_t uipi_index;
 	bool zone_append_enabled;
 
 	TAILQ_ENTRY(spdk_fio_target) link;
@@ -819,6 +822,22 @@ spdk_fio_bdev_open(void *arg)
 			return;
 		}
 
+#ifdef SPDK_CONFIG_UINTR_MODE
+		int fd = get_channel_fd(target->ch);
+		target->uipi_index = uintr_register_sender(fd, 0);
+		if(target->uipi_index < 0) {
+			SPDK_ERRLOG("Unable to register sender\n");
+			spdk_put_io_channel(target->ch);
+			spdk_bdev_close(target->desc);
+			free(target);
+			fio_thread->failed = true;
+			return;
+		}
+		uipi_list[uipi_list_count++] = target->uipi_index;
+		SPDK_ERRLOG("uipi_index: %d\n", target->uipi_index);
+		_senduipi(target->uipi_index);
+#endif
+
 		f->engine_data = target;
 
 		rc = spdk_fio_handle_options_per_target(td, f);
@@ -842,13 +861,27 @@ spdk_fio_bdev_open(void *arg)
 void __attribute__((interrupt)) __attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame, unsigned long long vector);
 
-
 void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
 {
-	int temp = (vector) % 7;
-	uintr_count[temp]++;
+	// int temp = (vector) % 7;
+	// int ret = write(stderr, "User Interrupt\n", 15);
+	// write(STDOUT_FILENO, "User Interrupt!\n", 16);  // 直接写到标准输出
+	// if (ret < 0) {
+	// 	// SPDK_ERRLOG("write error\n");
+	// 	return;
+	// }
+	uintr_count[vector]++;
+	// for(int i = 0; i < uipi_list_count; i++) {
+		// _senduipi(uipi_list[i]);
+	// }
+	// if(vector >= 3){
+	// 	_senduipi(0);
+	// }
+	for(int i = 0; i < uipi_list_count; i++) {
+		_senduipi(uipi_list[i]);
+	}
 }
 #endif
 
@@ -1137,12 +1170,14 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 	uint64_t i = 0;
 	// uintr_wait(100, 0);
 	uint64_t total_count = 0;
-	for(i = 0; i < 7; i++){
+	for(i = 0; i < 14; i++){
 		total_count += uintr_count[i];
 	}
+	// if(total_count != temp)
+	// 	SPDK_ERRLOG("total_count = %d temp = %d\n", total_count, temp);
 	while(temp == total_count){
 		total_count = 0;
-		for(i = 0; i < 7; i++){
+		for(i = 0; i < 14; i++){
 			total_count += uintr_count[i];
 		}
 	}
