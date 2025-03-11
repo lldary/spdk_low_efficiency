@@ -43,6 +43,7 @@ function usage() {
 	echo " --enable-pgo-capture[=PATH]      Enable generation of profile guided optimization data"
 	echo " --enable-pgo-use[=PATH]   Use previously captured profile guided optimization data"
 	echo " --enable-cet              Enable Intel Control-flow Enforcement Technology (CET)"
+	echo " --set-freqmode            Set slowest cpu freq mode for SPDK to use origin mode"
 	echo " --set-intmode             Set interrupt mode for SPDK to use interrupt mode"
 	echo " --set-uintrmode           Set interrupt mode for SPDK to use user interrupt mode"
 	echo " --set-intpollmode         Set interrupt mode for SPDK to use interrupt poll mode"
@@ -403,6 +404,16 @@ for i in "$@"; do
 			CONFIG[UINTR_MODE]=n
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=n
+			CONFIG[FREQ_MODE]=n
+			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
+			;;
+		--set-freqmode)
+			echo "Setting slowest cpu freq mode for SPDK to use origin mode"
+			CONFIG[INT_MODE]=n
+			CONFIG[UINTR_MODE]=n
+			CONFIG[INT_POLL_MODE]=n
+			CONFIG[UINTR_POLL_MODE]=n
+			CONFIG[FREQ_MODE]=y
 			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--set-uintrmode)
@@ -411,6 +422,7 @@ for i in "$@"; do
 			CONFIG[UINTR_MODE]=y
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=n
+			CONFIG[FREQ_MODE]=n
 			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--set-intpollmode)
@@ -419,6 +431,7 @@ for i in "$@"; do
 			CONFIG[UINTR_MODE]=n
 			CONFIG[INT_POLL_MODE]=y
 			CONFIG[UINTR_POLL_MODE]=n
+			CONFIG[FREQ_MODE]=n
 			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--set-uintrpollmode)
@@ -427,6 +440,7 @@ for i in "$@"; do
 			CONFIG[UINTR_MODE]=n
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=y
+			CONFIG[FREQ_MODE]=n
 			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
 			;;
 		--disable-cet)

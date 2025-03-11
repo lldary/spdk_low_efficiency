@@ -48,8 +48,10 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <stdatomic.h>
 
 #ifndef __NR_uintr_register_handler
+#define __NR_uintr_wait_msix_interrupt 470
 #define __NR_uintr_register_handler	471
 #define __NR_uintr_unregister_handler	472
 #define __NR_uintr_create_fd		473
@@ -58,6 +60,7 @@
 #define __NR_uintr_wait			476
 #endif
 
+#define uintr_wait_msix_interrupt(ptr, flags)   syscall(__NR_uintr_wait_msix_interrupt, ptr, flags)
 #define uintr_register_handler(handler, flags)	syscall(__NR_uintr_register_handler, handler, flags)
 #define uintr_unregister_handler(flags)		syscall(__NR_uintr_unregister_handler, flags)
 #define uintr_create_fd(vector, flags)		syscall(__NR_uintr_create_fd, vector, flags)
@@ -69,6 +72,13 @@ volatile uint32_t uintr_index = 0;
 volatile uint32_t uintr_count[14] = {0};
 uint32_t uipi_list_count = 0;
 uint32_t uipi_list[1024] = {0};
+// struct spdk_fio_thread		*gl_fio_thread;
+#endif
+
+#ifdef SPDK_CONFIG_FREQ_MODE
+#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
+#define __NR_uintr_wait_msix_interrupt 470
+#define uintr_wait_msix_interrupt(ptr, flags)   syscall(__NR_uintr_wait_msix_interrupt, ptr, flags)
 #endif
 
 #if defined(SPDK_CONFIG_INT_POLL_MODE) || defined(SPDK_CONFIG_UINTR_POLL_MODE)
@@ -140,6 +150,7 @@ struct spdk_fio_thread {
 
 	struct io_u		**iocq;		/* io completion queue */
 	unsigned int		iocq_count;	/* number of iocq entries filled by last getevents */
+	volatile unsigned int temp_iocq_count;
 	unsigned int		iocq_size;	/* number of iocq entries allocated */
 	TAILQ_ENTRY(spdk_fio_thread)	link;
 	int fd;
@@ -872,16 +883,17 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	// 	// SPDK_ERRLOG("write error\n");
 	// 	return;
 	// }
-	uintr_count[vector]++;
 	// for(int i = 0; i < uipi_list_count; i++) {
-		// _senduipi(uipi_list[i]);
+	// _senduipi(0);
 	// }
 	// if(vector >= 3){
-	// 	_senduipi(0);
+	// spdk_thread_poll(gl_fio_thread->thread, 0, 0);
+	uintr_count[vector]++;
+	_senduipi(vector - 3);
 	// }
-	for(int i = 0; i < uipi_list_count; i++) {
-		_senduipi(uipi_list[i]);
-	}
+	// for(int i = 0; i < uipi_list_count; i++) {
+	// 	_senduipi(uipi_list[i]);
+	// }
 }
 #endif
 
@@ -902,7 +914,7 @@ spdk_fio_init(struct thread_data *td)
 
 #ifdef SPDK_CONFIG_UINTR_MODE
 	int cpu_id = td->thread_number % 10 + 20;
-	cpufreq_set_frequency(cpu_id, 800000UL);
+	// cpufreq_set_frequency(cpu_id, 800000UL);
 #else
 	int cpu_id = td->thread_number % 10 + 30;
 #endif 
@@ -1051,6 +1063,8 @@ spdk_fio_completion_cb(struct spdk_bdev_io *bdev_io,
 	assert(fio_thread->iocq_count < fio_thread->iocq_size);
 	fio_req->io->error = success ? 0 : EIO;
 	fio_thread->iocq[fio_thread->iocq_count++] = fio_req->io;
+	// fio_thread->iocq[fio_thread->temp_iocq_count++] = fio_req->io;
+	// SPDK_ERRLOG("temp_iocq_count = %d\n", fio_thread->temp_iocq_count);
 
 	spdk_bdev_free_io(bdev_io);
 }
@@ -1093,7 +1107,9 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		is128 = false;
 	}
 #endif
-
+#ifdef SPDK_CONFIG_UINTR_MODE
+	_senduipi(target->uipi_index);
+#endif
 	switch (io_u->ddir) {
 	case DDIR_READ:
 		rc = spdk_bdev_read(target->desc, target->ch,
@@ -1165,23 +1181,63 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 {
 #ifdef SPDK_CONFIG_INT_MODE
 #ifdef SPDK_CONFIG_UINTR_MODE
+	struct spdk_fio_target *target;
 	static uint32_t temp = 0;
 	// SPDK_ERRLOG("uint_count = %d\n", uintr_count);
 	uint64_t i = 0;
 	// uintr_wait(100, 0);
 	uint64_t total_count = 0;
-	for(i = 0; i < 14; i++){
-		total_count += uintr_count[i];
+	int tmp = 0;
+	TAILQ_FOREACH(target, &fio_thread->targets, link) {
+		total_count += uintr_count[target->uipi_index + 3];
 	}
-	// if(total_count != temp)
-	// 	SPDK_ERRLOG("total_count = %d temp = %d\n", total_count, temp);
-	while(temp == total_count){
+	// SPDK_ERRLOG("before total_count = %ld temp = %ld fio_thread->iocq_count = %d addr = %p\n", total_count, temp, fio_thread->iocq_count, (uintr_count + 3));
+	if(temp == total_count)
+	{
+		// int cpu_id = sched_getcpu();
+		// cpufreq_set_frequency(cpu_id, 800000UL);
+		#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
+		uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
+		// spdk_thread_poll(fio_thread->thread, 0, 0);
+		// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
+	} else {
+		// spdk_thread_poll(fio_thread->thread, 0, 0);
+	}
+		// uintr_wait_msix_interrupt(uintr_count + 3, 0);
+	// while(temp == total_count){
 		total_count = 0;
-		for(i = 0; i < 14; i++){
-			total_count += uintr_count[i];
+		TAILQ_FOREACH(target, &fio_thread->targets, link) {
+			total_count += uintr_count[target->uipi_index + 3];
 		}
-	}
+	// 	for(int i = 0; i < 14; i++){
+	// 		if(uintr_count[i] > 0 && i != 3){
+	// 			SPDK_ERRLOG("uintr_count[%d] = %d\n", i, uintr_count[i]);
+	// 		}
+	// 	}
+	// 	tmp++;
+	// 	if(tmp > 1000000){
+	// 		break;
+	// 	}
+	// }
 	temp = total_count;
+	spdk_thread_poll(fio_thread->thread, 0, 0);
+	// fio_thread->iocq_count = atomic_exchange(&(fio_thread->temp_iocq_count), 0);
+	// for(int i =0; i < 1 << 10; i++)
+	// 	asm volatile("nop");
+	// TAILQ_FOREACH(target, &fio_thread->targets, link) {
+	// 	total_count += uintr_count[target->uipi_index + 3];
+	// }
+	// temp += fio_thread->iocq_count;
+	// if(tmp > 1000000)
+	// {
+	// 	total_count = 0;
+	// 	TAILQ_FOREACH(target, &fio_thread->targets, link) {
+	// 		total_count += uintr_count[target->uipi_index + 3];
+	// 	}
+		// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
+	// }
+	// _senduipi(0);
+	return 0;
 
 #else
 	int max_fd = 0;
@@ -1241,6 +1297,10 @@ static int
 spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		   unsigned int max, const struct timespec *t)
 {
+#ifdef SPDK_CONFIG_FREQ_MODE
+	uintr_wait_msix_interrupt(800000UL, UINTR_WAIT_EXPERIMENTAL_FLAG);
+#endif
+	
 	struct spdk_fio_thread *fio_thread = td->io_ops_data;
 	struct timespec t0, t1;
 	uint64_t timeout = 0;
@@ -1306,6 +1366,9 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		spdk_fio_poll_thread_int(fio_thread);
 
 		if (fio_thread->iocq_count >= min) {
+#ifdef SPDK_CONFIG_FREQ_MODE
+			uintr_wait_msix_interrupt(2200000UL, UINTR_WAIT_EXPERIMENTAL_FLAG);
+#endif
 			return fio_thread->iocq_count;
 		}
 
@@ -1318,7 +1381,9 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			}
 		}
 	}
-
+#ifdef SPDK_CONFIG_FREQ_MODE
+	uintr_wait_msix_interrupt(2200000UL, UINTR_WAIT_EXPERIMENTAL_FLAG);
+#endif
 	return fio_thread->iocq_count;
 }
 
