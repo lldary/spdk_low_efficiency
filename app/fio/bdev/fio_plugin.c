@@ -1211,6 +1211,8 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 			}
 			tmp++;
 		} while(temp == total_count);
+		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
+		uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
 		// spdk_thread_poll(fio_thread->thread, 0, 0);
 		// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
 	} 
@@ -1232,9 +1234,6 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 	// }
 	fio_thread->temp_iocq_count = total_count;
 	spdk_thread_poll(fio_thread->thread, 0, 0);
-	#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
-		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
-	uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
 	// fio_thread->iocq_count = atomic_exchange(&(fio_thread->temp_iocq_count), 0);
 	// for(int i =0; i < 1 << 10; i++)
 	// 	asm volatile("nop");
