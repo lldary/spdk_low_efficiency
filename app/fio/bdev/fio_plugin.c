@@ -889,7 +889,8 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	// if(vector >= 3){
 	// spdk_thread_poll(gl_fio_thread->thread, 0, 0);
 	uintr_count[vector]++;
-	_senduipi(vector - 3);
+	_senduipi(0);
+	_senduipi(1);
 	// }
 	// for(int i = 0; i < uipi_list_count; i++) {
 	// 	_senduipi(uipi_list[i]);
@@ -1182,7 +1183,7 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 #ifdef SPDK_CONFIG_INT_MODE
 #ifdef SPDK_CONFIG_UINTR_MODE
 	struct spdk_fio_target *target;
-	static uint32_t temp = 0;
+	uint32_t temp = fio_thread->temp_iocq_count;
 	// SPDK_ERRLOG("uint_count = %d\n", uintr_count);
 	uint64_t i = 0;
 	// uintr_wait(100, 0);
@@ -1197,18 +1198,27 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 		// int cpu_id = sched_getcpu();
 		// cpufreq_set_frequency(cpu_id, 800000UL);
 		#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
-		uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
+		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
+		uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+		do {
+			total_count = 0;
+			TAILQ_FOREACH(target, &fio_thread->targets, link) {
+				total_count += uintr_count[target->uipi_index + 3];
+			}
+			if(tmp > 10000){
+				break;
+			}
+			tmp++;
+		} while(temp == total_count);
 		// spdk_thread_poll(fio_thread->thread, 0, 0);
 		// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
-	} else {
-		// spdk_thread_poll(fio_thread->thread, 0, 0);
-	}
+	} 
 		// uintr_wait_msix_interrupt(uintr_count + 3, 0);
 	// while(temp == total_count){
-		total_count = 0;
-		TAILQ_FOREACH(target, &fio_thread->targets, link) {
-			total_count += uintr_count[target->uipi_index + 3];
-		}
+		// total_count = 0;
+		// TAILQ_FOREACH(target, &fio_thread->targets, link) {
+		// 	total_count += uintr_count[target->uipi_index + 3];
+		// }
 	// 	for(int i = 0; i < 14; i++){
 	// 		if(uintr_count[i] > 0 && i != 3){
 	// 			SPDK_ERRLOG("uintr_count[%d] = %d\n", i, uintr_count[i]);
@@ -1219,8 +1229,11 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 	// 		break;
 	// 	}
 	// }
-	temp = total_count;
+	fio_thread->temp_iocq_count = total_count;
 	spdk_thread_poll(fio_thread->thread, 0, 0);
+	#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
+		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
+	uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
 	// fio_thread->iocq_count = atomic_exchange(&(fio_thread->temp_iocq_count), 0);
 	// for(int i =0; i < 1 << 10; i++)
 	// 	asm volatile("nop");
