@@ -889,8 +889,9 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	// if(vector >= 3){
 	// spdk_thread_poll(gl_fio_thread->thread, 0, 0);
 	uintr_count[vector]++;
-	_senduipi(0);
-	_senduipi(1);
+	_senduipi(vector - 3);
+	// _senduipi(0);
+	// _senduipi(1);
 	// }
 	// for(int i = 0; i < uipi_list_count; i++) {
 	// 	_senduipi(uipi_list[i]);
