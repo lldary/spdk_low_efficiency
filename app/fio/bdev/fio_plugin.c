@@ -918,7 +918,7 @@ spdk_fio_init(struct thread_data *td)
 	int cpu_id = td->thread_number % 10 + 20;
 	// cpufreq_set_frequency(cpu_id, 800000UL);
 #else
-	int cpu_id = td->thread_number % 10 + 30;
+	int cpu_id = td->thread_number % 40;
 #endif 
 
 	cpu_set_t cpuset;
@@ -1192,27 +1192,37 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 	int tmp = 0;
 	TAILQ_FOREACH(target, &fio_thread->targets, link) {
 		total_count += uintr_count[target->uipi_index + 3];
+		tmp = target->uipi_index + 3;
 	}
 	// SPDK_ERRLOG("before total_count = %ld temp = %ld fio_thread->iocq_count = %d addr = %p\n", total_count, temp, fio_thread->iocq_count, (uintr_count + 3));
 	if(temp == total_count)
 	{
 		// int cpu_id = sched_getcpu();
 		// cpufreq_set_frequency(cpu_id, 800000UL);
-		#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
+		// #define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
 		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
-		uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
-		do {
-			total_count = 0;
-			TAILQ_FOREACH(target, &fio_thread->targets, link) {
-				total_count += uintr_count[target->uipi_index + 3];
-			}
-			if(tmp > 10000){
-				break;
-			}
-			tmp++;
-		} while(temp == total_count);
+		// uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+		// do {
+		// 	total_count = 0;
+		// 	TAILQ_FOREACH(target, &fio_thread->targets, link) {
+		// 		total_count += uintr_count[target->uipi_index + 3];
+		// 	}
+		// 	if(tmp > 10000){
+		// 		break;
+		// 	}
+		// 	tmp++;
+		// } while(temp == total_count);
+		// void* ptr = (void*)(uintr_count + 3);
+		void *ptr = &temp;
+		SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d tmp = %d PTR = %lp\n", total_count, temp, fio_thread->iocq_count, tmp, ptr);
+		_umonitor(ptr);
+		uint32_t control = 0;  // 选择 C 状态
+		uint64_t timeout = 1000000000UL;  // 超时值（TSC 单位）
+		_umwait(control, timeout);
+		spdk_thread_poll(fio_thread->thread, 0, 0);
+		SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
 		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
-		uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+		// uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
 		// spdk_thread_poll(fio_thread->thread, 0, 0);
 		// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
 	} 

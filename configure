@@ -423,7 +423,7 @@ for i in "$@"; do
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=n
 			CONFIG[FREQ_MODE]=n
-			CFLAGS="${CFLAGS:+$CFLAGS }-muintr"
+			CFLAGS="${CFLAGS:+$CFLAGS }-muintr -mwaitpkg"
 			;;
 		--set-intpollmode)
 			echo "Setting interrupt poll mode for SPDK to use interrupt poll mode"

@@ -175,11 +175,6 @@ reset_zone_and_wait_for_completion(struct hello_world_sequence *sequence)
 }
 
 static void
-nvme_format_complete(void){
-	printf("NVMe device successfully formatted.\n");
-}
-
-static void
 hello_world(void)
 {
 	struct ns_entry			*ns_entry;
@@ -285,19 +280,17 @@ hello_world(void)
 			spdk_nvme_qpair_process_completions(ns_entry->qpair, 0);
 		}
 
-        // 定义格式化命令参数
-        struct spdk_nvme_cmd cmd;
-        cmd.opc = SPDK_NVME_OPC_FORMAT_NVM; // 使用 Format 命令
-        cmd.nsid = 1; // 命名空间 ID，通常是 1
-        cmd.cdw10 = SPDK_NVME_OPC_FORMAT_NVM; // 格式化参数（选择格式化所有块）
-        cmd.cdw11 = 0; // 可选参数
+        struct spdk_nvme_format format = {};
+		format.lbaf = 0; // LBA 格式索引
+		format.ms = 0;   // Metadata Size
+		format.pi = 0;   // 保护信息
+		format.ses = 0;  // Secure Erase Setting（0 = 不擦除数据）
 
-        // 执行格式化命令
-        int rc = spdk_nvme_ctrlr_cmd_admin_raw(ns_entry->ctrlr, &cmd, NULL, sizeof(cmd), nvme_format_complete, NULL);
-        if (rc != 0) {
-            printf("Failed to format NVMe device.\n");
-            exit(1);
-        }
+		int rc = spdk_nvme_ctrlr_format(ns_entry->ctrlr, 1, &format);
+		if (rc != 0) {
+			printf("Failed to format NVMe device. Error code: %d\n", rc);
+			exit(1);
+		}
 
         // printf("NVMe device successfully formatted.\n");
 
