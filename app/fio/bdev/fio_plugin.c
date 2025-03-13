@@ -73,6 +73,31 @@ volatile uint32_t uintr_count[14] = {0};
 uint32_t uipi_list_count = 0;
 uint32_t uipi_list[1024] = {0};
 // struct spdk_fio_thread		*gl_fio_thread;
+volatile bool is_idle = 0;
+volatile bool should_run = 0; // TODO: 多线程需要修改
+struct user_thread {
+	uint64_t stack_space[0x10000];
+	uint64_t rsp;
+	uint64_t rip;
+	uint64_t rflags;
+	uint64_t rax;
+	uint64_t rbx;
+	uint64_t rcx;
+	uint64_t rdx;
+	uint64_t rsi;
+	uint64_t rdi;
+	uint64_t rbp;
+	uint64_t r8;
+	uint64_t r9;
+	uint64_t r10;
+	uint64_t r11;
+	uint64_t r12;
+	uint64_t r13;
+	uint64_t r14;
+	uint64_t r15;
+};
+struct user_thread work_thread, idle_thread;
+struct user_thread *current_thread = NULL;
 #endif
 
 #ifdef SPDK_CONFIG_FREQ_MODE
@@ -135,7 +160,7 @@ struct spdk_fio_target {
 	struct spdk_bdev	*bdev;
 	struct spdk_bdev_desc	*desc;
 	struct spdk_io_channel	*ch;
-	uint32_t uipi_index;
+	int32_t uipi_index;
 	bool zone_append_enabled;
 
 	TAILQ_ENTRY(spdk_fio_target) link;
@@ -868,6 +893,19 @@ spdk_fio_bdev_open(void *arg)
 
 #ifdef SPDK_CONFIG_UINTR_MODE
 
+void switch_thread(struct user_thread *from, struct user_thread *to);
+#define local_irq_save(flags) \
+    do {                      \
+        flags = _testui();    \
+        _clui();              \
+    } while (0)
+#define local_irq_restore(flags) \
+    do {                         \
+        if (flags)               \
+            _stui();             \
+    } while (0)
+
+
 // 函数声明
 void __attribute__((interrupt)) __attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame, unsigned long long vector);
@@ -876,26 +914,142 @@ void __attribute__((interrupt))__attribute__((target("general-regs-only", "inlin
 uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
 {
-	// int temp = (vector) % 7;
-	// int ret = write(stderr, "User Interrupt\n", 15);
-	// write(STDOUT_FILENO, "User Interrupt!\n", 16);  // 直接写到标准输出
-	// if (ret < 0) {
-	// 	// SPDK_ERRLOG("write error\n");
-	// 	return;
-	// }
-	// for(int i = 0; i < uipi_list_count; i++) {
-	// _senduipi(0);
-	// }
-	// if(vector >= 3){
-	// spdk_thread_poll(gl_fio_thread->thread, 0, 0);
 	uintr_count[vector]++;
 	_senduipi(vector - 3);
-	// _senduipi(0);
-	// _senduipi(1);
-	// }
-	// for(int i = 0; i < uipi_list_count; i++) {
-	// 	_senduipi(uipi_list[i]);
-	// }
+	if(current_thread == &idle_thread) {
+		int flags;
+		local_irq_save(flags);
+		current_thread = &work_thread;
+		switch_thread(&idle_thread, &work_thread);	
+		local_irq_restore(flags);
+	}
+}
+
+void switch_thread(struct user_thread *from, struct user_thread *to) {
+	asm volatile("push %%rax\n\t"
+				"push %%rbx\n\t"
+				"push %%rcx\n\t"
+				"push %%rdx\n\t"
+				"push %%rsi\n\t"
+				"push %%rdi\n\t"
+				"push %%rbp\n\t"
+				"push %%r8\n\t"
+				"push %%r9\n\t"
+				"push %%r10\n\t"
+				"push %%r11\n\t"
+				"push %%r12\n\t"
+				"push %%r13\n\t"
+				"push %%r14\n\t"
+				"push %%r15\n\t"
+				"mov %%rsp , %0\n\t"
+				"mov %1 , %%rsp\n\t"
+				"pop %%r15\n\t"
+				"pop %%r14\n\t"
+				"pop %%r13\n\t"
+				"pop %%r12\n\t"
+				"pop %%r11\n\t"
+				"pop %%r10\n\t"
+				"pop %%r9\n\t"
+				"pop %%r8\n\t"
+				"pop %%rbp\n\t"
+				"pop %%rdi\n\t"
+				"pop %%rsi\n\t"
+				"pop %%rdx\n\t"
+				"pop %%rcx\n\t"
+				"pop %%rbx\n\t"
+				"pop %%rax\n\t"
+				: "=m"(from->rsp)  // 正确存储 from->rsp
+				: "m"(to->rsp) // 正确加载 to->rsp 和 to->rip
+				);
+	_stui();
+	asm volatile ("ret");
+}
+
+void idle_thread_func(void);
+
+void idle_thread_func(void) {
+	int loop = 0;
+	void *ptr = (void*)&should_run;
+	begin:
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	_umonitor(ptr);
+    _umwait(0, 1000000000UL);
+	// write(STDOUT_FILENO, "Idle Thread\n", 12);
+	if(should_run || loop > 1 << 12) {
+		// write(STDOUT_FILENO, "==== Th====\n", 12);
+		int flags;
+		local_irq_save(flags);
+		current_thread = &work_thread;
+		switch_thread(&idle_thread, &work_thread);
+		local_irq_restore(flags);
+	}
+	loop++;
+	// write(STDOUT_FILENO, "Idle Thread1\n", 13);
+	// write(STDOUT_FILENO, "Idle Thread2\n", 13);
+	goto begin;
 }
 #endif
 
@@ -935,6 +1089,14 @@ spdk_fio_init(struct thread_data *td)
 	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
 	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
 		SPDK_ERRLOG("Interrupt handler register error");
+		exit(EXIT_FAILURE);
+	}
+	idle_thread.rsp = (uint64_t)((unsigned char*)(idle_thread.stack_space) + sizeof(idle_thread.stack_space) - 0x80);
+	idle_thread.rip = (uint64_t)idle_thread_func;
+	idle_thread.stack_space[0xFFFF] = idle_thread_func;
+	uint64_t ptr = *(uint64_t*)((unsigned char*)(idle_thread.rsp) + 0x78);
+	if(ptr != (uint64_t)idle_thread_func) {
+		SPDK_ERRLOG("Error: %lx\n", ptr);
 		exit(EXIT_FAILURE);
 	}
 #endif
@@ -1183,67 +1345,60 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 {
 #ifdef SPDK_CONFIG_INT_MODE
 #ifdef SPDK_CONFIG_UINTR_MODE
-	struct spdk_fio_target *target;
-	uint32_t temp = fio_thread->temp_iocq_count;
-	// SPDK_ERRLOG("uint_count = %d\n", uintr_count);
-	uint64_t i = 0;
-	// uintr_wait(100, 0);
-	uint64_t total_count = 0;
-	int tmp = 0;
-	TAILQ_FOREACH(target, &fio_thread->targets, link) {
-		total_count += uintr_count[target->uipi_index + 3];
-		tmp = target->uipi_index + 3;
-	}
-	// SPDK_ERRLOG("before total_count = %ld temp = %ld fio_thread->iocq_count = %d addr = %p\n", total_count, temp, fio_thread->iocq_count, (uintr_count + 3));
-	if(temp == total_count)
-	{
-		// int cpu_id = sched_getcpu();
-		// cpufreq_set_frequency(cpu_id, 800000UL);
-		// #define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
-		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
-		// uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
-		// do {
-		// 	total_count = 0;
-		// 	TAILQ_FOREACH(target, &fio_thread->targets, link) {
-		// 		total_count += uintr_count[target->uipi_index + 3];
-		// 	}
-		// 	if(tmp > 10000){
-		// 		break;
-		// 	}
-		// 	tmp++;
-		// } while(temp == total_count);
-		// void* ptr = (void*)(uintr_count + 3);
-		void *ptr = &temp;
-		SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d tmp = %d PTR = %lp\n", total_count, temp, fio_thread->iocq_count, tmp, ptr);
-		_umonitor(ptr);
-		uint32_t control = 0;  // 选择 C 状态
-		uint64_t timeout = 1000000000UL;  // 超时值（TSC 单位）
-		_umwait(control, timeout);
-		spdk_thread_poll(fio_thread->thread, 0, 0);
-		SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
-		// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
-		// uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
-		// spdk_thread_poll(fio_thread->thread, 0, 0);
-		// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
-	} 
-		// uintr_wait_msix_interrupt(uintr_count + 3, 0);
-	// while(temp == total_count){
-		// total_count = 0;
-		// TAILQ_FOREACH(target, &fio_thread->targets, link) {
-		// 	total_count += uintr_count[target->uipi_index + 3];
-		// }
-	// 	for(int i = 0; i < 14; i++){
-	// 		if(uintr_count[i] > 0 && i != 3){
-	// 			SPDK_ERRLOG("uintr_count[%d] = %d\n", i, uintr_count[i]);
-	// 		}
-	// 	}
-	// 	tmp++;
-	// 	if(tmp > 1000000){
-	// 		break;
-	// 	}
+	// struct spdk_fio_target *target;
+	// uint32_t temp = fio_thread->temp_iocq_count;
+	// // SPDK_ERRLOG("uint_count = %d\n", uintr_count);
+	// uint64_t i = 0;
+	// // uintr_wait(100, 0);
+	// uint64_t total_count = 0;
+	// int tmp = 0;
+	// TAILQ_FOREACH(target, &fio_thread->targets, link) {
+	// 	total_count += uintr_count[target->uipi_index + 3];
+	// 	tmp = target->uipi_index + 3;
 	// }
-	fio_thread->temp_iocq_count = total_count;
-	spdk_thread_poll(fio_thread->thread, 0, 0);
+	// // SPDK_ERRLOG("before total_count = %ld temp = %ld fio_thread->iocq_count = %d addr = %p\n", total_count, temp, fio_thread->iocq_count, (uintr_count + 3));
+	// if(temp == total_count)
+	// {
+	// 	// int cpu_id = sched_getcpu();
+	// 	// cpufreq_set_frequency(cpu_id, 800000UL);
+	// 	#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
+	// 	uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+	// 	int flags;
+	// 	local_irq_save(flags);
+	// 	current_thread = &idle_thread;
+	// 	switch_thread(&work_thread, &idle_thread);
+	// 	local_irq_restore(flags);
+	// 	uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+	// 	total_count = 0;
+	// 	TAILQ_FOREACH(target, &fio_thread->targets, link) {
+	// 		total_count += uintr_count[target->uipi_index + 3];
+	// 	}
+	// 	spdk_thread_poll(fio_thread->thread, 0, 0);
+	// 	fio_thread->temp_iocq_count = total_count;
+	// 	return 0;
+	// 	// uintr_wait_msix_interrupt((void*)(uintr_count + 3), 0);
+	// 	// uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+	// 	// spdk_thread_poll(fio_thread->thread, 0, 0);
+	// 	// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
+	// } 
+	// 	// uintr_wait_msix_interrupt(uintr_count + 3, 0);
+	// // while(temp == total_count){
+	// 	// total_count = 0;
+	// 	// TAILQ_FOREACH(target, &fio_thread->targets, link) {
+	// 	// 	total_count += uintr_count[target->uipi_index + 3];
+	// 	// }
+	// // 	for(int i = 0; i < 14; i++){
+	// // 		if(uintr_count[i] > 0 && i != 3){
+	// // 			SPDK_ERRLOG("uintr_count[%d] = %d\n", i, uintr_count[i]);
+	// // 		}
+	// // 	}
+	// // 	tmp++;
+	// // 	if(tmp > 1000000){
+	// // 		break;
+	// // 	}
+	// // }
+	// fio_thread->temp_iocq_count = total_count;
+	// spdk_thread_poll(fio_thread->thread, 0, 0);
 	// fio_thread->iocq_count = atomic_exchange(&(fio_thread->temp_iocq_count), 0);
 	// for(int i =0; i < 1 << 10; i++)
 	// 	asm volatile("nop");
@@ -1260,6 +1415,20 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 		// SPDK_ERRLOG("total_count = %ld temp = %ld fio_thread->iocq_count = %d\n", total_count, temp, fio_thread->iocq_count);
 	// }
 	// _senduipi(0);
+	spdk_thread_poll(fio_thread->thread, 0, 0);
+	if(fio_thread->iocq_count >= 1){
+		return 0;
+	}
+	#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
+	uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+	int flags;
+	local_irq_save(flags);
+	current_thread = &idle_thread;
+	switch_thread(&work_thread, &idle_thread);
+	local_irq_restore(flags);
+	uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+	spdk_thread_poll(fio_thread->thread, 0, 0);
+	return 0;
 	return 0;
 
 #else
