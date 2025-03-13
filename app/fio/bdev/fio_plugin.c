@@ -1071,8 +1071,10 @@ spdk_fio_init(struct thread_data *td)
 #ifdef SPDK_CONFIG_UINTR_MODE
 	int cpu_id = td->thread_number % 10 + 20;
 	// cpufreq_set_frequency(cpu_id, 800000UL);
+#elif SPDK_CONFIG_FREQ_MODE
+	int cpu_id = td->thread_number % 10 + 30;
 #else
-	int cpu_id = td->thread_number % 40;
+	int cpu_id = td->thread_number % 10;
 #endif 
 
 	cpu_set_t cpuset;
