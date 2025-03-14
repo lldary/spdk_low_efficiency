@@ -69,7 +69,8 @@
 #define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
 
 volatile uint32_t uintr_index = 0;
-volatile uint32_t uintr_count[14] = {0};
+volatile uint32_t uintr_count[0xFF] = {0};
+uint32_t cpuid_uipi_map[0xFF] = {0};
 uint32_t uipi_list_count = 0;
 uint32_t uipi_list[1024] = {0};
 // struct spdk_fio_thread		*gl_fio_thread;
@@ -870,6 +871,7 @@ spdk_fio_bdev_open(void *arg)
 			fio_thread->failed = true;
 			return;
 		}
+		cpuid_uipi_map[fio_thread->cpu_id] = target->uipi_index;
 		uipi_list[uipi_list_count++] = target->uipi_index;
 		SPDK_ERRLOG("uipi_index: %d\n", target->uipi_index);
 		_senduipi(target->uipi_index);
@@ -916,8 +918,8 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
 {
 	uintr_count[vector]++;
-	_senduipi(vector - 3);
-	uint64_t cpu_index = vector - 2 + 20;
+	_senduipi(cpuid_uipi_map[vector]);
+	uint64_t cpu_index = vector;
 	if(current_thread[cpu_index] == &idle_thread[cpu_index]) {
 		int flags;
 		local_irq_save(flags);
