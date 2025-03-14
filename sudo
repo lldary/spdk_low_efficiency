@@ -1,1 +1,1 @@
-1 /sys/block/nvme4n1/queue/io_poll
+800000 tee /sys/devices/system/cpu/cpu27/cpufreq/scaling_setspeed

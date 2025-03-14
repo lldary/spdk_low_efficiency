@@ -99,6 +99,10 @@ struct user_thread {
 };
 struct user_thread work_thread[0xFF], idle_thread[0xFF];
 struct user_thread* current_thread[0xFF];
+const uint64_t cpu_freq[0x10] = {800000UL,900000UL,1000000UL,1100000UL,1200000UL,1300000UL,1400000UL,1500000UL,1600000UL,1700000UL,1800000UL,1900000UL,2100000UL,2101000UL};
+#define MAX_CPU_FREQ_STATE 13
+#define MIN_CPU_FREQ_STATE 0
+uint64_t freq_state[0xFF] = {0};
 #endif
 
 #ifdef SPDK_CONFIG_FREQ_MODE
@@ -917,7 +921,10 @@ void __attribute__((interrupt))__attribute__((target("general-regs-only", "inlin
 uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
 {
-	uintr_count[vector]++;
+#ifndef SPDK_CONFIG_FAST_MODE
+	uintr_wait_msix_interrupt(2101000UL, vector);
+#endif
+	// uintr_count[vector]++;
 	_senduipi(cpuid_uipi_map[vector]);
 	uint64_t cpu_index = vector;
 	if(current_thread[cpu_index] == &idle_thread[cpu_index]) {
@@ -930,17 +937,9 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 }
 
 void switch_thread(struct user_thread *from, struct user_thread *to) {
-	asm volatile("push %%rax\n\t"
+	asm volatile(
 				"push %%rbx\n\t"
-				"push %%rcx\n\t"
-				"push %%rdx\n\t"
-				"push %%rsi\n\t"
-				"push %%rdi\n\t"
 				"push %%rbp\n\t"
-				"push %%r8\n\t"
-				"push %%r9\n\t"
-				"push %%r10\n\t"
-				"push %%r11\n\t"
 				"push %%r12\n\t"
 				"push %%r13\n\t"
 				"push %%r14\n\t"
@@ -951,17 +950,8 @@ void switch_thread(struct user_thread *from, struct user_thread *to) {
 				"pop %%r14\n\t"
 				"pop %%r13\n\t"
 				"pop %%r12\n\t"
-				"pop %%r11\n\t"
-				"pop %%r10\n\t"
-				"pop %%r9\n\t"
-				"pop %%r8\n\t"
 				"pop %%rbp\n\t"
-				"pop %%rdi\n\t"
-				"pop %%rsi\n\t"
-				"pop %%rdx\n\t"
-				"pop %%rcx\n\t"
 				"pop %%rbx\n\t"
-				"pop %%rax\n\t"
 				: "=m"(from->rsp)  // 正确存储 from->rsp
 				: "m"(to->rsp) // 正确加载 to->rsp 和 to->rip
 				);
@@ -969,81 +959,205 @@ void switch_thread(struct user_thread *from, struct user_thread *to) {
 	asm volatile ("ret");
 }
 
-void idle_thread_func(uint64_t cpu_id);
+void idle_thread_func(void);
 
-void idle_thread_func(uint64_t cpu_id) {
+void idle_thread_func(void) {
 	int loop = 0;
-	void *ptr = (void*)(current_thread + cpu_id);
+	uint64_t cpu_id;
+
+    // 使用内联汇编将 %rbx 的值赋给 loop
+    asm volatile(
+        "mov %%rbx, %0"  // 将 %rbx 的值移动到 loop（%0）
+        : "=r"(cpu_id)      // 输出操作数：将 %rbx 的值存储到 loop
+    );
+	// void *ptr = (void*)(current_thread + cpu_id);
 	begin:
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	_umonitor(ptr);
-    _umwait(0, 1000000000UL);
-	// write(STDOUT_FILENO, "Idle Thread\n", 12);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	// _umonitor(ptr);
+    // _umwait(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
+	_tpause(0, 1000000000UL);
 	if(loop > 1 << 12) {
-		// write(STDOUT_FILENO, "==== Th====\n", 12);
+#ifndef SPDK_CONFIG_FAST_MODE
+		uintr_wait_msix_interrupt(2101000UL, cpu_id);
+#endif
 		int flags;
 		local_irq_save(flags);
 		current_thread[cpu_id] = &work_thread[cpu_id];
@@ -1051,6 +1165,8 @@ void idle_thread_func(uint64_t cpu_id) {
 		local_irq_restore(flags);
 	}
 	loop++;
+	// freq_state[cpu_id] = freq_state[cpu_id] == 0 ? 0 : freq_state[cpu_id]--; 
+	// uintr_wait_msix_interrupt(cpu_freq[freq_state[cpu_id]], 0x1);
 	// write(STDOUT_FILENO, "Idle Thread1\n", 13);
 	// write(STDOUT_FILENO, "Idle Thread2\n", 13);
 	goto begin;
@@ -1074,7 +1190,7 @@ spdk_fio_init(struct thread_data *td)
 
 #if defined(SPDK_CONFIG_UINTR_MODE) || defined(SPDK_CONFIG_FAST_MODE)
 	int cpu_id = td->thread_number % 10 + 20;
-	// cpufreq_set_frequency(cpu_id, 800000UL);
+	cpufreq_set_frequency(cpu_id, 2101000UL);
 #elif SPDK_CONFIG_FREQ_MODE
 	int cpu_id = td->thread_number % 10 + 30;
 #else
@@ -1097,7 +1213,7 @@ spdk_fio_init(struct thread_data *td)
 		SPDK_ERRLOG("Interrupt handler register error");
 		exit(EXIT_FAILURE);
 	}
-	idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(idle_thread[cpu_id].stack_space) + sizeof(idle_thread[cpu_id].stack_space) - 0x80);
+	idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(idle_thread[cpu_id].stack_space) + sizeof(idle_thread[cpu_id].stack_space) - 0x38);
 	idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
 	idle_thread[cpu_id].stack_space[0xFFFF] = idle_thread_func;
 	idle_thread[cpu_id].stack_space[0xFFFE] = cpu_id;
@@ -1116,7 +1232,7 @@ spdk_fio_init(struct thread_data *td)
 	idle_thread[cpu_id].stack_space[0xFFF1] = cpu_id;
 	idle_thread[cpu_id].stack_space[0xFFF0] = cpu_id;
 	idle_thread[cpu_id].stack_space[0xFFEF] = cpu_id;
-	uint64_t ptr = *(uint64_t*)((unsigned char*)(idle_thread[cpu_id].rsp) + 0x78);
+	uint64_t ptr = *(uint64_t*)((unsigned char*)(idle_thread[cpu_id].rsp) + 0x30);
 	if(ptr != (uint64_t)idle_thread_func) {
 		SPDK_ERRLOG("Error: %lx\n", ptr);
 		exit(EXIT_FAILURE);
@@ -1141,7 +1257,7 @@ spdk_fio_init(struct thread_data *td)
 	fio_thread->fd = 0;
 	fio_thread->failed = false;
 
-#ifdef SPDK_CONFIG_UINTR_MODE
+#if defined(SPDK_CONFIG_UINTR_MODE) || defined(SPDK_CONFIG_FREQ_MODE)
 	fio_thread->cpu_id = cpu_id;
 #endif
 
@@ -1375,19 +1491,16 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 	if(fio_thread->iocq_count >= 1){
 		return 0;
 	}
+	uint64_t cpu_id = fio_thread->cpu_id;
 #ifndef SPDK_CONFIG_FAST_MODE
-	#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
-	uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+	// #define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
+	uintr_wait_msix_interrupt(800000UL, cpu_id);
 #endif
 	int flags;
-	uint64_t cpu_id = fio_thread->cpu_id;
 	local_irq_save(flags);
 	current_thread[cpu_id] = &idle_thread[cpu_id];
 	switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
 	local_irq_restore(flags);
-#ifndef SPDK_CONFIG_FAST_MODE
-	uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
-#endif
 	spdk_thread_poll(fio_thread->thread, 0, 0);
 	return 0;
 
@@ -1448,7 +1561,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		   unsigned int max, const struct timespec *t)
 {
 #ifdef SPDK_CONFIG_FREQ_MODE
-	uintr_wait_msix_interrupt(800000UL, UINTR_WAIT_EXPERIMENTAL_FLAG);
+	uintr_wait_msix_interrupt(800000UL, fio_thread->cpu_id);
 #endif
 	
 	struct spdk_fio_thread *fio_thread = td->io_ops_data;
@@ -1493,7 +1606,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	}
 #endif
 
-#if defined(SPDK_CONFIG_INT_MODE) || defined(SPDK_CONFIG_UINTR_MODE)
+#if defined(SPDK_CONFIG_INT_MODE) && !defined(SPDK_CONFIG_UINTR_MODE)
 	static bool temp = true;
 	if(false){
 		temp = false;
@@ -1517,7 +1630,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 
 		if (fio_thread->iocq_count >= min) {
 #ifdef SPDK_CONFIG_FREQ_MODE
-			uintr_wait_msix_interrupt(2200000UL, UINTR_WAIT_EXPERIMENTAL_FLAG);
+			uintr_wait_msix_interrupt(2101000UL, fio_thread->cpu_id);
 #endif
 			return fio_thread->iocq_count;
 		}
@@ -1532,7 +1645,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		}
 	}
 #ifdef SPDK_CONFIG_FREQ_MODE
-	uintr_wait_msix_interrupt(2200000UL, UINTR_WAIT_EXPERIMENTAL_FLAG);
+	uintr_wait_msix_interrupt(2101000UL, fio_thread->cpu_id);
 #endif
 	return fio_thread->iocq_count;
 }
