@@ -96,8 +96,8 @@ struct user_thread {
 	uint64_t r14;
 	uint64_t r15;
 };
-struct user_thread work_thread, idle_thread;
-struct user_thread *current_thread = NULL;
+struct user_thread work_thread[0xFF], idle_thread[0xFF];
+struct user_thread* current_thread[0xFF];
 #endif
 
 #ifdef SPDK_CONFIG_FREQ_MODE
@@ -178,6 +178,7 @@ struct spdk_fio_thread {
 	volatile unsigned int temp_iocq_count;
 	unsigned int		iocq_size;	/* number of iocq entries allocated */
 	TAILQ_ENTRY(spdk_fio_thread)	link;
+	uint64_t cpu_id;
 	int fd;
 };
 
@@ -916,11 +917,12 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 {
 	uintr_count[vector]++;
 	_senduipi(vector - 3);
-	if(current_thread == &idle_thread) {
+	uint64_t cpu_index = vector - 2 + 20;
+	if(current_thread[cpu_index] == &idle_thread[cpu_index]) {
 		int flags;
 		local_irq_save(flags);
-		current_thread = &work_thread;
-		switch_thread(&idle_thread, &work_thread);	
+		current_thread[cpu_index] = &work_thread[cpu_index];
+		switch_thread(idle_thread + cpu_index, work_thread + cpu_index);	
 		local_irq_restore(flags);
 	}
 }
@@ -965,11 +967,11 @@ void switch_thread(struct user_thread *from, struct user_thread *to) {
 	asm volatile ("ret");
 }
 
-void idle_thread_func(void);
+void idle_thread_func(uint64_t cpu_id);
 
-void idle_thread_func(void) {
+void idle_thread_func(uint64_t cpu_id) {
 	int loop = 0;
-	void *ptr = (void*)&should_run;
+	void *ptr = (void*)(current_thread + cpu_id);
 	begin:
 	_umonitor(ptr);
     _umwait(0, 1000000000UL);
@@ -1038,12 +1040,12 @@ void idle_thread_func(void) {
 	_umonitor(ptr);
     _umwait(0, 1000000000UL);
 	// write(STDOUT_FILENO, "Idle Thread\n", 12);
-	if(should_run || loop > 1 << 12) {
+	if(loop > 1 << 12) {
 		// write(STDOUT_FILENO, "==== Th====\n", 12);
 		int flags;
 		local_irq_save(flags);
-		current_thread = &work_thread;
-		switch_thread(&idle_thread, &work_thread);
+		current_thread[cpu_id] = &work_thread[cpu_id];
+		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
 		local_irq_restore(flags);
 	}
 	loop++;
@@ -1093,10 +1095,26 @@ spdk_fio_init(struct thread_data *td)
 		SPDK_ERRLOG("Interrupt handler register error");
 		exit(EXIT_FAILURE);
 	}
-	idle_thread.rsp = (uint64_t)((unsigned char*)(idle_thread.stack_space) + sizeof(idle_thread.stack_space) - 0x80);
-	idle_thread.rip = (uint64_t)idle_thread_func;
-	idle_thread.stack_space[0xFFFF] = idle_thread_func;
-	uint64_t ptr = *(uint64_t*)((unsigned char*)(idle_thread.rsp) + 0x78);
+	idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(idle_thread[cpu_id].stack_space) + sizeof(idle_thread[cpu_id].stack_space) - 0x80);
+	idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
+	idle_thread[cpu_id].stack_space[0xFFFF] = idle_thread_func;
+	idle_thread[cpu_id].stack_space[0xFFFE] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFFD] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFFC] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFFB] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFFA] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF9] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF8] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF7] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF6] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF5] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF4] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF3] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF2] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF1] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFF0] = cpu_id;
+	idle_thread[cpu_id].stack_space[0xFFEF] = cpu_id;
+	uint64_t ptr = *(uint64_t*)((unsigned char*)(idle_thread[cpu_id].rsp) + 0x78);
 	if(ptr != (uint64_t)idle_thread_func) {
 		SPDK_ERRLOG("Error: %lx\n", ptr);
 		exit(EXIT_FAILURE);
@@ -1120,6 +1138,10 @@ spdk_fio_init(struct thread_data *td)
 	assert(fio_thread);
 	fio_thread->fd = 0;
 	fio_thread->failed = false;
+
+#ifdef SPDK_CONFIG_UINTR_MODE
+	fio_thread->cpu_id = cpu_id;
+#endif
 
 	spdk_thread_send_msg(fio_thread->thread, spdk_fio_bdev_open, td);
 
@@ -1351,14 +1373,19 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 	if(fio_thread->iocq_count >= 1){
 		return 0;
 	}
+#ifndef SPDK_CONFIG_FAST_MODE
 	#define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
 	uintr_wait_msix_interrupt((void*)(800000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+#endif
 	int flags;
+	uint64_t cpu_id = fio_thread->cpu_id;
 	local_irq_save(flags);
-	current_thread = &idle_thread;
-	switch_thread(&work_thread, &idle_thread);
+	current_thread[cpu_id] = &idle_thread[cpu_id];
+	switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
 	local_irq_restore(flags);
+#ifndef SPDK_CONFIG_FAST_MODE
 	uintr_wait_msix_interrupt((void*)(2200000UL), UINTR_WAIT_EXPERIMENTAL_FLAG);
+#endif
 	spdk_thread_poll(fio_thread->thread, 0, 0);
 	return 0;
 

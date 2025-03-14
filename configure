@@ -46,6 +46,7 @@ function usage() {
 	echo " --set-freqmode            Set slowest cpu freq mode for SPDK to use origin mode"
 	echo " --set-intmode             Set interrupt mode for SPDK to use interrupt mode"
 	echo " --set-uintrmode           Set interrupt mode for SPDK to use user interrupt mode"
+	echo " --set-fastmode            Set interrupt mode for SPDK to use user interrupt mode but no energy save"
 	echo " --set-intpollmode         Set interrupt mode for SPDK to use interrupt poll mode"
 	echo " --set-uintrpollmode       Set interrupt mode for SPDK to use user interrupt poll mode"
 	echo " --disable-tests           Disable building of functional tests"
@@ -423,6 +424,16 @@ for i in "$@"; do
 			CONFIG[INT_POLL_MODE]=n
 			CONFIG[UINTR_POLL_MODE]=n
 			CONFIG[FREQ_MODE]=n
+			CFLAGS="${CFLAGS:+$CFLAGS }-muintr -mwaitpkg"
+			;;
+		--set-fastmode)
+			echo "Setting user interrupt mode for SPDK to use user interrupt mode"
+			CONFIG[INT_MODE]=y
+			CONFIG[UINTR_MODE]=y
+			CONFIG[INT_POLL_MODE]=n
+			CONFIG[UINTR_POLL_MODE]=n
+			CONFIG[FREQ_MODE]=n
+			CONFIG[FAST_MODE]=y
 			CFLAGS="${CFLAGS:+$CFLAGS }-muintr -mwaitpkg"
 			;;
 		--set-intpollmode)
