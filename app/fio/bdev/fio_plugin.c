@@ -929,7 +929,7 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 #ifndef SPDK_CONFIG_FAST_MODE
 	uintr_wait_msix_interrupt(2101000UL, vector);
 #endif
-		int flags
+		int flags;
 		local_irq_save(flags);
 		current_thread[vector] = work_thread + vector;
 		switch_thread(idle_thread + vector, work_thread + vector);	

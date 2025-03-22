@@ -1,0 +1,187 @@
+fio_plugin.o: fio_plugin.c \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/stdinc.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/bdev.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/accel.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/dma.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/assert.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/queue.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/queue_extras.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/dif.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/scsi_spec.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/nvme_spec.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/json.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/uuid.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/histogram_data.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/bdev_zone.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/env.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/pci_ids.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/file.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/init.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/log.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/thread.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/config.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/fd_group.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/cpuset.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/util.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/likely.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/string.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/rpc.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/jsonrpc.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk_internal/event.h \
+ /home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/event.h \
+ /home/led/workspace/fio/config-host.h /home/led/workspace/fio/fio.h \
+ /home/led/workspace/fio/compiler/compiler.h \
+ /home/led/workspace/fio/thread_options.h \
+ /home/led/workspace/fio/arch/arch.h \
+ /home/led/workspace/fio/arch/../lib/types.h \
+ /home/led/workspace/fio/arch/arch-x86_64.h \
+ /home/led/workspace/fio/arch/arch-x86-common.h \
+ /home/led/workspace/fio/arch/../lib/ffz.h \
+ /home/led/workspace/fio/os/os.h \
+ /home/led/workspace/fio/os/../arch/arch.h \
+ /home/led/workspace/fio/os/../lib/types.h \
+ /home/led/workspace/fio/os/os-linux.h \
+ /home/led/workspace/fio/os/./os-linux-syscall.h \
+ /home/led/workspace/fio/os/./../arch/arch.h \
+ /home/led/workspace/fio/os/../file.h \
+ /home/led/workspace/fio/os/../compiler/compiler.h \
+ /home/led/workspace/fio/os/../io_ddir.h \
+ /home/led/workspace/fio/os/../flist.h \
+ /home/led/workspace/fio/os/../lib/zipf.h \
+ /home/led/workspace/fio/os/../lib/rand.h \
+ /home/led/workspace/fio/os/../lib/types.h \
+ /home/led/workspace/fio/os/../lib/axmap.h \
+ /home/led/workspace/fio/os/../lib/lfsr.h \
+ /home/led/workspace/fio/os/../lib/gauss.h \
+ /home/led/workspace/fio/os/../oslib/strlcat.h \
+ /home/led/workspace/fio/options.h /home/led/workspace/fio/parse.h \
+ /home/led/workspace/fio/flist.h /home/led/workspace/fio/lib/types.h \
+ /home/led/workspace/fio/stat.h /home/led/workspace/fio/iolog.h \
+ /home/led/workspace/fio/lib/rbtree.h \
+ /home/led/workspace/fio/lib/ieee754.h \
+ /home/led/workspace/fio/ioengines.h /home/led/workspace/fio/io_u.h \
+ /home/led/workspace/fio/io_ddir.h /home/led/workspace/fio/debug.h \
+ /home/led/workspace/fio/file.h /home/led/workspace/fio/workqueue.h \
+ /home/led/workspace/fio/zbd_types.h \
+ /home/led/workspace/fio/dataplacement.h \
+ /home/led/workspace/fio/lib/output_buffer.h \
+ /home/led/workspace/fio/diskutil.h \
+ /home/led/workspace/fio/helper_thread.h \
+ /home/led/workspace/fio/fio_sem.h /home/led/workspace/fio/json.h \
+ /home/led/workspace/fio/gettime.h /home/led/workspace/fio/lib/seqlock.h \
+ /home/led/workspace/fio/lib/types.h \
+ /home/led/workspace/fio/lib/../arch/arch.h \
+ /home/led/workspace/fio/lib/pattern.h /home/led/workspace/fio/td_error.h \
+ /home/led/workspace/fio/fifo.h /home/led/workspace/fio/log.h \
+ /home/led/workspace/fio/helpers.h /home/led/workspace/fio/minmax.h \
+ /home/led/workspace/fio/profile.h /home/led/workspace/fio/fio_time.h \
+ /home/led/workspace/fio/oslib/getopt.h \
+ /home/led/workspace/fio/lib/rand.h /home/led/workspace/fio/lib/num2str.h \
+ /home/led/workspace/fio/lib/memalign.h /home/led/workspace/fio/smalloc.h \
+ /home/led/workspace/fio/client.h /home/led/workspace/fio/server.h \
+ /home/led/workspace/fio/flow.h /home/led/workspace/fio/io_u_queue.h \
+ /home/led/workspace/fio/steadystate.h \
+ /home/led/workspace/fio/lib/nowarn_snprintf.h \
+ /home/led/workspace/fio/dedupe.h /home/led/workspace/fio/optgroup.h
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/stdinc.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/bdev.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/accel.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/dma.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/assert.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/queue.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/queue_extras.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/dif.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/scsi_spec.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/nvme_spec.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/json.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/uuid.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/histogram_data.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/bdev_zone.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/env.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/pci_ids.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/file.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/init.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/log.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/thread.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/config.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/fd_group.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/cpuset.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/util.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/likely.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/string.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/rpc.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/jsonrpc.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk_internal/event.h:
+/home/led/workspace/diffmode/uintr-fast-mode/spdk_low_efficiency/include/spdk/event.h:
+/home/led/workspace/fio/config-host.h:
+/home/led/workspace/fio/fio.h:
+/home/led/workspace/fio/compiler/compiler.h:
+/home/led/workspace/fio/thread_options.h:
+/home/led/workspace/fio/arch/arch.h:
+/home/led/workspace/fio/arch/../lib/types.h:
+/home/led/workspace/fio/arch/arch-x86_64.h:
+/home/led/workspace/fio/arch/arch-x86-common.h:
+/home/led/workspace/fio/arch/../lib/ffz.h:
+/home/led/workspace/fio/os/os.h:
+/home/led/workspace/fio/os/../arch/arch.h:
+/home/led/workspace/fio/os/../lib/types.h:
+/home/led/workspace/fio/os/os-linux.h:
+/home/led/workspace/fio/os/./os-linux-syscall.h:
+/home/led/workspace/fio/os/./../arch/arch.h:
+/home/led/workspace/fio/os/../file.h:
+/home/led/workspace/fio/os/../compiler/compiler.h:
+/home/led/workspace/fio/os/../io_ddir.h:
+/home/led/workspace/fio/os/../flist.h:
+/home/led/workspace/fio/os/../lib/zipf.h:
+/home/led/workspace/fio/os/../lib/rand.h:
+/home/led/workspace/fio/os/../lib/types.h:
+/home/led/workspace/fio/os/../lib/axmap.h:
+/home/led/workspace/fio/os/../lib/lfsr.h:
+/home/led/workspace/fio/os/../lib/gauss.h:
+/home/led/workspace/fio/os/../oslib/strlcat.h:
+/home/led/workspace/fio/options.h:
+/home/led/workspace/fio/parse.h:
+/home/led/workspace/fio/flist.h:
+/home/led/workspace/fio/lib/types.h:
+/home/led/workspace/fio/stat.h:
+/home/led/workspace/fio/iolog.h:
+/home/led/workspace/fio/lib/rbtree.h:
+/home/led/workspace/fio/lib/ieee754.h:
+/home/led/workspace/fio/ioengines.h:
+/home/led/workspace/fio/io_u.h:
+/home/led/workspace/fio/io_ddir.h:
+/home/led/workspace/fio/debug.h:
+/home/led/workspace/fio/file.h:
+/home/led/workspace/fio/workqueue.h:
+/home/led/workspace/fio/zbd_types.h:
+/home/led/workspace/fio/dataplacement.h:
+/home/led/workspace/fio/lib/output_buffer.h:
+/home/led/workspace/fio/diskutil.h:
+/home/led/workspace/fio/helper_thread.h:
+/home/led/workspace/fio/fio_sem.h:
+/home/led/workspace/fio/json.h:
+/home/led/workspace/fio/gettime.h:
+/home/led/workspace/fio/lib/seqlock.h:
+/home/led/workspace/fio/lib/types.h:
+/home/led/workspace/fio/lib/../arch/arch.h:
+/home/led/workspace/fio/lib/pattern.h:
+/home/led/workspace/fio/td_error.h:
+/home/led/workspace/fio/fifo.h:
+/home/led/workspace/fio/log.h:
+/home/led/workspace/fio/helpers.h:
+/home/led/workspace/fio/minmax.h:
+/home/led/workspace/fio/profile.h:
+/home/led/workspace/fio/fio_time.h:
+/home/led/workspace/fio/oslib/getopt.h:
+/home/led/workspace/fio/lib/rand.h:
+/home/led/workspace/fio/lib/num2str.h:
+/home/led/workspace/fio/lib/memalign.h:
+/home/led/workspace/fio/smalloc.h:
+/home/led/workspace/fio/client.h:
+/home/led/workspace/fio/server.h:
+/home/led/workspace/fio/flow.h:
+/home/led/workspace/fio/io_u_queue.h:
+/home/led/workspace/fio/steadystate.h:
+/home/led/workspace/fio/lib/nowarn_snprintf.h:
+/home/led/workspace/fio/dedupe.h:
+/home/led/workspace/fio/optgroup.h:
