@@ -923,12 +923,13 @@ void __attribute__((interrupt))__attribute__((target("general-regs-only", "inlin
 uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
 {
+
+	_senduipi(cpuid_uipi_map[vector]);
+	if(current_thread[vector] == idle_thread + vector) {
 #ifndef SPDK_CONFIG_FAST_MODE
 	uintr_wait_msix_interrupt(2101000UL, vector);
 #endif
-	_senduipi(cpuid_uipi_map[vector]);
-	if(current_thread[vector] == idle_thread + vector) {
-		int flags;
+		int flags
 		local_irq_save(flags);
 		current_thread[vector] = work_thread + vector;
 		switch_thread(idle_thread + vector, work_thread + vector);	
@@ -971,10 +972,17 @@ void idle_thread_func(void) {
         : "=r"(cpu_id)      // 输出操作数：将 %rbx 的值存储到 loop
     );
 
-	begin:
+	{
+		int flags;
+		local_irq_save(flags);
+		current_thread[cpu_id] = work_thread + cpu_id;
+		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
+		local_irq_restore(flags);
+	}
 	uint64_t delay = is_write ? 5000 : 10000;
-	delay = is_4k ? delay << 2 : delay << 3; 
-	uint64_t sleep_time = _rdtsc() + 20000;
+	delay = is_4k ? delay << 2 : delay << 3;
+	begin:
+	uint64_t sleep_time = _rdtsc() + delay;
 	_tpause(0, sleep_time);
 
 #ifndef SPDK_CONFIG_FAST_MODE
