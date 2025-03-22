@@ -1383,12 +1383,11 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 static int
 spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		   unsigned int max, const struct timespec *t)
-{
+{	
+	struct spdk_fio_thread *fio_thread = td->io_ops_data;
 #ifdef SPDK_CONFIG_FREQ_MODE
 	uintr_wait_msix_interrupt(800000UL, fio_thread->cpu_id);
 #endif
-	
-	struct spdk_fio_thread *fio_thread = td->io_ops_data;
 	struct timespec t0, t1;
 	uint64_t timeout = 0;
 
