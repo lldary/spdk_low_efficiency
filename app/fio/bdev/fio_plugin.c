@@ -98,7 +98,9 @@ struct user_thread {
 	uint64_t r15;
 };
 struct user_thread work_thread[0xFF], idle_thread[0xFF];
-struct user_thread* current_thread[0xFF];
+struct user_thread* current_thread[0xFF] = {0};
+bool is_write;
+bool is_4k;
 const uint64_t cpu_freq[0x10] = {800000UL,900000UL,1000000UL,1100000UL,1200000UL,1300000UL,1400000UL,1500000UL,1600000UL,1700000UL,1800000UL,1900000UL,2100000UL,2101000UL};
 #define MAX_CPU_FREQ_STATE 13
 #define MIN_CPU_FREQ_STATE 0
@@ -924,14 +926,12 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 #ifndef SPDK_CONFIG_FAST_MODE
 	uintr_wait_msix_interrupt(2101000UL, vector);
 #endif
-	// uintr_count[vector]++;
 	_senduipi(cpuid_uipi_map[vector]);
-	uint64_t cpu_index = vector;
-	if(current_thread[cpu_index] == &idle_thread[cpu_index]) {
+	if(current_thread[vector] == idle_thread + vector) {
 		int flags;
 		local_irq_save(flags);
-		current_thread[cpu_index] = &work_thread[cpu_index];
-		switch_thread(idle_thread + cpu_index, work_thread + cpu_index);	
+		current_thread[vector] = work_thread + vector;
+		switch_thread(idle_thread + vector, work_thread + vector);	
 		local_irq_restore(flags);
 	}
 }
@@ -970,205 +970,21 @@ void idle_thread_func(void) {
         "mov %%rbx, %0"  // 将 %rbx 的值移动到 loop（%0）
         : "=r"(cpu_id)      // 输出操作数：将 %rbx 的值存储到 loop
     );
-	// void *ptr = (void*)(current_thread + cpu_id);
+
 	begin:
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	// _umonitor(ptr);
-    // _umwait(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	_tpause(0, 1000000000UL);
-	if(loop > 1 << 12) {
+	uint64_t delay = is_write ? 5000 : 10000;
+	delay = is_4k ? delay << 2 : delay << 3; 
+	uint64_t sleep_time = _rdtsc() + 20000;
+	_tpause(0, sleep_time);
+
 #ifndef SPDK_CONFIG_FAST_MODE
-		uintr_wait_msix_interrupt(2101000UL, cpu_id);
+	uintr_wait_msix_interrupt(2101000UL, cpu_id);
 #endif
-		int flags;
-		local_irq_save(flags);
-		current_thread[cpu_id] = &work_thread[cpu_id];
-		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
-		local_irq_restore(flags);
-	}
-	loop++;
-	// freq_state[cpu_id] = freq_state[cpu_id] == 0 ? 0 : freq_state[cpu_id]--; 
-	// uintr_wait_msix_interrupt(cpu_freq[freq_state[cpu_id]], 0x1);
-	// write(STDOUT_FILENO, "Idle Thread1\n", 13);
-	// write(STDOUT_FILENO, "Idle Thread2\n", 13);
+	int flags;
+	local_irq_save(flags);
+	current_thread[cpu_id] = work_thread + cpu_id;
+	switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
+	local_irq_restore(flags);
 	goto begin;
 }
 #endif
@@ -1237,6 +1053,10 @@ spdk_fio_init(struct thread_data *td)
 		SPDK_ERRLOG("Error: %lx\n", ptr);
 		exit(EXIT_FAILURE);
 	}
+	switch_thread(work_thread + cpu_id, work_thread + cpu_id);
+	switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+	current_thread[cpu_id] = work_thread + cpu_id;
+	SPDK_ERRLOG("用户态协程初始化成功\n");
 #endif
 	if (spdk_fio_init_spdk_env(td) != 0) {
 		return -1;
@@ -1414,6 +1234,8 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 	}
 #endif
 #ifdef SPDK_CONFIG_UINTR_MODE
+	is_4k = io_u->xfer_buflen == 4096;
+	is_write = io_u->ddir == DDIR_WRITE;
 	_senduipi(target->uipi_index);
 #endif
 	switch (io_u->ddir) {
@@ -1487,18 +1309,20 @@ spdk_fio_poll_thread_int(struct spdk_fio_thread *fio_thread)
 {
 #ifdef SPDK_CONFIG_INT_MODE
 #ifdef SPDK_CONFIG_UINTR_MODE
-	spdk_thread_poll(fio_thread->thread, 0, 0);
-	if(fio_thread->iocq_count >= 1){
-		return 0;
-	}
+	// spdk_thread_poll(fio_thread->thread, 0, 0);
+	// if(fio_thread->iocq_count >= 1){
+	// 	uintr_count[fio_thread->cpu_id] = 0;
+	// 	return 0;
+	// }
 	uint64_t cpu_id = fio_thread->cpu_id;
 #ifndef SPDK_CONFIG_FAST_MODE
 	// #define UINTR_WAIT_EXPERIMENTAL_FLAG 0x1
 	uintr_wait_msix_interrupt(800000UL, cpu_id);
 #endif
 	int flags;
+	// SPDK_ERRLOG("中断模式\n");
 	local_irq_save(flags);
-	current_thread[cpu_id] = &idle_thread[cpu_id];
+	current_thread[cpu_id] = idle_thread + cpu_id;
 	switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
 	local_irq_restore(flags);
 	spdk_thread_poll(fio_thread->thread, 0, 0);
