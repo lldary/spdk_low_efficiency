@@ -152,9 +152,9 @@ pci_device_enable_interrupt_2207(struct rte_pci_device *rte_dev)
 }
 
 static int
-pci_device_enable_interrupt_uintr_2207(struct rte_pci_device *rte_dev)
+pci_device_enable_interrupt_uintr_2207(struct rte_pci_device *rte_dev, uint32_t index)
 {
-	return rte_intr_enable_uintr(rte_dev->intr_handle);
+	return rte_intr_enable_uintr(rte_dev->intr_handle, index);
 }
 
 static int

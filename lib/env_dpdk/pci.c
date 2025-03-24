@@ -846,7 +846,7 @@ spdk_pci_device_enable_interrupts(struct spdk_pci_device *dev, uint32_t efd_coun
 }
 
 int
-spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t efd_count)
+spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t efd_count, uint32_t index)
 {
 	struct rte_pci_device *rte_dev = dev->dev_handle;
 	int rc;
@@ -873,7 +873,7 @@ spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t ef
 	}
 
 	/* Bind each event fd to each interrupt vector */
-	rc = dpdk_pci_device_enable_interrupt_uintr(rte_dev);
+	rc = dpdk_pci_device_enable_interrupt_uintr(rte_dev, index);
 	if (rc) {
 		SPDK_ERRLOG("Failed to enable interrupt for PCI device %s\n",
 			    dpdk_pci_device_get_name(rte_dev));

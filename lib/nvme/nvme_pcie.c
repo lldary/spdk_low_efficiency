@@ -1097,7 +1097,7 @@ static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t i
 	// TODO: 不允许MSIX解决方案
 	struct spdk_pci_device *pci_dev = pctrlr->devhandle;
 #ifdef SPDK_CONFIG_UINTR_MODE
-	spdk_pci_device_enable_interrupts_uintr(pci_dev, index+1);
+	spdk_pci_device_enable_interrupts_uintr(pci_dev, index+1, index);
 #else
 	spdk_pci_device_enable_interrupts(pci_dev, index+1);
 #endif

@@ -386,7 +386,7 @@ nvme_pcie_ctrlr_cmd_create_io_cq(struct spdk_nvme_ctrlr *ctrlr,
 		 * queue id to interrupt vector.
 		 */
 		cmd->cdw11_bits.create_io_cq.iv = io_que->id;
-		SPDK_ERRLOG("The interrupt vector offset starts from 1. We directly map the queue id to interrupt vector.\n");
+		SPDK_ERRLOG("The interrupt vector offset starts from 1. We directly map the queue id to interrupt vector. id %u\n", io_que->id);
 	}
 
 	cmd->dptr.prp.prp1 = pqpair->cpl_bus_addr;

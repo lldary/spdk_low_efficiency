@@ -223,9 +223,9 @@ dpdk_device_scan_allowed(struct rte_device *dev)
 }
 
 int
-dpdk_pci_device_enable_interrupt_uintr(struct rte_pci_device *rte_dev)
+dpdk_pci_device_enable_interrupt_uintr(struct rte_pci_device *rte_dev, uint32_t index)
 {
-	return g_dpdk_fn_table->pci_device_enable_interrupt_uintr(rte_dev);
+	return g_dpdk_fn_table->pci_device_enable_interrupt_uintr(rte_dev, index);
 }
 
 int

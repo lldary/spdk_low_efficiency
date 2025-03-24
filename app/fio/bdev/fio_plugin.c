@@ -925,6 +925,7 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 {
 
 	_senduipi(cpuid_uipi_map[vector]);
+	// write(1, "Interrupt\n", 10);
 	if(current_thread[vector] == idle_thread + vector) {
 #ifndef SPDK_CONFIG_FAST_MODE
 	uintr_wait_msix_interrupt(2101000UL, vector);
@@ -1013,12 +1014,12 @@ spdk_fio_init(struct thread_data *td)
 	int rc;
 
 #if defined(SPDK_CONFIG_UINTR_MODE) || defined(SPDK_CONFIG_FAST_MODE)
-	int cpu_id = td->thread_number % 10 + 20;
+	int cpu_id = td->thread_number % 40;
 	cpufreq_set_frequency(cpu_id, 2101000UL);
 #elif SPDK_CONFIG_FREQ_MODE
-	int cpu_id = td->thread_number % 10 + 30;
+	int cpu_id = td->thread_number % 40;
 #else
-	int cpu_id = td->thread_number % 10;
+	int cpu_id = td->thread_number % 40;
 #endif 
 
 	cpu_set_t cpuset;
