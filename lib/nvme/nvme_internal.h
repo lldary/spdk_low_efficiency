@@ -1714,6 +1714,8 @@ int nvme_transport_qpair_get_fd(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_
 				struct spdk_event_handler_opts *opts);
 int32_t nvme_transport_qpair_process_completions(struct spdk_nvme_qpair *qpair,
 		uint32_t max_completions);
+		int32_t nvme_transport_qpair_check_completions(struct spdk_nvme_qpair *qpair,
+			uint32_t max_completions);
 void nvme_transport_admin_qpair_abort_aers(struct spdk_nvme_qpair *qpair);
 int nvme_transport_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 		int (*iter_fn)(struct nvme_request *req, void *arg),
@@ -1733,6 +1735,8 @@ int nvme_transport_poll_group_disconnect_qpair(struct spdk_nvme_qpair *qpair);
 int nvme_transport_poll_group_connect_qpair(struct spdk_nvme_qpair *qpair);
 int64_t nvme_transport_poll_group_process_completions(struct spdk_nvme_transport_poll_group *tgroup,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
+int64_t nvme_transport_poll_group_check_completions(struct spdk_nvme_transport_poll_group *tgroup,
+			uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
 void nvme_transport_poll_group_check_disconnected_qpairs(
 	struct spdk_nvme_transport_poll_group *tgroup,
 	spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);

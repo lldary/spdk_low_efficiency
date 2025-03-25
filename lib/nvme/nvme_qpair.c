@@ -839,6 +839,88 @@ spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 	return ret;
 }
 
+int32_t
+spdk_nvme_qpair_check_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
+{
+	int32_t ret;
+	struct nvme_request *req, *tmp;
+
+	/* Complete any pending register operations */
+	if (nvme_qpair_is_admin_queue(qpair)) {
+		nvme_complete_register_operations(qpair);
+	}
+
+	if (spdk_unlikely(qpair->ctrlr->is_failed &&
+			  nvme_qpair_get_state(qpair) != NVME_QPAIR_DISCONNECTING)) {
+		if (qpair->ctrlr->is_removed) {
+			nvme_qpair_set_state(qpair, NVME_QPAIR_DESTROYING);
+			nvme_qpair_abort_all_queued_reqs(qpair);
+			nvme_transport_qpair_abort_reqs(qpair);
+		}
+		return -ENXIO;
+	}
+
+	if (spdk_unlikely(!nvme_qpair_check_enabled(qpair) &&
+			  !(nvme_qpair_get_state(qpair) == NVME_QPAIR_CONNECTING ||
+			    nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING))) {
+		/*
+		 * qpair is not enabled, likely because a controller reset is
+		 *  in progress.
+		 */
+		return -ENXIO;
+	}
+
+	/* error injection for those queued error requests */
+	if (spdk_unlikely(!STAILQ_EMPTY(&qpair->err_req_head))) {
+		STAILQ_FOREACH_SAFE(req, &qpair->err_req_head, stailq, tmp) {
+			if (req->pid == getpid() &&
+			    spdk_get_ticks() - req->submit_tick > req->timeout_tsc) {
+				STAILQ_REMOVE(&qpair->err_req_head, req, nvme_request, stailq);
+				nvme_qpair_manual_complete_request(qpair, req,
+								   req->cpl.status.sct,
+								   req->cpl.status.sc, qpair->abort_dnr, true);
+			}
+		}
+	}
+
+	qpair->in_completion_context = 1;
+	ret = nvme_transport_qpair_check_completions(qpair, max_completions);
+	if (ret < 0) {
+		if (ret == -ENXIO && nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING) {
+			ret = 0;
+		} else {
+			NVME_CTRLR_ERRLOG(qpair->ctrlr, "CQ transport error %d (%s) on qpair id %hu\n",
+					  ret, spdk_strerror(-ret), qpair->id);
+			if (nvme_qpair_is_admin_queue(qpair)) {
+				nvme_ctrlr_fail(qpair->ctrlr, false);
+			}
+		}
+	}
+	qpair->in_completion_context = 0;
+	if(ret > 0)
+		return ret;
+	if (qpair->delete_after_completion_context) {
+		/*
+		 * A request to delete this qpair was made in the context of this completion
+		 *  routine - so it is safe to delete it now.
+		 */
+		spdk_nvme_ctrlr_free_io_qpair(qpair);
+		return ret;
+	}
+
+	/*
+	 * At this point, ret must represent the number of completions we reaped.
+	 * submit as many queued requests as we completed.
+	 */
+	if (ret > 0) {
+		nvme_qpair_resubmit_requests(qpair, ret);
+	} else {
+		_nvme_qpair_complete_abort_queued_reqs(qpair);
+	}
+
+	return ret;
+}
+
 spdk_nvme_qp_failure_reason
 spdk_nvme_qpair_get_failure_reason(struct spdk_nvme_qpair *qpair)
 {

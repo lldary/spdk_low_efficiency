@@ -1027,6 +1027,93 @@ nvme_pcie_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 	return num_completions;
 }
 
+int32_t
+nvme_pcie_qpair_check_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
+{
+	struct nvme_pcie_qpair	*pqpair = nvme_pcie_qpair(qpair);
+	struct nvme_tracker	*tr;
+	struct spdk_nvme_cpl	*cpl, *next_cpl;
+	uint32_t		 num_completions = 0;
+	struct spdk_nvme_ctrlr	*ctrlr = qpair->ctrlr;
+	uint16_t		 next_cq_head;
+	uint8_t			 next_phase;
+	bool			 next_is_valid = false;
+	int			 rc;
+
+	if (spdk_unlikely(pqpair->pcie_state == NVME_PCIE_QPAIR_FAILED)) {
+		return -ENXIO;
+	}
+
+	if (spdk_unlikely(nvme_qpair_get_state(qpair) == NVME_QPAIR_CONNECTING)) {
+		if (pqpair->pcie_state == NVME_PCIE_QPAIR_READY) {
+			/* It is possible that another thread set the pcie_state to
+			 * QPAIR_READY, if it polled the adminq and processed the SQ
+			 * completion for this qpair.  So check for that condition
+			 * here and then update the qpair's state to CONNECTED, since
+			 * we can only set the qpair state from the qpair's thread.
+			 * (Note: this fixed issue #2157.)
+			 */
+			nvme_qpair_set_state(qpair, NVME_QPAIR_CONNECTED);
+		} else if (pqpair->pcie_state == NVME_PCIE_QPAIR_FAILED) {
+			nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTED);
+			return -ENXIO;
+		} else {
+			rc = spdk_nvme_qpair_process_completions(ctrlr->adminq, 0);
+			if (rc < 0) {
+				return rc;
+			} else if (pqpair->pcie_state == NVME_PCIE_QPAIR_FAILED) {
+				nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTED);
+				return -ENXIO;
+			}
+		}
+		return 0;
+	}
+
+	if (spdk_unlikely(nvme_qpair_is_admin_queue(qpair))) {
+		nvme_ctrlr_lock(ctrlr);
+	}
+
+	// if (max_completions == 0 || max_completions > pqpair->max_completions_cap) {
+	// 	/*
+	// 	 * max_completions == 0 means unlimited, but complete at most
+	// 	 * max_completions_cap batch of I/O at a time so that the completion
+	// 	 * queue doorbells don't wrap around.
+	// 	 */
+	// 	max_completions = pqpair->max_completions_cap;
+	// }
+
+	// pqpair->stat->polls++;
+
+	uint32_t head = pqpair->cq_head;
+
+	while (1) {
+		cpl = &pqpair->cpl[head];
+
+		if (!next_is_valid && cpl->status.p != pqpair->flags.phase) {
+			break;
+		}
+
+		tr = &pqpair->tr[cpl->cid];
+
+		if (tr->req) {
+			return 1;
+			// return 0;
+		} else {
+			// SPDK_ERRLOG("cpl does not map to outstanding cmd\n");
+			// spdk_nvme_qpair_print_completion(qpair, cpl);
+			// assert(0);
+			return 0;
+		}
+
+		if (spdk_likely(head + 1 != pqpair->num_entries)) {
+			head = head + 1;
+		} else {
+			head = 0;
+		}
+	}
+	return 0;
+}
+
 int
 nvme_pcie_qpair_destroy(struct spdk_nvme_qpair *qpair)
 {
@@ -1807,6 +1894,31 @@ nvme_pcie_poll_group_process_completions(struct spdk_nvme_transport_poll_group *
 
 	STAILQ_FOREACH_SAFE(qpair, &tgroup->connected_qpairs, poll_group_stailq, tmp_qpair) {
 		local_completions = spdk_nvme_qpair_process_completions(qpair, completions_per_qpair);
+		if (spdk_unlikely(local_completions < 0)) {
+			disconnected_qpair_cb(qpair, tgroup->group->ctx);
+			total_completions = -ENXIO;
+		} else if (spdk_likely(total_completions >= 0)) {
+			total_completions += local_completions;
+		}
+	}
+
+	return total_completions;
+}
+
+int64_t
+nvme_pcie_poll_group_check_completions(struct spdk_nvme_transport_poll_group *tgroup,
+		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb)
+{
+	struct spdk_nvme_qpair *qpair, *tmp_qpair;
+	int32_t local_completions = 0;
+	int64_t total_completions = 0;
+
+	STAILQ_FOREACH_SAFE(qpair, &tgroup->disconnected_qpairs, poll_group_stailq, tmp_qpair) {
+		disconnected_qpair_cb(qpair, tgroup->group->ctx);
+	}
+
+	STAILQ_FOREACH_SAFE(qpair, &tgroup->connected_qpairs, poll_group_stailq, tmp_qpair) {
+		local_completions = spdk_nvme_qpair_check_completions(qpair, completions_per_qpair);
 		if (spdk_unlikely(local_completions < 0)) {
 			disconnected_qpair_cb(qpair, tgroup->group->ctx);
 			total_completions = -ENXIO;

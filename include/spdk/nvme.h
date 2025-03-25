@@ -2187,6 +2187,34 @@ int32_t spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair,
 		uint32_t max_completions);
 
 /**
+ * Process any outstanding completions for I/O submitted on a queue pair.
+ *
+ * This call is non-blocking, i.e. it only processes completions that are ready
+ * at the time of this function call. It does not wait for outstanding commands
+ * to finish.
+ *
+ * For each completed command, the request's callback function will be called if
+ * specified as non-NULL when the request was submitted.
+ *
+ * The caller must ensure that each queue pair is only used from one thread at a
+ * time.
+ *
+ * This function may be called at any point while the controller is attached to
+ * the SPDK NVMe driver.
+ *
+ * \sa spdk_nvme_cmd_cb
+ *
+ * \param qpair Queue pair to check for completions.
+ * \param max_completions Limit the number of completions to be processed in one
+ * call, or 0 for unlimited.
+ *
+ * \return number of completions processed (may be 0) or negated on error. -ENXIO
+ * in the special case that the qpair is failed at the transport layer.
+ */
+int32_t spdk_nvme_qpair_check_completions(struct spdk_nvme_qpair *qpair,
+	uint32_t max_completions);
+
+/**
  * Returns the reason the qpair is disconnected.
  *
  * \param qpair The qpair to check.
@@ -3088,6 +3116,23 @@ int spdk_nvme_poll_group_destroy(struct spdk_nvme_poll_group *group);
  */
 int64_t spdk_nvme_poll_group_process_completions(struct spdk_nvme_poll_group *group,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
+
+/**
+ * Poll for completions on all qpairs in this poll group.
+ *
+ * the disconnected_qpair_cb will be called for all disconnected qpairs in the poll group
+ * including qpairs which fail within the context of this call.
+ * The user is responsible for trying to reconnect or destroy those qpairs.
+ *
+ * \param group The group on which to poll for completions.
+ * \param completions_per_qpair The maximum number of completions per qpair.
+ * \param disconnected_qpair_cb A callback function of type spdk_nvme_disconnected_qpair_cb. Must be non-NULL.
+ *
+ * return The number of completions across all qpairs, -EINVAL if no disconnected_qpair_cb is passed, or
+ * -EIO if the shared completion queue cannot be polled for the RDMA transport.
+ */
+int64_t spdk_nvme_poll_group_check_completions(struct spdk_nvme_poll_group *group,
+	uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
 
 /**
  * Check if all qpairs in the poll group are connected.
@@ -4637,6 +4682,7 @@ struct spdk_nvme_transport_ops {
 	int (*qpair_authenticate)(struct spdk_nvme_qpair *qpair);
 
 	int32_t (*qpair_process_completions)(struct spdk_nvme_qpair *qpair, uint32_t max_completions);
+	int32_t (*qpair_check_completions)(struct spdk_nvme_qpair *qpair, uint32_t max_completions);
 
 	int (*qpair_iterate_requests)(struct spdk_nvme_qpair *qpair,
 				      int (*iter_fn)(struct nvme_request *req, void *arg),
@@ -4661,6 +4707,8 @@ struct spdk_nvme_transport_ops {
 
 	int64_t (*poll_group_process_completions)(struct spdk_nvme_transport_poll_group *tgroup,
 			uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
+			int64_t (*poll_group_check_completions)(struct spdk_nvme_transport_poll_group *tgroup,
+				uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);
 
 	void (*poll_group_check_disconnected_qpairs)(struct spdk_nvme_transport_poll_group *tgroup,
 			spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb);

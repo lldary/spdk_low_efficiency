@@ -28,6 +28,36 @@
 #include "spdk/keyring.h"
 #include "spdk/module/keyring/file.h"
 
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <x86gprintrin.h>
+
+
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+
+#ifndef __NR_uintr_register_handler
+#define __NR_uintr_wait_msix_interrupt 470
+#define __NR_uintr_register_handler	471
+#define __NR_uintr_unregister_handler	472
+#define __NR_uintr_create_fd		473
+#define __NR_uintr_register_sender	474
+#define __NR_uintr_unregister_sender	475
+#define __NR_uintr_wait			476
+#endif
+
+#define uintr_wait_msix_interrupt(ptr, flags)   syscall(__NR_uintr_wait_msix_interrupt, ptr, flags)
+#define uintr_register_handler(handler, flags)	syscall(__NR_uintr_register_handler, handler, flags)
+#define uintr_unregister_handler(flags)		syscall(__NR_uintr_unregister_handler, flags)
+#define uintr_create_fd(vector, flags)		syscall(__NR_uintr_create_fd, vector, flags)
+#define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
+#define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
+#define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+
 #ifdef SPDK_CONFIG_URING
 #include <liburing.h>
 #endif
@@ -168,6 +198,7 @@ struct ns_worker_ctx {
 };
 
 struct perf_task {
+	uint64_t complete_tsc;
 	struct ns_worker_ctx	*ns_ctx;
 	struct iovec		*iovs; /* array of iovecs to transfer. */
 	int			iovcnt; /* Number of iovecs in iovs array. */
@@ -248,6 +279,9 @@ static uint32_t g_disable_sq_cmb;
 static bool g_enable_interrupt;
 static bool g_use_uring;
 static bool g_warn;
+static bool g_enable_uintr = false;
+static bool is_write;
+static bool should_freq = false;
 static bool g_header_digest;
 static bool g_data_digest;
 static bool g_no_shn_notification;
@@ -271,6 +305,112 @@ static uint8_t g_transport_tos = 0;
 
 static uint32_t g_rdma_srq_size;
 static struct spdk_key *g_psk = NULL;
+
+static uint32_t cpuid_uipi_map[0xFF];
+
+struct user_thread {
+	uint64_t stack_space[0x10000];
+	uint64_t rsp;
+	uint64_t rip;
+};
+struct user_thread work_thread[0xFF], idle_thread[0xFF];
+struct user_thread* current_thread[0xFF];
+uint32_t uintr_count[0xFF] = {0};
+
+void switch_thread(struct user_thread *from, struct user_thread *to);
+#define local_irq_save(flags) \
+    do {                      \
+        flags = _testui();    \
+        _clui();              \
+    } while (0)
+#define local_irq_restore(flags) \
+    do {                         \
+        if (flags)               \
+            _stui();             \
+    } while (0)
+
+
+// 函数声明
+void __attribute__((interrupt)) __attribute__((target("general-regs-only", "inline-all-stringops")))
+uintr_get_handler(struct __uintr_frame *ui_frame, unsigned long long vector);
+
+void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
+uintr_get_handler(struct __uintr_frame *ui_frame,
+	      unsigned long long vector)
+{
+
+	_senduipi(cpuid_uipi_map[vector]);
+	if(current_thread[vector] == idle_thread + vector) {
+		int flags;
+		local_irq_save(flags);
+		current_thread[vector] = work_thread + vector;
+		switch_thread(idle_thread + vector, work_thread + vector);	
+		local_irq_restore(flags);
+	} else {
+		uintr_count[vector]++;
+	}
+}
+
+void switch_thread(struct user_thread *from, struct user_thread *to) {
+	asm volatile(
+				"push %%rbx\n\t"
+				"push %%rbp\n\t"
+				"push %%r12\n\t"
+				"push %%r13\n\t"
+				"push %%r14\n\t"
+				"push %%r15\n\t"
+				"mov %%rsp , %0\n\t"
+				"mov %1 , %%rsp\n\t"
+				"pop %%r15\n\t"
+				"pop %%r14\n\t"
+				"pop %%r13\n\t"
+				"pop %%r12\n\t"
+				"pop %%rbp\n\t"
+				"pop %%rbx\n\t"
+				: "=m"(from->rsp)  // 正确存储 from->rsp
+				: "m"(to->rsp) // 正确加载 to->rsp 和 to->rip
+				);
+	_stui();
+	asm volatile ("ret");
+}
+
+void idle_thread_func(void);
+
+void idle_thread_func(void) {
+	int loop = 0;
+	uint64_t cpu_id;
+
+    // 使用内联汇编将 %rbx 的值赋给 loop
+    asm volatile(
+        "mov %%rbx, %0"  // 将 %rbx 的值移动到 loop（%0）
+        : "=r"(cpu_id)      // 输出操作数：将 %rbx 的值存储到 loop
+    );
+
+	{
+		int flags;
+		local_irq_save(flags);
+		current_thread[cpu_id] = work_thread + cpu_id;
+		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
+		local_irq_restore(flags);
+		if (should_freq)
+			uintr_wait_msix_interrupt(800000UL, cpu_id);
+	}
+	uint64_t delay = is_write ? 5000 : 10000;
+	delay = g_io_size_bytes == 4096 ? delay << 1 : delay << 3;
+	begin:
+	uint64_t sleep_time = _rdtsc() + delay;
+	_tpause(0, sleep_time);
+
+
+	int flags;
+	local_irq_save(flags);
+	current_thread[cpu_id] = work_thread + cpu_id;
+	switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
+	local_irq_restore(flags);
+	if (should_freq)
+		uintr_wait_msix_interrupt(800000UL, cpu_id);
+	goto begin;
+}
 
 /* When user specifies -Q, some error messages are rate limited.  When rate
  * limited, we only print the error message every g_quiet_count times the
@@ -971,6 +1111,25 @@ nvme_check_io(struct ns_worker_ctx *ns_ctx)
 	return rc;
 }
 
+static int64_t
+nvme_new_check_io(struct ns_worker_ctx *ns_ctx)
+{
+	int64_t rc;
+
+	// if (g_enable_interrupt) {
+	// 	rc = spdk_nvme_poll_group_wait(ns_ctx->u.nvme.group, perf_disconnect_cb);
+	// } else {
+		rc = spdk_nvme_poll_group_check_completions(ns_ctx->u.nvme.group, g_max_completions,
+				perf_disconnect_cb);
+	// }
+	if (rc < 0) {
+		fprintf(stderr, "NVMe io qpair process completion error\n");
+		ns_ctx->status = 1;
+		return -1;
+	}
+	return rc;
+}
+
 static void
 nvme_verify_io(struct perf_task *task, struct ns_entry *entry)
 {
@@ -1025,8 +1184,11 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 		opts.io_queue_requests = entry->num_io_requests;
 	}
 
-	opts.delay_cmd_submit = g_enable_interrupt ? false : true;
+	opts.delay_cmd_submit = g_enable_interrupt || g_enable_uintr ? false : true;
 	opts.create_only = true;
+
+	if(g_enable_uintr)
+		opts.interupt_mode = true;
 
 	ctrlr_opts = spdk_nvme_ctrlr_get_opts(entry->u.nvme.ctrlr);
 	opts.async_mode = !(spdk_nvme_ctrlr_get_transport_id(entry->u.nvme.ctrlr)->trtype ==
@@ -1040,8 +1202,15 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 
 	group = ns_ctx->u.nvme.group;
 	for (i = 0; i < ns_ctx->u.nvme.num_all_qpairs; i++) {
-		ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair(entry->u.nvme.ctrlr, &opts,
-					  sizeof(opts));
+		int efd = 0; // 只有uintr会用到
+		if(g_enable_uintr) {
+			ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair_int(entry->u.nvme.ctrlr, &opts,
+				sizeof(opts), &efd);
+			opts.interupt_mode = false;
+		} else {
+			ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair(entry->u.nvme.ctrlr, &opts,
+				sizeof(opts));
+		}
 		qpair = ns_ctx->u.nvme.qpair[i];
 		if (!qpair) {
 			printf("ERROR: spdk_nvme_ctrlr_alloc_io_qpair failed\n");
@@ -1058,6 +1227,17 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 			printf("ERROR: unable to connect I/O qpair.\n");
 			spdk_nvme_ctrlr_free_io_qpair(qpair);
 			goto qpair_failed;
+		}
+
+		if(g_enable_uintr) {
+			int uipi_index = uintr_register_sender(efd, 0);
+			if(uipi_index < 0) {
+				SPDK_ERRLOG("Unable to register sender\n");
+				goto qpair_failed;
+			}
+			cpuid_uipi_map[sched_getcpu()] = uipi_index;
+			SPDK_ERRLOG("uipi_index: %d\n", uipi_index);
+			_senduipi(uipi_index);
 		}
 	}
 
@@ -1535,6 +1715,9 @@ submit_single_io(struct perf_task *task)
 	}
 }
 
+static total_time = 0;
+static total_count = 0;
+
 static inline void
 task_complete(struct perf_task *task)
 {
@@ -1547,6 +1730,13 @@ task_complete(struct perf_task *task)
 	ns_ctx->current_queue_depth--;
 	ns_ctx->stats.io_completed++;
 	tsc_diff = spdk_get_ticks() - task->submit_tsc;
+	if(task->complete_tsc > task->submit_tsc) {
+		uint64_t tsc_diff2 = task->complete_tsc - task->submit_tsc;
+		total_count++;
+		total_time += tsc_diff2;
+		// printf("tsc_diff: %lu, tsc_diff2: %lu, avg: %lu\n", tsc_diff, tsc_diff2, total_time * SPDK_SEC_TO_USEC / g_tsc_rate / total_count);
+		task->complete_tsc = 0;
+	}
 	ns_ctx->stats.total_tsc += tsc_diff;
 	if (spdk_unlikely(ns_ctx->stats.min_tsc > tsc_diff)) {
 		ns_ctx->stats.min_tsc = tsc_diff;
@@ -1716,6 +1906,130 @@ perf_dump_transport_statistics(struct worker_thread *worker)
 }
 
 static int
+poll_fn(void *arg){
+	uint64_t tsc_start, tsc_end, tsc_current, tsc_next_print;
+	struct worker_thread *worker = (struct worker_thread *) arg;
+	struct ns_worker_ctx *ns_ctx = NULL;
+	uint32_t unfinished_ns_ctx;
+	bool warmup = false;
+	int rc;
+	int64_t check_rc;
+	uint64_t check_now;
+	TAILQ_HEAD(, perf_task)	swap;
+	struct perf_task *task;
+
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(worker->lcore + 1, &cpuset);
+	pthread_t thread = pthread_self();
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
+        SPDK_ERRLOG("pthread_setaffinity_np");
+    }
+	SPDK_ERRLOG("generate_fn thread %d\n", worker->lcore + 10);
+
+	rc = pthread_barrier_wait(&g_worker_sync_barrier);
+	if (rc != 0 && rc != PTHREAD_BARRIER_SERIAL_THREAD) {
+		printf("ERROR: failed to wait on thread sync barrier\n");
+		ns_ctx->status = 1;
+		return 1;
+	}
+	tsc_start = spdk_get_ticks();
+	tsc_current = tsc_start;
+	tsc_next_print = tsc_current + g_tsc_rate;
+
+	if (g_warmup_time_in_sec) {
+		warmup = true;
+		tsc_end = tsc_current + g_warmup_time_in_sec * g_tsc_rate;
+	} else {
+		tsc_end = tsc_current + g_time_in_sec * g_tsc_rate;
+	}
+
+
+	while (spdk_likely(!g_exit)) {
+		bool all_draining = true;
+
+		/*
+		 * Check for completed I/O for each controller. A new
+		 * I/O will be submitted in the io_complete callback
+		 * to replace each I/O that is completed.
+		 */
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+			// if (g_continue_on_error && !ns_ctx->is_draining) {
+			// 	/* Submit any I/O that is queued up */
+			// 	TAILQ_INIT(&swap);
+			// 	TAILQ_SWAP(&swap, &ns_ctx->queued_tasks, perf_task, link);
+			// 	while (!TAILQ_EMPTY(&swap)) {
+			// 		task = TAILQ_FIRST(&swap);
+			// 		TAILQ_REMOVE(&swap, task, link);
+			// 		if (ns_ctx->is_draining) {
+			// 			TAILQ_INSERT_TAIL(&ns_ctx->queued_tasks,
+			// 					  task, link);
+			// 			continue;
+			// 		}
+			// 		submit_single_io(task);
+			// 	}
+			// }
+
+			check_now = spdk_get_ticks();
+			nvme_new_check_io(ns_ctx);
+
+			// if (check_rc > 0) {
+			// 	ns_ctx->stats.busy_tsc += check_now - ns_ctx->stats.last_tsc;
+			// } else {
+			// 	ns_ctx->stats.idle_tsc += check_now - ns_ctx->stats.last_tsc;
+			// 	int flags;
+			// 	int cpu_id = worker->lcore;
+			// 	// SPDK_ERRLOG("中断模式\n");
+			// 	if(g_enable_uintr) {
+			// 		local_irq_save(flags);
+			// 		if(uintr_count[cpu_id] > 0) {
+			// 			uintr_count[cpu_id]=0;
+			// 			local_irq_restore(flags);
+			// 		} else {
+			// 			current_thread[cpu_id] = idle_thread + cpu_id;
+			// 			switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+			// 			local_irq_restore(flags);
+			// 			if(should_freq) {
+			// 				uintr_wait_msix_interrupt(2101000UL, cpu_id);
+			// 			}
+			// 		}
+			// 	}
+			// }
+			// ns_ctx->stats.last_tsc = check_now;
+
+			// if (!ns_ctx->is_draining) {
+			// 	all_draining = false;
+			// }
+		}
+
+		// if (spdk_unlikely(all_draining)) {
+		// 	break;
+		// }
+
+		tsc_current = spdk_get_ticks();
+
+		// if (worker->lcore == g_main_core && tsc_current > tsc_next_print) {
+		// 	tsc_next_print += g_tsc_rate;
+		// 	print_periodic_performance(warmup);
+		// }
+
+		if (tsc_current > tsc_end) {
+			if (warmup) {
+				/* Update test start and end time, clear statistics */
+				tsc_start = spdk_get_ticks();
+				tsc_end = tsc_start + g_time_in_sec * g_tsc_rate;
+
+				warmup = false;
+			} else {
+				break;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int
 work_fn(void *arg)
 {
 	uint64_t tsc_start, tsc_end, tsc_current, tsc_next_print;
@@ -1728,6 +2042,44 @@ work_fn(void *arg)
 	uint64_t check_now;
 	TAILQ_HEAD(, perf_task)	swap;
 	struct perf_task *task;
+
+	if(g_enable_uintr) {
+		SPDK_ERRLOG("开始注册用户态中断处理函数\n");
+		int cpu_id = worker->lcore;
+		#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
+		if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
+			SPDK_ERRLOG("Interrupt handler register error");
+			exit(EXIT_FAILURE);
+		}
+		idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(idle_thread[cpu_id].stack_space) + sizeof(idle_thread[cpu_id].stack_space) - 0x38);
+		if(g_io_size_bytes != 4096) {
+			idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
+			idle_thread[cpu_id].stack_space[0xFFFF] = idle_thread_func;
+		} else {
+			idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
+			idle_thread[cpu_id].stack_space[0xFFFF] = idle_thread_func;
+		}
+		idle_thread[cpu_id].stack_space[0xFFFE] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFFD] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFFC] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFFB] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFFA] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF9] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF8] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF7] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF6] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF5] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF4] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF3] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF2] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF1] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFF0] = cpu_id;
+		idle_thread[cpu_id].stack_space[0xFFEF] = cpu_id;
+		switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+		// current_thread[cpu_id] = work_thread + cpu_id;
+		switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+		current_thread[cpu_id] = work_thread + cpu_id;
+	}
 
 	/* Allocate queue pairs for each namespace. */
 	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
@@ -1795,6 +2147,23 @@ work_fn(void *arg)
 				ns_ctx->stats.busy_tsc += check_now - ns_ctx->stats.last_tsc;
 			} else {
 				ns_ctx->stats.idle_tsc += check_now - ns_ctx->stats.last_tsc;
+				int flags;
+				int cpu_id = worker->lcore;
+				// SPDK_ERRLOG("中断模式\n");
+				if(g_enable_uintr) {
+					local_irq_save(flags);
+					if(uintr_count[cpu_id] > 0) {
+						uintr_count[cpu_id]=0;
+						local_irq_restore(flags);
+					} else {
+						current_thread[cpu_id] = idle_thread + cpu_id;
+						switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+						local_irq_restore(flags);
+						if(should_freq) {
+							uintr_wait_msix_interrupt(2101000UL, cpu_id);
+						}
+					}
+				}
 			}
 			ns_ctx->stats.last_tsc = check_now;
 
@@ -1845,6 +2214,8 @@ work_fn(void *arg)
 	if (worker->lcore == g_main_core) {
 		g_elapsed_time_in_usec = (tsc_current - tsc_start) * SPDK_SEC_TO_USEC / g_tsc_rate;
 	}
+
+	SPDK_ERRLOG("avg poll latency %lfus\n", total_time * SPDK_SEC_TO_USEC * 1.0 / g_tsc_rate / total_count);
 
 	/* drain the io of each ns_ctx in round robin to make the fairness */
 	do {
@@ -2428,7 +2799,7 @@ alloc_key(const char *name, const char *path)
 	return key;
 }
 
-#define PERF_GETOPT_SHORT "a:b:c:d:e:ghi:lmo:q:r:k:s:t:w:z:A:C:DEF:GHILM:NO:P:Q:RS:T:U:VZ:"
+#define PERF_GETOPT_SHORT "a:b:c:d:e:ghi:lmo:q:r:k:s:t:w:z:A:C:DEuF:GHILM:NO:P:Q:RS:T:U:VZ:"
 
 static const struct option g_perf_cmdline_opts[] = {
 #define PERF_WARMUP_TIME	'a'
@@ -2475,6 +2846,8 @@ static const struct option g_perf_cmdline_opts[] = {
 	{"disable-sq-cmb",			no_argument,	NULL, PERF_DISABLE_SQ_CMB},
 #define PERF_ENABLE_INTERRUPT	'E'
 	{"enable-interrupt",			no_argument,	NULL, PERF_ENABLE_INTERRUPT},
+#define PERF_ENABLE_UINTR	'u'
+	{"enable-user-interrupt",			no_argument,	NULL, PERF_ENABLE_UINTR},
 #define PERF_ZIPF		'F'
 	{"zipf",				required_argument,	NULL, PERF_ZIPF},
 #define PERF_ENABLE_DEBUG	'G'
@@ -2696,6 +3069,9 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_ENABLE_INTERRUPT:
 			g_enable_interrupt = 1;
 			break;
+		case PERF_ENABLE_UINTR:
+			g_enable_uintr = true;
+			break;
 		case PERF_ENABLE_DEBUG:
 #ifndef DEBUG
 			fprintf(stderr, "%s must be configured with --enable-debug for -G flag\n",
@@ -2867,6 +3243,7 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 
 	if (strcmp(g_workload_type, "read") == 0 || strcmp(g_workload_type, "write") == 0) {
 		g_rw_percentage = strcmp(g_workload_type, "read") == 0 ? 100 : 0;
+		is_write = strcmp(g_workload_type, "write") == 0;
 		if (g_mix_specified) {
 			fprintf(stderr, "Ignoring -M (--rwmixread) option... Please use -M option"
 				" only when using rw or randrw.\n");
@@ -2930,6 +3307,28 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			if (trid_entry->trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
 				env_opts->no_pci = false;
 				break;
+			}
+		}
+	}
+
+	if(!is_write) {
+		if(g_io_size_bytes == 4096) {
+			if(g_queue_depth > 32) {
+				should_freq = true;
+			}
+		} else {
+			if(g_queue_depth > 7) {
+				should_freq = true;
+			}
+		}
+	} else {
+		if(g_io_size_bytes == 4096) {
+			if(g_queue_depth > 8) {
+				should_freq = true;
+			}
+		} else {
+			if(g_queue_depth > 1) {
+				should_freq = true;
 			}
 		}
 	}
@@ -3365,7 +3764,7 @@ main(int argc, char **argv)
 	main_worker = NULL;
 	TAILQ_FOREACH(worker, &g_workers, link) {
 		if (worker->lcore != g_main_core) {
-			spdk_env_thread_launch_pinned(worker->lcore, work_fn, worker);
+			// spdk_env_thread_launch_pinned(worker->lcore, work_fn, worker);
 		} else {
 			assert(main_worker == NULL);
 			main_worker = worker;
@@ -3373,6 +3772,9 @@ main(int argc, char **argv)
 	}
 
 	assert(main_worker != NULL);
+	// spdk_env_thread_launch_pinned(8, poll_fn, main_worker);
+	pthread_t p;
+	pthread_create(&p, NULL, poll_fn, main_worker); // 主线程也是一个worker
 	work_fn(main_worker);
 
 	spdk_env_thread_wait_all();
