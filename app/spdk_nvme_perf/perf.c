@@ -198,7 +198,6 @@ struct ns_worker_ctx {
 };
 
 struct perf_task {
-	uint64_t complete_tsc;
 	struct ns_worker_ctx	*ns_ctx;
 	struct iovec		*iovs; /* array of iovecs to transfer. */
 	int			iovcnt; /* Number of iovecs in iovs array. */
@@ -276,6 +275,8 @@ static uint64_t g_elapsed_time_in_usec;
 static int g_warmup_time_in_sec;
 static uint32_t g_max_completions;
 static uint32_t g_disable_sq_cmb;
+static double g_core_utils; // 用于测量CPU利用率
+static uint64_t g_core_util_count; // 用于测量CPU利用率
 static bool g_enable_interrupt;
 static bool g_use_uring;
 static bool g_warn;
@@ -338,11 +339,10 @@ void __attribute__((interrupt))__attribute__((target("general-regs-only", "inlin
 uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
 {
-
+	int flags;
+	local_irq_save(flags);
 	_senduipi(cpuid_uipi_map[vector]);
 	if(current_thread[vector] == idle_thread + vector) {
-		int flags;
-		local_irq_save(flags);
 		current_thread[vector] = work_thread + vector;
 		switch_thread(idle_thread + vector, work_thread + vector);	
 		local_irq_restore(flags);
@@ -370,7 +370,7 @@ void switch_thread(struct user_thread *from, struct user_thread *to) {
 				: "=m"(from->rsp)  // 正确存储 from->rsp
 				: "m"(to->rsp) // 正确加载 to->rsp 和 to->rip
 				);
-	_stui();
+	// _stui();
 	asm volatile ("ret");
 }
 
@@ -392,8 +392,8 @@ void idle_thread_func(void) {
 		current_thread[cpu_id] = work_thread + cpu_id;
 		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
 		local_irq_restore(flags);
-		if (should_freq)
-			uintr_wait_msix_interrupt(800000UL, cpu_id);
+		// if (should_freq)
+		// 	uintr_wait_msix_interrupt(800000UL, cpu_id);
 	}
 	uint64_t delay = is_write ? 5000 : 10000;
 	delay = g_io_size_bytes == 4096 ? delay << 1 : delay << 3;
@@ -407,8 +407,8 @@ void idle_thread_func(void) {
 	current_thread[cpu_id] = work_thread + cpu_id;
 	switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
 	local_irq_restore(flags);
-	if (should_freq)
-		uintr_wait_msix_interrupt(800000UL, cpu_id);
+	// if (should_freq)
+	// 	uintr_wait_msix_interrupt(800000UL, cpu_id);
 	goto begin;
 }
 
@@ -1715,9 +1715,6 @@ submit_single_io(struct perf_task *task)
 	}
 }
 
-static total_time = 0;
-static total_count = 0;
-
 static inline void
 task_complete(struct perf_task *task)
 {
@@ -1730,13 +1727,6 @@ task_complete(struct perf_task *task)
 	ns_ctx->current_queue_depth--;
 	ns_ctx->stats.io_completed++;
 	tsc_diff = spdk_get_ticks() - task->submit_tsc;
-	if(task->complete_tsc > task->submit_tsc) {
-		uint64_t tsc_diff2 = task->complete_tsc - task->submit_tsc;
-		total_count++;
-		total_time += tsc_diff2;
-		// printf("tsc_diff: %lu, tsc_diff2: %lu, avg: %lu\n", tsc_diff, tsc_diff2, total_time * SPDK_SEC_TO_USEC / g_tsc_rate / total_count);
-		task->complete_tsc = 0;
-	}
 	ns_ctx->stats.total_tsc += tsc_diff;
 	if (spdk_unlikely(ns_ctx->stats.min_tsc > tsc_diff)) {
 		ns_ctx->stats.min_tsc = tsc_diff;
@@ -1885,6 +1875,9 @@ print_periodic_performance(bool warmup)
 	mb_this_second = (double)io_this_second * g_io_size_bytes / (1024 * 1024);
 
 	printf("%s%9ju IOPS, %8.2f MiB/s", warmup ? "[warmup] " : "", io_this_second, mb_this_second);
+	g_core_utils += (double)core_busy_tsc / (core_idle_tsc + core_busy_tsc);
+	g_core_util_count++;
+	printf(" %6.2f%% Busy", g_core_utils * 100 / g_core_util_count); // CPU利用率平均值
 	if (g_monitor_perf_cores) {
 		core_busy_perc = (double)core_busy_tsc / (core_idle_tsc + core_busy_tsc) * 100;
 		printf("%3d Core(s): %6.2f%% Busy", g_num_workers, core_busy_perc);
@@ -2081,6 +2074,11 @@ work_fn(void *arg)
 		current_thread[cpu_id] = work_thread + cpu_id;
 	}
 
+	int flags;
+	if(g_enable_uintr) {
+		local_irq_save(flags); // 保存中断标志并且屏蔽用户中断
+	}
+
 	/* Allocate queue pairs for each namespace. */
 	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 		if (init_ns_worker_ctx(ns_ctx) != 0) {
@@ -2118,6 +2116,12 @@ work_fn(void *arg)
 	while (spdk_likely(!g_exit)) {
 		bool all_draining = true;
 
+		bool total_check_io = false;
+
+		if(g_enable_uintr) {
+			local_irq_restore(flags); // 恢复中断标志并且允许处理用户中断
+		}
+
 		/*
 		 * Check for completed I/O for each controller. A new
 		 * I/O will be submitted in the io_complete callback
@@ -2145,30 +2149,26 @@ work_fn(void *arg)
 
 			if (check_rc > 0) {
 				ns_ctx->stats.busy_tsc += check_now - ns_ctx->stats.last_tsc;
+				total_check_io = true;
 			} else {
 				ns_ctx->stats.idle_tsc += check_now - ns_ctx->stats.last_tsc;
-				int flags;
-				int cpu_id = worker->lcore;
-				// SPDK_ERRLOG("中断模式\n");
-				if(g_enable_uintr) {
-					local_irq_save(flags);
-					if(uintr_count[cpu_id] > 0) {
-						uintr_count[cpu_id]=0;
-						local_irq_restore(flags);
-					} else {
-						current_thread[cpu_id] = idle_thread + cpu_id;
-						switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
-						local_irq_restore(flags);
-						if(should_freq) {
-							uintr_wait_msix_interrupt(2101000UL, cpu_id);
-						}
-					}
-				}
 			}
 			ns_ctx->stats.last_tsc = check_now;
 
 			if (!ns_ctx->is_draining) {
 				all_draining = false;
+			}
+		}
+
+		if(g_enable_uintr) {
+			int cpu_id = worker->lcore;
+			local_irq_save(flags);
+			if(uintr_count[cpu_id] > 0 || total_check_io) { // 上一次获取至少一个IO completion 信号或者还有至少一个IO completion 信号没有处理，就继续执行
+				uintr_count[cpu_id] = 0;
+				total_check_io = false;
+			} else {
+				current_thread[cpu_id] = idle_thread + cpu_id;
+				switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
 			}
 		}
 
@@ -2215,8 +2215,6 @@ work_fn(void *arg)
 		g_elapsed_time_in_usec = (tsc_current - tsc_start) * SPDK_SEC_TO_USEC / g_tsc_rate;
 	}
 
-	SPDK_ERRLOG("avg poll latency %lfus\n", total_time * SPDK_SEC_TO_USEC * 1.0 / g_tsc_rate / total_count);
-
 	/* drain the io of each ns_ctx in round robin to make the fairness */
 	do {
 		unfinished_ns_ctx = 0;
@@ -2244,7 +2242,6 @@ work_fn(void *arg)
 	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 		cleanup_ns_worker_ctx(ns_ctx);
 	}
-
 	return 0;
 }
 
@@ -2420,6 +2417,7 @@ print_performance(void)
 	}
 
 	printf("========================================================\n");
+	printf("avg core utils: %6.2f%% \n", g_core_utils * 100 / g_core_util_count); // 打印CPU利用率平均值
 	printf("%*s\n", max_strlen + 60, "Latency(us)");
 	printf("%-*s: %10s %10s %10s %10s %10s\n",
 	       max_strlen + 13, "Device Information", "IOPS", "MiB/s", "Average", "min", "max");
@@ -3311,27 +3309,28 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		}
 	}
 
-	if(!is_write) {
-		if(g_io_size_bytes == 4096) {
-			if(g_queue_depth > 32) {
-				should_freq = true;
-			}
-		} else {
-			if(g_queue_depth > 7) {
-				should_freq = true;
-			}
-		}
-	} else {
-		if(g_io_size_bytes == 4096) {
-			if(g_queue_depth > 8) {
-				should_freq = true;
-			}
-		} else {
-			if(g_queue_depth > 1) {
-				should_freq = true;
-			}
-		}
-	}
+	/* 是否开启调频 */
+	// if(!is_write) {
+	// 	if(g_io_size_bytes == 4096) {
+	// 		if(g_queue_depth > 32) {
+	// 			should_freq = true;
+	// 		}
+	// 	} else {
+	// 		if(g_queue_depth > 7) {
+	// 			should_freq = true;
+	// 		}
+	// 	}
+	// } else {
+	// 	if(g_io_size_bytes == 4096) {
+	// 		if(g_queue_depth > 8) {
+	// 			should_freq = true;
+	// 		}
+	// 	} else {
+	// 		if(g_queue_depth > 1) {
+	// 			should_freq = true;
+	// 		}
+	// 	}
+	// }
 
 	g_file_optind = optind;
 
@@ -3764,7 +3763,7 @@ main(int argc, char **argv)
 	main_worker = NULL;
 	TAILQ_FOREACH(worker, &g_workers, link) {
 		if (worker->lcore != g_main_core) {
-			// spdk_env_thread_launch_pinned(worker->lcore, work_fn, worker);
+			spdk_env_thread_launch_pinned(worker->lcore, work_fn, worker);
 		} else {
 			assert(main_worker == NULL);
 			main_worker = worker;
@@ -3772,9 +3771,6 @@ main(int argc, char **argv)
 	}
 
 	assert(main_worker != NULL);
-	// spdk_env_thread_launch_pinned(8, poll_fn, main_worker);
-	pthread_t p;
-	pthread_create(&p, NULL, poll_fn, main_worker); // 主线程也是一个worker
 	work_fn(main_worker);
 
 	spdk_env_thread_wait_all();

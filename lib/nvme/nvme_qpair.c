@@ -1120,6 +1120,7 @@ _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *r
 		}
 	} else {
 		req->submit_tick = 0;
+		req->submit_tick = spdk_get_ticks(); // TODO: 临时添加
 	}
 
 	/* Allow two cases:

@@ -1027,6 +1027,7 @@ nvme_pcie_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_
 	return num_completions;
 }
 
+// TODO； 应该废弃
 int32_t
 nvme_pcie_qpair_check_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
 {
@@ -1096,6 +1097,9 @@ nvme_pcie_qpair_check_completions(struct spdk_nvme_qpair *qpair, uint32_t max_co
 		tr = &pqpair->tr[cpl->cid];
 
 		if (tr->req) {
+			if(*(uint64_t*)(tr->cb_arg) == 0) {
+				// *(uint64_t*)(tr->cb_arg) = (spdk_get_ticks() - tr->req->submit_tick) * 1000 * 1000 / spdk_get_ticks_hz();
+			}
 			return 1;
 			// return 0;
 		} else {
