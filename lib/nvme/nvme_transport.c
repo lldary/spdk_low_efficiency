@@ -458,7 +458,7 @@ nvme_transport_ctrlr_unmap_pmr(struct spdk_nvme_ctrlr *ctrlr)
 
 	return -ENOSYS;
 }
-
+/* 创建qpair关键函数 */
 struct spdk_nvme_qpair *
 nvme_transport_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid,
 				     const struct spdk_nvme_io_qpair_opts *opts)
@@ -505,7 +505,7 @@ nvme_transport_connect_qpair_fail(struct spdk_nvme_qpair *qpair, void *unused)
 	qpair->transport_failure_reason = qpair->last_transport_failure_reason;
 	nvme_transport_ctrlr_disconnect_qpair(ctrlr, qpair);
 }
-
+/* 创建qpair关键函数 */
 int
 nvme_transport_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
@@ -521,7 +521,7 @@ nvme_transport_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nv
 	qpair->transport_failure_reason = SPDK_NVME_QPAIR_FAILURE_NONE;
 
 	nvme_qpair_set_state(qpair, NVME_QPAIR_CONNECTING);
-	rc = transport->ops.ctrlr_connect_qpair(ctrlr, qpair);
+	rc = transport->ops.ctrlr_connect_qpair(ctrlr, qpair); // 此时CQ指令发送完毕
 	if (rc != 0) {
 		goto err;
 	}
@@ -735,7 +735,7 @@ nvme_transport_admin_qpair_abort_aers(struct spdk_nvme_qpair *qpair)
 	assert(transport != NULL);
 	transport->ops.admin_qpair_abort_aers(qpair);
 }
-
+/* 分配对应数据结构内存 */
 struct spdk_nvme_transport_poll_group *
 nvme_transport_poll_group_create(const struct spdk_nvme_transport *transport)
 {
@@ -769,7 +769,7 @@ nvme_transport_poll_group_add(struct spdk_nvme_transport_poll_group *tgroup,
 {
 	int rc;
 
-	rc = tgroup->transport->ops.poll_group_add(tgroup, qpair);
+	rc = tgroup->transport->ops.poll_group_add(tgroup, qpair); // pcie的话是什么都不做
 	if (rc == 0) {
 		qpair->poll_group = tgroup;
 		assert(nvme_qpair_get_state(qpair) < NVME_QPAIR_CONNECTED);

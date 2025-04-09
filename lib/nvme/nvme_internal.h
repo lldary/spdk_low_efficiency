@@ -531,7 +531,7 @@ struct spdk_nvme_qpair {
 	/* In-band authentication state */
 	struct nvme_auth			auth;
 
-	bool interrupt_enabled;
+	bool interrupt_enabled; // 我们加的，用于标记是否开启中断
 };
 
 struct spdk_nvme_poll_group {

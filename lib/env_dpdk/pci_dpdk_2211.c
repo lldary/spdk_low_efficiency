@@ -185,7 +185,8 @@ pci_device_create_interrupt_efds_2211(struct rte_pci_device *rte_dev, uint32_t c
 static int
 pci_device_create_interrupt_efds_uintr_2211(struct rte_pci_device *rte_dev, uint32_t count)
 {
-	return rte_intr_efd_enable_uintr(rte_dev->intr_handle, count);
+	// return rte_intr_efd_enable_uintr(rte_dev->intr_handle, count);
+	return rte_intr_uintr_enable(rte_dev->intr_handle, count);
 }
 
 static void

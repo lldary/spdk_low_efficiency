@@ -216,6 +216,12 @@ struct perf_task {
 struct worker_thread {
 	TAILQ_HEAD(, ns_worker_ctx)	ns_ctx;
 	TAILQ_ENTRY(worker_thread)	link;
+#if SPDK_CONFIG_UINTR_MODE
+	uint64_t idle_time;
+	uint64_t busy_time;
+	uint64_t last_idle_time;
+	uint64_t last_busy_time;
+#endif
 	unsigned			lcore;
 };
 
@@ -1110,7 +1116,7 @@ nvme_check_io(struct ns_worker_ctx *ns_ctx)
 	}
 	return rc;
 }
-
+// TODO: 未使用，应该废弃
 static int64_t
 nvme_new_check_io(struct ns_worker_ctx *ns_ctx)
 {
@@ -1206,7 +1212,6 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 		if(g_enable_uintr) {
 			ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair_int(entry->u.nvme.ctrlr, &opts,
 				sizeof(opts), &efd);
-			opts.interupt_mode = false;
 		} else {
 			ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair(entry->u.nvme.ctrlr, &opts,
 				sizeof(opts));
@@ -1868,8 +1873,15 @@ print_periodic_performance(bool warmup)
 			}
 		}
 		if (g_monitor_perf_cores) {
-			core_busy_tsc += busy_tsc;
-			core_idle_tsc += idle_tsc;
+			if(!g_enable_uintr) {
+				core_busy_tsc += busy_tsc;
+				core_idle_tsc += idle_tsc;
+			} else {
+				core_busy_tsc += worker->busy_time - worker->last_busy_time;
+				core_idle_tsc += worker->idle_time - worker->last_idle_time;
+				worker->last_busy_time = worker->busy_time;
+				worker->last_idle_time = worker->idle_time;
+			}
 		}
 	}
 	mb_this_second = (double)io_this_second * g_io_size_bytes / (1024 * 1024);
@@ -2113,6 +2125,10 @@ work_fn(void *arg)
 		submit_io(ns_ctx, g_queue_depth);
 	}
 
+	/* 是用来辅助用户中断CPU利用率测定的 */
+	uint64_t last_tsc = spdk_get_ticks();
+	uint64_t curr_tsc = 0;
+
 	while (spdk_likely(!g_exit)) {
 		bool all_draining = true;
 
@@ -2162,13 +2178,18 @@ work_fn(void *arg)
 
 		if(g_enable_uintr) {
 			int cpu_id = worker->lcore;
+			curr_tsc = spdk_get_ticks();
 			local_irq_save(flags);
 			if(uintr_count[cpu_id] > 0 || total_check_io) { // 上一次获取至少一个IO completion 信号或者还有至少一个IO completion 信号没有处理，就继续执行
 				uintr_count[cpu_id] = 0;
 				total_check_io = false;
+				worker->busy_time += (curr_tsc - last_tsc);
+				last_tsc = curr_tsc;
 			} else {
 				current_thread[cpu_id] = idle_thread + cpu_id;
+				worker->idle_time += (curr_tsc - last_tsc);
 				switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+				last_tsc = spdk_get_ticks();
 			}
 		}
 

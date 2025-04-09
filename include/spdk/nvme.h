@@ -1811,10 +1811,11 @@ struct spdk_nvme_io_qpair_opts {
 	 */
 	bool disable_pcie_sgl_merge;
 
-	/* Hole at bytes 67-71. */
+	/* 我们添加用来表示这个qpair是否希望开启中断 */
 	bool interupt_mode;
-
-	uint8_t reserved67[4];
+	
+	/* Hole at bytes 68-71. */
+	uint8_t reserved68[4];
 
 	/**
 	 * The size of spdk_nvme_io_qpair_opts according to the caller of this library is used for
@@ -1860,8 +1861,7 @@ struct spdk_nvme_qpair *spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *c
 		const struct spdk_nvme_io_qpair_opts *opts,
 		size_t opts_size);
 
-struct spdk_nvme_qpair *
-spdk_nvme_ctrlr_alloc_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
+struct spdk_nvme_qpair *spdk_nvme_ctrlr_alloc_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 			       const struct spdk_nvme_io_qpair_opts *user_opts,
 			       size_t opts_size, int *efd);
 

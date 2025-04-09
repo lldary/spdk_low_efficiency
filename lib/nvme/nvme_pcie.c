@@ -1099,7 +1099,9 @@ static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t i
 #ifdef SPDK_CONFIG_UINTR_MODE
 	spdk_pci_device_enable_interrupts_uintr(pci_dev, index+1, index);
 #else
-	spdk_pci_device_enable_interrupts(pci_dev, index+1);
+	// spdk_pci_device_enable_interrupts(pci_dev, index+1);
+	SPDK_ERRLOG("错误，除非支持用户中断，否则不应该调用该函数\n");
+	exit(1);
 #endif
 	return spdk_pci_device_get_interrupt_efd_by_index(pci_dev, index);
 }

@@ -866,7 +866,7 @@ spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t ef
 	SPDK_ERRLOG("Using userspace interrupts for device %s\n", dpdk_pci_device_get_name(rte_dev));
 
 	/* Create event file descriptors */
-	rc = dpdk_pci_device_create_interrupt_efds_uintr(rte_dev, efd_count);
+	rc = dpdk_pci_device_create_interrupt_efds_uintr(rte_dev, index);
 	if (rc) {
 		SPDK_ERRLOG("Can't setup eventfd (%u)\n", efd_count);
 		return rc;

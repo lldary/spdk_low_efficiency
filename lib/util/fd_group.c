@@ -330,7 +330,7 @@ spdk_fd_group_add_for_events(struct spdk_fd_group *fgrp, int efd, uint32_t event
 
 	return spdk_fd_group_add_ext(fgrp, efd, fn, arg, name, &opts);
 }
-
+/* 添加efd到epoll阻塞组 */
 int
 spdk_fd_group_add_ext(struct spdk_fd_group *fgrp, int efd, spdk_fd_fn fn, void *arg,
 		      const char *name, struct spdk_event_handler_opts *opts)

@@ -127,7 +127,7 @@ nvme_poll_group_write_disconnect_qpair_fd(struct spdk_nvme_poll_group *group)
 		SPDK_ERRLOG("failed to write the disconnect qpair fd: %s.\n", strerror(errno));
 	}
 }
-
+/* 内核中断组创建——注销qpair中断创建 */
 static int
 nvme_poll_group_add_disconnect_qpair_fd(struct spdk_nvme_poll_group *group)
 {
@@ -163,7 +163,7 @@ nvme_poll_group_add_disconnect_qpair_fd(struct spdk_nvme_poll_group *group)
 }
 
 #endif
-
+/* 创建监控组关键函数 */
 int
 spdk_nvme_poll_group_add(struct spdk_nvme_poll_group *group, struct spdk_nvme_qpair *qpair)
 {

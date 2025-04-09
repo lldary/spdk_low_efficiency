@@ -939,7 +939,7 @@ spdk_nvme_qpair_is_connected(struct spdk_nvme_qpair *qpair)
 	return nvme_qpair_get_state(qpair) >= NVME_QPAIR_CONNECTED &&
 	       nvme_qpair_get_state(qpair) <= NVME_QPAIR_ENABLED;
 }
-
+/* 创建qpair关键函数 */
 int
 nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
 		struct spdk_nvme_ctrlr *ctrlr,

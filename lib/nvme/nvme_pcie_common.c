@@ -118,7 +118,7 @@ nvme_pcie_ctrlr_alloc_cmb(struct spdk_nvme_ctrlr *ctrlr, uint64_t size, uint64_t
 
 	return (void *)addr;
 }
-
+/* 创建qpair关键函数 */
 int
 nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 			  const struct spdk_nvme_io_qpair_opts *opts)
@@ -142,6 +142,8 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 		pqpair->flags.disable_pcie_sgl_merge = opts->disable_pcie_sgl_merge;
 		sq_paddr = opts->sq.paddr;
 		cq_paddr = opts->cq.paddr;
+		/* 我们添加的代码 */
+		qpair->interrupt_enabled = opts->interupt_mode;
 	}
 
 	pqpair->retry_count = ctrlr->opts.transport_retry_count;
@@ -357,7 +359,7 @@ nvme_pcie_qpair_complete_pending_admin_request(struct spdk_nvme_qpair *qpair)
 		nvme_complete_request(req->cb_fn, req->cb_arg, qpair, req, &req->cpl);
 	}
 }
-
+/* 创建qpair关键函数 */
 int
 nvme_pcie_ctrlr_cmd_create_io_cq(struct spdk_nvme_ctrlr *ctrlr,
 				 struct spdk_nvme_qpair *io_que, spdk_nvme_cmd_cb cb_fn,
@@ -386,7 +388,7 @@ nvme_pcie_ctrlr_cmd_create_io_cq(struct spdk_nvme_ctrlr *ctrlr,
 		 * queue id to interrupt vector.
 		 */
 		cmd->cdw11_bits.create_io_cq.iv = io_que->id;
-		SPDK_ERRLOG("The interrupt vector offset starts from 1. We directly map the queue id to interrupt vector. id %u\n", io_que->id);
+		SPDK_ERRLOG("[ DEBUG ] The interrupt vector offset starts from 1. We directly map the queue id to interrupt vector. id %u\n", io_que->id);
 	}
 
 	cmd->dptr.prp.prp1 = pqpair->cpl_bus_addr;
@@ -518,7 +520,7 @@ nvme_completion_create_sq_cb(void *arg, const struct spdk_nvme_cpl *cpl)
 	nvme_pcie_qpair_reset(qpair);
 
 }
-
+/* 创建qpair关键函数 */
 static void
 nvme_completion_create_cq_cb(void *arg, const struct spdk_nvme_cpl *cpl)
 {
@@ -557,7 +559,7 @@ nvme_completion_create_cq_cb(void *arg, const struct spdk_nvme_cpl *cpl)
 	}
 	pqpair->pcie_state = NVME_PCIE_QPAIR_WAIT_FOR_SQ;
 }
-
+/* 创建qpair关键函数 */
 static int
 _nvme_pcie_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair,
 				 uint16_t qid)
@@ -583,7 +585,7 @@ _nvme_pcie_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme
 		}
 	}
 
-	rc = nvme_pcie_ctrlr_cmd_create_io_cq(ctrlr, qpair, nvme_completion_create_cq_cb, qpair);
+	rc = nvme_pcie_ctrlr_cmd_create_io_cq(ctrlr, qpair, nvme_completion_create_cq_cb, qpair); // 实际发送创建CQ指令，回调函数实际发送创建SQ指令
 
 	if (rc != 0) {
 		SPDK_ERRLOG("Failed to send request to create_io_cq\n");
@@ -593,13 +595,13 @@ _nvme_pcie_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme
 	pqpair->pcie_state = NVME_PCIE_QPAIR_WAIT_FOR_CQ;
 	return 0;
 }
-
+/* 创建qpair关键函数 */
 int
 nvme_pcie_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
 	int rc = 0;
 
-	if (!nvme_qpair_is_admin_queue(qpair)) {
+	if (!nvme_qpair_is_admin_queue(qpair)) { // 如果不是管理队列
 		rc = _nvme_pcie_ctrlr_create_io_qpair(ctrlr, qpair, qpair->id);
 	} else {
 		nvme_qpair_set_state(qpair, NVME_QPAIR_CONNECTED);
@@ -1160,7 +1162,8 @@ nvme_pcie_qpair_destroy(struct spdk_nvme_qpair *qpair)
 
 	return 0;
 }
-
+/* 创建qpair关键函数 */
+/* 注意这里并没有实际发送创建qpair指令，只是准备了管理qpair数据结构的内容 */
 struct spdk_nvme_qpair *
 nvme_pcie_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid,
 				const struct spdk_nvme_io_qpair_opts *opts)
@@ -1841,7 +1844,7 @@ exit:
 
 	return rc;
 }
-
+/* 分配数据结构内存 */
 struct spdk_nvme_transport_poll_group *
 nvme_pcie_poll_group_create(void)
 {

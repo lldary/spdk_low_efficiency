@@ -352,7 +352,7 @@ nvme_ctrlr_io_qpair_opts_copy(struct spdk_nvme_io_qpair_opts *dst,
 #undef FIELD_OK
 #undef SET_FIELD
 }
-
+/* 注册qpair关键函数 */
 static struct spdk_nvme_qpair *
 nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 			   const struct spdk_nvme_io_qpair_opts *opts)
@@ -389,8 +389,7 @@ nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		return NULL;
 	}
 
-	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
-	qpair->interrupt_enabled = false;
+	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts); // 这里还未发送创建CQ指令
 	if (qpair == NULL) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_create_io_qpair() failed\n");
 		spdk_nvme_ctrlr_free_qid(ctrlr, qid);
@@ -442,15 +441,11 @@ nvme_ctrlr_create_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 		nvme_ctrlr_unlock(ctrlr);
 		return NULL;
 	}
-	if(opts->interupt_mode)
+	if(opts->interupt_mode) // TODO: 这一步需要移动到更合理的角度
 		*efd = nvme_transport_alloc_msix(ctrlr, qid, *efd);
-	SPDK_ERRLOG("efd = %d\n", *efd);
+	SPDK_ERRLOG("[ DEBUG ] efd = %d\n", *efd);
 
 	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
-	if(opts->interupt_mode)
-		qpair->interrupt_enabled = true;
-	else
-		qpair->interrupt_enabled = false;
 
 	if (qpair == NULL) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_create_io_qpair() failed\n");
@@ -467,7 +462,7 @@ nvme_ctrlr_create_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 
 	return qpair;
 }
-
+/* 创建qpair关键函数 */
 int
 spdk_nvme_ctrlr_connect_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
@@ -504,7 +499,7 @@ spdk_nvme_ctrlr_get_admin_qp_fd(struct spdk_nvme_ctrlr *ctrlr,
 {
 	return spdk_nvme_qpair_get_fd(ctrlr->adminq, opts);
 }
-
+/* 注册qpair关键函数 */
 struct spdk_nvme_qpair *
 spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 			       const struct spdk_nvme_io_qpair_opts *user_opts,
@@ -549,6 +544,8 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 				goto unlock;
 			}
 		}
+		/* 添加代码 */
+		opts.interupt_mode = false;
 	}
 
 	if (ctrlr->opts.enable_interrupts && opts.delay_cmd_submit) {
@@ -556,13 +553,13 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		goto unlock;
 	}
 
-	qpair = nvme_ctrlr_create_io_qpair(ctrlr, &opts);
+	qpair = nvme_ctrlr_create_io_qpair(ctrlr, &opts); // 这个函数结束后还没有实际发送创建qpair指令
 
 	if (qpair == NULL || opts.create_only == true) {
 		goto unlock;
 	}
 
-	rc = spdk_nvme_ctrlr_connect_io_qpair(ctrlr, qpair);
+	rc = spdk_nvme_ctrlr_connect_io_qpair(ctrlr, qpair); // 这里才实际发送了创建CQ指令
 	if (rc != 0) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_connect_io_qpair() failed\n");
 		nvme_ctrlr_proc_remove_io_qpair(qpair);
@@ -625,7 +622,11 @@ spdk_nvme_ctrlr_alloc_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 		}
 		if(user_opts->interupt_mode){
 			opts.interupt_mode = true;
-			SPDK_ERRLOG("interupt_mode\n");
+			SPDK_ERRLOG("[ DEBUG ] interupt_mode\n");
+		}
+		if(opts.interupt_mode && ctrlr->opts.enable_interrupts){
+			NVME_CTRLR_ERRLOG(ctrlr, "中断标识符efd可能出现多次注册\n");
+			goto unlock;
 		}
 	}
 
@@ -635,7 +636,6 @@ spdk_nvme_ctrlr_alloc_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 	}
 
 	qpair = nvme_ctrlr_create_io_qpair_int(ctrlr, &opts, efd);
-	opts.interupt_mode = false;
 
 	if (qpair == NULL || opts.create_only == true) {
 		goto unlock;
