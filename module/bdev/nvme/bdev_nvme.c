@@ -2010,11 +2010,11 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 
 	if(nvme_ctrlr->interrupt_mode)
 	{
-		opts.interupt_mode = true;
+		opts.interrupt_mode = SPDK_UINTR; // TODO: 看看如何启动内核中断
 		opts.async_mode = false;
 	} else
 	{
-		opts.interupt_mode = false;
+		opts.interrupt_mode = 0;
 	}
 
 	qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(nvme_ctrlr->ctrlr, &opts, sizeof(opts), &(nvme_qpair->efd));

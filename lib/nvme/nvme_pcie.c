@@ -1089,15 +1089,20 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 
 
 
-#include <linux/vfio.h>
-static int nvme_pcie_ctrlr_alloc_msix(struct nvme_pcie_ctrlr *pctrlr, uint16_t index, int efd)
+static int nvme_pcie_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, uint16_t flag)
 {
 	int rc;
 	SPDK_ERRLOG("nvme_pcie_ctrlr_alloc_msix\n");
 	// TODO: 不允许MSIX解决方案
-	struct spdk_pci_device *pci_dev = pctrlr->devhandle;
+	struct spdk_pci_device *pci_dev = nvme_ctrlr_proc_get_devhandle(ctrlr);
 #ifdef SPDK_CONFIG_UINTR_MODE
-	spdk_pci_device_enable_interrupts_uintr(pci_dev, index+1, index);
+	if(flag & SPDK_UINTR) {
+		spdk_pci_device_enable_interrupts_uintr(pci_dev, index);
+	} else if (flag & SPDK_INTERRUPT) {
+		spdk_pci_device_enable_spec_interrupts(pci_dev, index);
+	} else {
+		SPDK_ERRLOG("该模式不应调用此函数 mode = %u", flag);
+	}
 #else
 	// spdk_pci_device_enable_interrupts(pci_dev, index+1);
 	SPDK_ERRLOG("错误，除非支持用户中断，否则不应该调用该函数\n");

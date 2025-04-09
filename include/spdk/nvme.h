@@ -1812,7 +1812,7 @@ struct spdk_nvme_io_qpair_opts {
 	bool disable_pcie_sgl_merge;
 
 	/* 我们添加用来表示这个qpair是否希望开启中断 */
-	bool interupt_mode;
+	uint8_t interrupt_mode;
 	
 	/* Hole at bytes 68-71. */
 	uint8_t reserved68[4];
@@ -3451,6 +3451,15 @@ enum spdk_nvme_ns_flags {
 	SPDK_NVME_NS_COMPARE_SUPPORTED		= 1 << 7, /**< The compare command is supported */
 };
 
+/* 自行添加的flag，分别是注册内核中断还是用户中断 */
+enum spdk_nvme_qpair_int_flags {
+	SPDK_POLL = 1 << 0, /**< Polling mode */
+	SPDK_INTERRUPT = 1 << 1, /**< Interrupt mode */
+	SPDK_UINTR = 1 << 2, /**< User interrupt mode */
+	SPDK_INT_POLL = 1 << 3, /**< Interrupt and Polling mode */
+	SPDK_UINTR_POLL = 1 << 4, /**< User interrupt and Polling mode */
+};
+
 /**
  * Get the flags for the given namespace.
  *
@@ -4671,7 +4680,7 @@ struct spdk_nvme_transport_ops {
 
 	void (*ctrlr_disconnect_qpair)(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair);
 
-	int (*ctrlr_alloc_msix)(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, int efd);
+	int (*ctrlr_alloc_msix)(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, uint16_t flag);
 
 	void (*qpair_abort_reqs)(struct spdk_nvme_qpair *qpair, uint32_t dnr);
 

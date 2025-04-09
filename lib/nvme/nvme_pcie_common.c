@@ -143,7 +143,7 @@ nvme_pcie_qpair_construct(struct spdk_nvme_qpair *qpair,
 		sq_paddr = opts->sq.paddr;
 		cq_paddr = opts->cq.paddr;
 		/* 我们添加的代码 */
-		qpair->interrupt_enabled = opts->interupt_mode;
+		qpair->interrupt_enabled = opts->interrupt_mode;
 	}
 
 	pqpair->retry_count = ctrlr->opts.transport_retry_count;

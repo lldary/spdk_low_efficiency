@@ -229,7 +229,19 @@ dpdk_pci_device_enable_interrupt_uintr(struct rte_pci_device *rte_dev, uint32_t 
 }
 
 int
-dpdk_pci_device_create_interrupt_efds_uintr(struct rte_pci_device *rte_dev, uint32_t count)
+dpdk_pci_device_enable_spec_interrupt(struct rte_pci_device *rte_dev, uint32_t index)
 {
-	return g_dpdk_fn_table->pci_device_create_interrupt_efds_uintr(rte_dev, count);
+	return g_dpdk_fn_table->pci_device_enable_spec_interrupt(rte_dev, index);
+}
+
+int
+dpdk_pci_device_create_interrupt_efds_uintr(struct rte_pci_device *rte_dev, uint32_t index)
+{
+	return g_dpdk_fn_table->pci_device_create_interrupt_efds_uintr(rte_dev, index);
+}
+
+int
+dpdk_pci_device_create_spec_interrupt_efds(struct rte_pci_device *rte_dev, uint32_t index)
+{
+	return g_dpdk_fn_table->pci_device_create_spec_interrupt_efds(rte_dev, index);
 }

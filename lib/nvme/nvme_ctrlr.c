@@ -441,8 +441,8 @@ nvme_ctrlr_create_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 		nvme_ctrlr_unlock(ctrlr);
 		return NULL;
 	}
-	if(opts->interupt_mode) // TODO: 这一步需要移动到更合理的角度
-		*efd = nvme_transport_alloc_msix(ctrlr, qid, *efd);
+	if(opts->interrupt_mode)
+		*efd = nvme_transport_alloc_msix(ctrlr, qid, opts->interrupt_mode);
 	SPDK_ERRLOG("[ DEBUG ] efd = %d\n", *efd);
 
 	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
@@ -545,7 +545,7 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 			}
 		}
 		/* 添加代码 */
-		opts.interupt_mode = false;
+		opts.interrupt_mode = false;
 	}
 
 	if (ctrlr->opts.enable_interrupts && opts.delay_cmd_submit) {
@@ -620,14 +620,14 @@ spdk_nvme_ctrlr_alloc_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 				goto unlock;
 			}
 		}
-		if(user_opts->interupt_mode){
-			opts.interupt_mode = true;
-			SPDK_ERRLOG("[ DEBUG ] interupt_mode\n");
+		if(user_opts->interrupt_mode){
+			opts.interrupt_mode = user_opts->interrupt_mode;
+			SPDK_ERRLOG("[ DEBUG ] interrupt_mode\n");
 		}
-		if(opts.interupt_mode && ctrlr->opts.enable_interrupts){
-			NVME_CTRLR_ERRLOG(ctrlr, "中断标识符efd可能出现多次注册\n");
-			goto unlock;
-		}
+		// if(opts.interrupt_mode && ctrlr->opts.enable_interrupts){
+		// 	NVME_CTRLR_ERRLOG(ctrlr, "中断标识符 efd 可能出现多次注册\n");
+		// 	goto unlock;
+		// }
 	}
 
 	if (ctrlr->opts.enable_interrupts && opts.delay_cmd_submit) {

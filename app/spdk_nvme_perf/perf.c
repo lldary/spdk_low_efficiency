@@ -349,9 +349,10 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	local_irq_save(flags);
 	_senduipi(cpuid_uipi_map[vector]);
 	if(current_thread[vector] == idle_thread + vector) {
-		current_thread[vector] = work_thread + vector;
+		// current_thread[vector] = work_thread + vector;
 		switch_thread(idle_thread + vector, work_thread + vector);	
-		local_irq_restore(flags);
+		current_thread[vector] = idle_thread + vector;
+		// local_irq_restore(flags);
 	} else {
 		uintr_count[vector]++;
 	}
@@ -395,8 +396,9 @@ void idle_thread_func(void) {
 	{
 		int flags;
 		local_irq_save(flags);
-		current_thread[cpu_id] = work_thread + cpu_id;
+		// current_thread[cpu_id] = work_thread + cpu_id;
 		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
+		current_thread[cpu_id] = idle_thread + cpu_id;
 		local_irq_restore(flags);
 		// if (should_freq)
 		// 	uintr_wait_msix_interrupt(800000UL, cpu_id);
@@ -410,10 +412,16 @@ void idle_thread_func(void) {
 
 	int flags;
 	local_irq_save(flags);
-	current_thread[cpu_id] = work_thread + cpu_id;
+	// current_thread[cpu_id] = work_thread + cpu_id;
 	switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
-	local_irq_restore(flags);
-	// if (should_freq)
+	current_thread[cpu_id] = idle_thread + cpu_id;
+	// local_irq_restore(flags);
+	while (uintr_count[cpu_id]) {
+		local_irq_save(flags);
+		uintr_count[cpu_id] = 0;
+		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
+		current_thread[cpu_id] = idle_thread + cpu_id;
+	}
 	// 	uintr_wait_msix_interrupt(800000UL, cpu_id);
 	goto begin;
 }
@@ -1194,7 +1202,9 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 	opts.create_only = true;
 
 	if(g_enable_uintr)
-		opts.interupt_mode = true;
+		opts.interrupt_mode = SPDK_UINTR;
+	if(g_enable_interrupt)
+		opts.interrupt_mode = SPDK_INTERRUPT;
 
 	ctrlr_opts = spdk_nvme_ctrlr_get_opts(entry->u.nvme.ctrlr);
 	opts.async_mode = !(spdk_nvme_ctrlr_get_transport_id(entry->u.nvme.ctrlr)->trtype ==
@@ -1209,7 +1219,7 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 	group = ns_ctx->u.nvme.group;
 	for (i = 0; i < ns_ctx->u.nvme.num_all_qpairs; i++) {
 		int efd = 0; // 只有uintr会用到
-		if(g_enable_uintr) {
+		if(g_enable_uintr || g_enable_interrupt) {
 			ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair_int(entry->u.nvme.ctrlr, &opts,
 				sizeof(opts), &efd);
 		} else {
@@ -2081,7 +2091,7 @@ work_fn(void *arg)
 		idle_thread[cpu_id].stack_space[0xFFF0] = cpu_id;
 		idle_thread[cpu_id].stack_space[0xFFEF] = cpu_id;
 		switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
-		// current_thread[cpu_id] = work_thread + cpu_id;
+		current_thread[cpu_id] = work_thread + cpu_id;
 		switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
 		current_thread[cpu_id] = work_thread + cpu_id;
 	}
@@ -2179,16 +2189,16 @@ work_fn(void *arg)
 		if(g_enable_uintr) {
 			int cpu_id = worker->lcore;
 			curr_tsc = spdk_get_ticks();
-			local_irq_save(flags);
 			if(uintr_count[cpu_id] > 0 || total_check_io) { // 上一次获取至少一个IO completion 信号或者还有至少一个IO completion 信号没有处理，就继续执行
+				local_irq_save(flags);
 				uintr_count[cpu_id] = 0;
 				total_check_io = false;
 				worker->busy_time += (curr_tsc - last_tsc);
 				last_tsc = curr_tsc;
 			} else {
-				current_thread[cpu_id] = idle_thread + cpu_id;
 				worker->idle_time += (curr_tsc - last_tsc);
 				switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+				current_thread[cpu_id] = work_thread + cpu_id;
 				last_tsc = spdk_get_ticks();
 			}
 		}
@@ -2437,7 +2447,7 @@ print_performance(void)
 		}
 	}
 
-	printf("========================================================\n");
+	printf("====================================================================\n");
 	printf("avg core utils: %6.2f%% \n", g_core_utils * 100 / g_core_util_count); // 打印CPU利用率平均值
 	printf("%*s\n", max_strlen + 60, "Latency(us)");
 	printf("%-*s: %10s %10s %10s %10s %10s\n",
@@ -2475,7 +2485,7 @@ print_performance(void)
 
 	if (ns_count != 0 && total_io_completed) {
 		sum_ave_latency = ((double)total_io_tsc / total_io_completed) * 1000 * 1000 / g_tsc_rate;
-		printf("========================================================\n");
+		printf("====================================================================\n");
 		printf("%-*s: %10.2f %10.2f %10.2f %10.2f %10.2f\n",
 		       max_strlen + 13, "Total", total_io_per_second, total_mb_per_second,
 		       sum_ave_latency, min_latency_so_far, max_latency_so_far);

@@ -1235,7 +1235,7 @@ spdk_fio_open(struct thread_data *td, struct fio_file *f)
 	assert(fio_qpair->qpair == NULL);
 	spdk_nvme_ctrlr_get_default_io_qpair_opts(fio_ctrlr->ctrlr, &qpopts, sizeof(qpopts));
 #ifdef SPDK_CONFIG_INT_MODE
-	qpopts.interupt_mode = true;
+	qpopts.interrupt_mode = true; // TODO: 使用错误，需要修改
 #ifdef SPDK_CONFIG_UINTR_MODE
 	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
 	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {

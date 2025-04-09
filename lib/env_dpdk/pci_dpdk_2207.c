@@ -152,6 +152,12 @@ pci_device_enable_interrupt_2207(struct rte_pci_device *rte_dev)
 }
 
 static int
+pci_device_enable_spec_interrupt_2207(struct rte_pci_device *rte_dev, uint32_t index)
+{
+	return rte_intr_enable_index(rte_dev->intr_handle, index);
+}
+
+static int
 pci_device_enable_interrupt_uintr_2207(struct rte_pci_device *rte_dev, uint32_t index)
 {
 	return rte_intr_enable_uintr(rte_dev->intr_handle, index);
@@ -176,10 +182,15 @@ pci_device_create_interrupt_efds_2207(struct rte_pci_device *rte_dev, uint32_t c
 }
 
 static int
-pci_device_create_interrupt_efds_uintr_2207(struct rte_pci_device *rte_dev, uint32_t count)
+pci_device_create_spec_interrupt_efds_2207(struct rte_pci_device *rte_dev, uint32_t index)
 {
-	// return rte_intr_efd_enable_uintr(rte_dev->intr_handle, count);
-	return rte_intr_uintr_enable(rte_dev->intr_handle, count);
+	return rte_intr_efd_enable_index(rte_dev->intr_handle, index);
+}
+
+static int
+pci_device_create_interrupt_efds_uintr_2207(struct rte_pci_device *rte_dev, uint32_t index)
+{
+	return rte_intr_uintr_enable(rte_dev->intr_handle, index);
 }
 
 static void
@@ -247,10 +258,12 @@ struct dpdk_fn_table fn_table_2207 = {
 	.pci_device_write_config	= pci_device_write_config_2207,
 	.pci_driver_register		= pci_driver_register_2207,
 	.pci_device_enable_interrupt	= pci_device_enable_interrupt_2207,
+	.pci_device_enable_spec_interrupt = pci_device_enable_spec_interrupt_2207,
 	.pci_device_enable_interrupt_uintr = pci_device_enable_interrupt_uintr_2207,
 	.pci_device_disable_interrupt	= pci_device_disable_interrupt_2207,
 	.pci_device_get_interrupt_efd	= pci_device_get_interrupt_efd_2207,
 	.pci_device_create_interrupt_efds = pci_device_create_interrupt_efds_2207,
+	.pci_device_create_spec_interrupt_efds = pci_device_create_spec_interrupt_efds_2207,
 	.pci_device_create_interrupt_efds_uintr = pci_device_create_interrupt_efds_uintr_2207,
 	.pci_device_delete_interrupt_efds = pci_device_delete_interrupt_efds_2207,
 	.pci_device_get_interrupt_efd_by_index = pci_device_get_interrupt_efd_by_index_2207,

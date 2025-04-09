@@ -1668,7 +1668,7 @@ struct spdk_nvme_ctrlr *nvme_transport_ctrlr_construct(const struct spdk_nvme_tr
 		void *devhandle);
 int nvme_transport_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr);
 
-int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, int efd);
+int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, uint16_t flag);
 
 int nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx, bool direct_connect);
 int nvme_transport_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx);
