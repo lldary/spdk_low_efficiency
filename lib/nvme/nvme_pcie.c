@@ -1096,9 +1096,9 @@ static int nvme_pcie_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t in
 	// TODO: 不允许MSIX解决方案
 	struct spdk_pci_device *pci_dev = nvme_ctrlr_proc_get_devhandle(ctrlr);
 #ifdef SPDK_CONFIG_UINTR_MODE
-	if(flag & SPDK_UINTR) {
+	if(flag & SPDK_PLUS_UINTR_MODE) {
 		spdk_pci_device_enable_interrupts_uintr(pci_dev, index);
-	} else if (flag & SPDK_INTERRUPT) {
+	} else if (flag & SPDK_PLUS_INTERRUPT_MODE) {
 		spdk_pci_device_enable_spec_interrupts(pci_dev, index);
 	} else {
 		SPDK_ERRLOG("该模式不应调用此函数 mode = %u", flag);

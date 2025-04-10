@@ -3453,11 +3453,11 @@ enum spdk_nvme_ns_flags {
 
 /* 自行添加的flag，分别是注册内核中断还是用户中断 */
 enum spdk_nvme_qpair_int_flags {
-	SPDK_POLL = 1 << 0, /**< Polling mode */
-	SPDK_INTERRUPT = 1 << 1, /**< Interrupt mode */
-	SPDK_UINTR = 1 << 2, /**< User interrupt mode */
-	SPDK_INT_POLL = 1 << 3, /**< Interrupt and Polling mode */
-	SPDK_UINTR_POLL = 1 << 4, /**< User interrupt and Polling mode */
+	SPDK_PLUS_POLL_MODE = 0, /**< Polling mode */
+	SPDK_PLUS_INTERRUPT_MODE = 1 << 0, /**< Interrupt mode */
+	SPDK_PLUS_UINTR_MODE = 1 << 1, /**< User interrupt mode */
+	SPDK_PLUS_INT_POLL_MODE = 1 << 2, /**< Interrupt and Polling mode */
+	SPDK_PLUS_UINTR_POLL_MODE = 1 << 3, /**< User interrupt and Polling mode */
 };
 
 /**

@@ -406,22 +406,24 @@ void idle_thread_func(void) {
 	uint64_t delay = is_write ? 5000 : 10000;
 	delay = g_io_size_bytes == 4096 ? delay << 1 : delay << 3;
 	begin:
-	uint64_t sleep_time = _rdtsc() + delay;
-	_tpause(0, sleep_time);
+	if(!uintr_count[cpu_id]) {
+		current_thread[cpu_id] = idle_thread + cpu_id;
+		uint64_t sleep_time = _rdtsc() + delay;
+		_tpause(0, sleep_time);
+	}
 
 
 	int flags;
 	local_irq_save(flags);
 	// current_thread[cpu_id] = work_thread + cpu_id;
 	switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
-	current_thread[cpu_id] = idle_thread + cpu_id;
-	// local_irq_restore(flags);
-	while (uintr_count[cpu_id]) {
-		local_irq_save(flags);
-		uintr_count[cpu_id] = 0;
-		switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
-		current_thread[cpu_id] = idle_thread + cpu_id;
-	}
+	// // local_irq_restore(flags);
+	// while (uintr_count[cpu_id]) {
+	// 	local_irq_save(flags);
+	// 	uintr_count[cpu_id] = 0;
+	// 	switch_thread(idle_thread + cpu_id, work_thread + cpu_id);
+	// 	current_thread[cpu_id] = idle_thread + cpu_id;
+	// }
 	// 	uintr_wait_msix_interrupt(800000UL, cpu_id);
 	goto begin;
 }
@@ -1202,9 +1204,9 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 	opts.create_only = true;
 
 	if(g_enable_uintr)
-		opts.interrupt_mode = SPDK_UINTR;
+		opts.interrupt_mode = SPDK_PLUS_UINTR_MODE;
 	if(g_enable_interrupt)
-		opts.interrupt_mode = SPDK_INTERRUPT;
+		opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
 
 	ctrlr_opts = spdk_nvme_ctrlr_get_opts(entry->u.nvme.ctrlr);
 	opts.async_mode = !(spdk_nvme_ctrlr_get_transport_id(entry->u.nvme.ctrlr)->trtype ==
@@ -2146,6 +2148,7 @@ work_fn(void *arg)
 
 		if(g_enable_uintr) {
 			local_irq_restore(flags); // 恢复中断标志并且允许处理用户中断
+			uintr_count[worker->lcore] = 0;
 		}
 
 		/*
@@ -2191,8 +2194,7 @@ work_fn(void *arg)
 			int cpu_id = worker->lcore;
 			curr_tsc = spdk_get_ticks();
 			if(uintr_count[cpu_id] > 0 || total_check_io) { // 上一次获取至少一个IO completion 信号或者还有至少一个IO completion 信号没有处理，就继续执行
-				local_irq_save(flags);
-				uintr_count[cpu_id] = 0;
+				// local_irq_save(flags);
 				total_check_io = false;
 				worker->busy_time += (curr_tsc - last_tsc);
 				last_tsc = curr_tsc;

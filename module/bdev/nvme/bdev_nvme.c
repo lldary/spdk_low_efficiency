@@ -2010,7 +2010,7 @@ bdev_nvme_create_qpair(struct nvme_qpair *nvme_qpair)
 
 	if(nvme_ctrlr->interrupt_mode)
 	{
-		opts.interrupt_mode = SPDK_UINTR; // TODO: 看看如何启动内核中断
+		opts.interrupt_mode = SPDK_PLUS_UINTR_MODE; // TODO: 看看如何启动内核中断
 		opts.async_mode = false;
 	} else
 	{
