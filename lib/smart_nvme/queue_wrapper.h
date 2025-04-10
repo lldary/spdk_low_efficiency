@@ -1,12 +1,3 @@
-// queue_wrapper.hpp
-#ifndef QUEUE_WRAPPER_HPP
-#define QUEUE_WRAPPER_HPP
-
-#include <time.h>
-#include <stdint.h>
-
-extern "C" {
-
 struct nvme_timestamp {
     uint32_t io_mode;
     uint32_t io_size;
@@ -17,7 +8,7 @@ struct nvme_timestamp {
 typedef void* QueueHandle;
 
 // 创建队列
-QueueHandle create_queue();
+QueueHandle create_queue(void);
 
 // 入队
 void enqueue(QueueHandle q, struct nvme_timestamp value);
@@ -38,7 +29,3 @@ uint32_t queue_size(QueueHandle q);
 
 // 销毁队列
 void destroy_queue(QueueHandle q);
-
-}
-
-#endif

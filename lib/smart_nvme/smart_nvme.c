@@ -1,7 +1,9 @@
 #include <spdk/smart_nvme.h>
 #include <spdk/nvme.h> // Include the header defining struct spdk_nvme_ctrlr
 #include <bits/time.h>
-#include "queue_wrapper.hpp" // Include the queue wrapper header
+#include <x86gprintrin.h>
+#include <spdk/log.h>
+#include "queue_wrapper.h" // Include the queue wrapper header
 
 #ifndef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
 #define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
@@ -30,6 +32,10 @@
 #define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
 #define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
 #define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MIN3(a, b, c) (MIN(MIN((a), (b)), (c)))
+
 
 enum nvme_io_mode {
     SPDK_PLUS_READ,
@@ -98,8 +104,7 @@ void __attribute__((interrupt))__attribute__((target("general-regs-only", "inlin
 uintr_get_handler(struct __uintr_frame *ui_frame,
 	      unsigned long long vector)
 {
-	int flags;
-	local_irq_save(flags);
+	local_irq_save(g_curr_thread[vector]->flags);
 	_senduipi(g_cpuid_uipi_map[vector]);
 	if(g_curr_thread[vector] == g_idle_thread + vector) {
 		switch_thread(g_idle_thread + vector, g_work_thread + vector);	
@@ -109,7 +114,7 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	}
 }
 
-static void switch_thread(struct user_thread *from, struct user_thread *to) {
+static void switch_thread(struct nvme_thread *from, struct nvme_thread *to) {
 	asm volatile(
 				"push %%rbx\n\t"
 				"push %%rbp\n\t"
@@ -132,7 +137,6 @@ static void switch_thread(struct user_thread *from, struct user_thread *to) {
 }
 
 static void idle_thread_func(void) {
-	int loop = 0;
 	uint64_t cpu_id;
 
     // 使用内联汇编将 %rbx 的值赋给 loop
@@ -160,6 +164,13 @@ begin:
 	goto begin;
 }
 
+static int nvme_get_default_threshold_opts(
+    struct spdk_plus_nvme_threshold_opts *opts) {
+    opts->depth_threshold1 = 8;
+    opts->depth_threshold2 = 16;
+    opts->depth_threshold3 = 32;
+    return SPDK_PLUS_SUCCESS;
+}
 
 static inline enum spdk_plus_monitor_io_size
 nvme_get_statistical_io_size(uint32_t lba_count){
@@ -224,7 +235,7 @@ nvme_sleep(uint64_t ns) {
 
 /* 计算指定的队列的睡眠时间 */
 static inline uint64_t
-nvme_get_sleep_naonotime_internel(struct spdk_plus_smart_nvme *nvme_device, struct spdk_plus_nvme_qpair qpair) {
+nvme_get_sleep_naonotime_internel(struct spdk_plus_smart_nvme *nvme_device, struct spdk_plus_nvme_qpair qpair, struct timespec curr_time) {
     if(queue_empty(qpair.queue)) {
         return UINT64_MAX; /* 如果队列为空，返回最大值 */
     }
@@ -253,9 +264,9 @@ static inline uint64_t
 nvme_get_sleep_nanotime(struct spdk_plus_smart_nvme *nvme_device) {
     struct timespec curr_time;
     clock_gettime(CLOCK_MONOTONIC_RAW, &curr_time);
-    uint64_t sleep_time = MIN(nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->int_qpair),
-                      nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->uintr_qpair), 
-                      nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->poll_qpair));
+    uint64_t sleep_time = MIN3(nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->int_qpair, curr_time),
+                      nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->uintr_qpair, curr_time),
+                      nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->poll_qpair, curr_time));
     if (sleep_time == UINT64_MAX) {
         SPDK_ERRLOG("Sleep time is UINT64_MAX\n");
     }
@@ -267,7 +278,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
     struct spdk_plus_nvme_qpair *qpair = NULL;
     switch(g_smart_schedule_module_opts.status) {
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_SUPER_POWER_SAVE:
-            qpair = nvme_device->int_qpair;
+            qpair = &nvme_device->int_qpair;
             task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
             break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_POWER_SAVE: {
@@ -275,10 +286,10 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
                                    queue_size(nvme_device->uintr_qpair.queue) +
                                    queue_size(nvme_device->poll_qpair.queue);
             if(total_depth < nvme_device->threshold_opts.depth_threshold2) {
-                qpair = nvme_device->uintr_qpair;
+                qpair = &nvme_device->uintr_qpair;
                 task->notify_mode = SPDK_PLUS_UINTR_MODE;
             } else {
-                qpair = nvme_device->int_qpair;
+                qpair = &nvme_device->int_qpair;
                 task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
             }
         } break;
@@ -288,20 +299,20 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
                                    queue_size(nvme_device->uintr_qpair.queue) +
                                    queue_size(nvme_device->poll_qpair.queue);
             if(total_depth < nvme_device->threshold_opts.depth_threshold1) {
-                qpair = nvme_device->uintr_qpair;
+                qpair = &nvme_device->uintr_qpair;
                 task->notify_mode = SPDK_PLUS_UINTR_MODE;
             } else if(total_depth < nvme_device->threshold_opts.depth_threshold3) {
-                qpair = nvme_device->poll_qpair;
-                task->notify_mode = SPDK_PLUS_POLLING_MODE;
+                qpair = &nvme_device->poll_qpair;
+                task->notify_mode = SPDK_PLUS_POLL_MODE;
             } else {
-                qpair = nvme_device->int_qpair;
+                qpair = &nvme_device->int_qpair;
                 task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
             }
         } break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_PERFORMANCE:
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_SUPER_PERFORMANCE:
-            qpair = nvme_device->poll_qpair;
-            task->notify_mode = SPDK_PLUS_POLLING_MODE;
+            qpair = &nvme_device->poll_qpair;
+            task->notify_mode = SPDK_PLUS_POLL_MODE;
             break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_CUSTOM:
             SPDK_ERRLOG("Custom mode, not support\n");
@@ -309,8 +320,8 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
         default:
             SPDK_ERRLOG("Unknown schedule module status\n");
     }
-    enqueue(qpair->queue, (struct nvme_timestamp){.ts = task->curr_time, .io_size = task->io_size, .io_mode = io_mode});
-    return qpair;
+    enqueue(qpair->queue, (struct nvme_timestamp){.ts = task->start_time, .io_size = task->io_size, .io_mode = io_mode});
+    return qpair->qpair;
 }
 
 static void
@@ -356,7 +367,7 @@ nvme_ctrlr_io_qpair_opts_copy(struct spdk_nvme_io_qpair_opts *dst,
 }
 
 static void
-nvme_prepare_uintr_env() {
+nvme_prepare_uintr_env(void) {
     int cpu_id = sched_getcpu();
     int flags;
     if(g_curr_thread[cpu_id] != NULL) {
@@ -373,7 +384,7 @@ nvme_prepare_uintr_env() {
     g_work_thread[cpu_id].flags = flags;
     g_idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(g_idle_thread[cpu_id].stack_space) + sizeof(g_idle_thread[cpu_id].stack_space) - 0x38);
     g_idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
-    g_idle_thread[cpu_id].stack_space[0xFFFF] = idle_thread_func;
+    g_idle_thread[cpu_id].stack_space[0xFFFF] = (uint64_t)idle_thread_func;
     g_idle_thread[cpu_id].stack_space[0xFFFE] = cpu_id;
     g_idle_thread[cpu_id].stack_space[0xFFFD] = cpu_id;
     g_idle_thread[cpu_id].stack_space[0xFFFC] = cpu_id;
@@ -403,10 +414,10 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     struct spdk_plus_smart_nvme *smart_nvme = NULL;
     struct spdk_nvme_io_qpair_opts opts;
 
-    if (ctrlr->opts.enable_interrupts) {
-        SPDK_ERRLOG("Interrupts are enabled, cannot allocate I/O device\n");
-        goto failed;
-    }
+    // if (ctrlr->opts.enable_interrupts) {
+    //     SPDK_ERRLOG("Interrupts are enabled, cannot allocate I/O device\n");
+    //     goto failed;
+    // }
 
     smart_nvme = calloc(1, sizeof(struct spdk_plus_smart_nvme));
     if (!smart_nvme) {
@@ -415,13 +426,14 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     }
     smart_nvme->ctrlr = ctrlr;
     smart_nvme->cpu_id = sched_getcpu();
-    smart_nvme->ns = spdk_nvme_ctrlr_get_default_ns(ctrlr);
+    nvme_get_default_threshold_opts(&smart_nvme->threshold_opts);
+    smart_nvme->ns = spdk_nvme_ctrlr_get_ns(ctrlr, 1); // TODO: 所以这个字段不一定有用
     if (!smart_nvme->ns) {
         SPDK_ERRLOG("Failed to get default namespace\n");
         goto failed;
     }
     spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
-    nvme_ctrlr_io_qpair_opts_copy(&opts, user_opts, spdk_min(opts.opts_size, opts_size));
+    nvme_ctrlr_io_qpair_opts_copy(&opts, user_opts, MIN(opts.opts_size, opts_size));
     if(opts.interrupt_mode != 0){
         SPDK_ERRLOG("user should not set interrupt mode\n");
         goto failed;
@@ -461,10 +473,10 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         SPDK_ERRLOG("Failed to get uintr qpair fd\n");
         goto failed;
     }
-    int uipi_index = uintr_register_sender(efd, 0);
+    int uipi_index = uintr_register_sender(smart_nvme->uintr_qpair.fd, 0);
     if(uipi_index < 0) {
         SPDK_ERRLOG("Unable to register sender\n");
-        goto qpair_failed;
+        goto failed;
     }
     g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
     SPDK_ERRLOG("[ DEBUG ]uipi_index: %d\n", uipi_index);
@@ -597,6 +609,7 @@ failed:
     return rc;
 }
 
+static
 int32_t nvme_process_completions_poll(struct spdk_plus_smart_nvme *nvme_device,
     uint32_t max_completions) {
     int32_t rc = 0;
@@ -669,11 +682,11 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
                 SPDK_ERRLOG("CPU ID is not match\n");
                 return SPDK_PLUS_ERR;
             }
-        begin:
+        again:
             do {
                 local_irq_restore(g_curr_thread[nvme_device->cpu_id]->flags);
                 g_io_completion_notify[nvme_device->cpu_id] = false;
-                uint64_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
+                int32_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
                 if(tmp_rc < 0) {
                     local_irq_save(g_curr_thread[nvme_device->cpu_id]->flags);
                     return tmp_rc;
@@ -687,12 +700,13 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
             /* 看来还需要等待 */
             switch_thread(g_work_thread + nvme_device->cpu_id, g_idle_thread + nvme_device->cpu_id);
             g_curr_thread[nvme_device->cpu_id] = g_work_thread + nvme_device->cpu_id;
-            goto begin;
+            goto again;
             
         } else {
-            bool no_limited = max_completions == 0;
-            uint64_t uintr_arrival_time = nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->uintr_qpair);
-            uint64_t int_arrival_time = nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->int_qpair);
+            struct timespec curr_time;
+            clock_gettime(CLOCK_MONOTONIC_RAW, &curr_time);
+            uint64_t uintr_arrival_time = nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->uintr_qpair, curr_time);
+            uint64_t int_arrival_time = nvme_get_sleep_naonotime_internel(nvme_device, nvme_device->int_qpair, curr_time);
             if(uintr_arrival_time == UINT64_MAX || int_arrival_time == UINT64_MAX) {
                 SPDK_ERRLOG("Sleep time is UINT64_MAX\n");
                 return SPDK_PLUS_ERR;
@@ -703,11 +717,11 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
                     SPDK_ERRLOG("CPU ID is not match\n");
                     return SPDK_PLUS_ERR;
                 }
-            begin:
+            next:
                 do {
                     local_irq_restore(g_curr_thread[nvme_device->cpu_id]->flags);
                     g_io_completion_notify[nvme_device->cpu_id] = false;
-                    uint64_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
+                    int32_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
                     if(tmp_rc < 0) {
                         local_irq_save(g_curr_thread[nvme_device->cpu_id]->flags);
                         return tmp_rc;
@@ -721,7 +735,7 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
                 /* 看来还需要等待 */
                 switch_thread(g_work_thread + nvme_device->cpu_id, g_idle_thread + nvme_device->cpu_id);
                 g_curr_thread[nvme_device->cpu_id] = g_work_thread + nvme_device->cpu_id;
-                goto begin;
+                goto next;
             } else {
                 /* 用户中断的时间戳大于内核中断的时间戳 */
                 while(1) {
@@ -730,7 +744,7 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
                         SPDK_ERRLOG("Failed to read from int qpair fd\n");
                         return SPDK_PLUS_ERR;
                     }
-                    uint64_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
+                    int32_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
                     if(tmp_rc < 0) {
                         return tmp_rc;
                     }
@@ -749,7 +763,7 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
                 SPDK_ERRLOG("Failed to read from int qpair fd\n");
                 return SPDK_PLUS_ERR;
             }
-            uint64_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
+            int32_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
             if(tmp_rc < 0) {
                 return tmp_rc;
             }

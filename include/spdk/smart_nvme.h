@@ -65,8 +65,8 @@ enum spdk_plus_monitor_io_size {
 typedef void* QueueHandle;
 
 struct spdk_plus_nvme_qpair {
-    struct spdk_nvme_qpair* qpair = NULL; /* NVMe队列对 */
-    int32_t fd = -1; /* NVMe队列对的文件描述符 只有中断模式才需要 */
+    struct spdk_nvme_qpair* qpair; /* NVMe队列对 */
+    int32_t fd; /* NVMe队列对的文件描述符 只有中断模式才需要 */
     QueueHandle queue; /* 当前队列时间管理队列 用于中断轮询 */
 };
 

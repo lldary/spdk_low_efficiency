@@ -1,5 +1,6 @@
 // queue_wrapper.cpp
 #include "queue_wrapper.hpp"
+#include <queue>
 
 struct QueueImpl {
     std::queue<struct nvme_timestamp> q;
