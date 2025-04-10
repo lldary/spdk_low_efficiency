@@ -2178,6 +2178,7 @@ work_fn(void *arg)
 				total_check_io = true;
 			} else {
 				ns_ctx->stats.idle_tsc += check_now - ns_ctx->stats.last_tsc;
+				total_check_io = false;
 			}
 			ns_ctx->stats.last_tsc = check_now;
 
