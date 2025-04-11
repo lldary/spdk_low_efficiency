@@ -319,6 +319,7 @@ struct user_thread {
 	uint64_t stack_space[0x10000];
 	uint64_t rsp;
 	uint64_t rip;
+	int64_t flags;
 };
 struct user_thread work_thread[0xFF], idle_thread[0xFF];
 struct user_thread* current_thread[0xFF];
@@ -2092,7 +2093,7 @@ work_fn(void *arg)
 		idle_thread[cpu_id].stack_space[0xFFF1] = cpu_id;
 		idle_thread[cpu_id].stack_space[0xFFF0] = cpu_id;
 		idle_thread[cpu_id].stack_space[0xFFEF] = cpu_id;
-		switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
+		switch_thread(work_thread + cpu_id, work_thread + cpu_id);
 		current_thread[cpu_id] = work_thread + cpu_id;
 		switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
 		current_thread[cpu_id] = work_thread + cpu_id;

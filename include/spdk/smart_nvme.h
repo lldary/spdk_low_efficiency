@@ -97,6 +97,8 @@ struct spdk_plus_smart_nvme {
 /* 系统整体初始化 */
 int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
     struct spdk_plus_smart_schedule_module_opts *opts, const char* dev_name);
+/* 整个系统退出 */
+int spdk_plus_env_fini(void);
 
 /* 注册IO接口 —— 注意调用的时候必须已经到了固定的核心，否则用户中断可能出现问题 */
 struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nvme_ctrlr *ctrlr,
@@ -105,11 +107,23 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
 
 
 /* 读写IO接口 */
+int
+spdk_plus_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device, void *buffer,
+		      uint64_t lba,
+		      uint32_t lba_count, spdk_nvme_cmd_cb cb_fn, void *cb_arg,
+		      uint32_t io_flags);
+
 int spdk_plus_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
     uint64_t lba, uint32_t lba_count,
     spdk_nvme_cmd_cb cb_fn, void *cb_arg, uint32_t io_flags,
     spdk_nvme_req_reset_sgl_cb reset_sgl_fn,
     spdk_nvme_req_next_sge_cb next_sge_fn);
+
+int
+spdk_plus_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
+		       void *buffer, uint64_t lba,
+		       uint32_t lba_count, spdk_nvme_cmd_cb cb_fn, void *cb_arg,
+		       uint32_t io_flags);
 
 int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
     uint64_t lba, uint32_t lba_count,
@@ -122,6 +136,14 @@ int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart
 int spdk_plus_nvme_ns_cmd_flush(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
     spdk_nvme_cmd_cb cb_fn, void *cb_arg);
 
+/* ZNS适配 */
+int spdk_plus_nvme_zns_reset_zone(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
+    uint64_t slba, bool select_all,
+    spdk_nvme_cmd_cb cb_fn, void *cb_arg);
+
 /* 获取IO完成接口 */
 int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_device,
     uint32_t max_completions);
+
+/* 完全释放qpair */
+int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device);

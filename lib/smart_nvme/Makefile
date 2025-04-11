@@ -4,11 +4,7 @@ include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 SO_VER := 10
 SO_MINOR := 0
 
-CXX = g++
-
-CXX_SRCS = queue_wrapper.cpp
-
-C_SRCS = smart_nvme.c queue_wrapper.o
+C_SRCS = smart_nvme.c queue_wrapper.c power-scheduler.c
 
 LIBNAME = smart_nvme
 

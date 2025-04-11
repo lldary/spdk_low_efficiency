@@ -1098,8 +1098,10 @@ static int nvme_pcie_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t in
 #ifdef SPDK_CONFIG_UINTR_MODE
 	if(flag & SPDK_PLUS_UINTR_MODE) {
 		spdk_pci_device_enable_interrupts_uintr(pci_dev, index);
+		SPDK_ERRLOG("[ DEBUG ] SPDK_PLUS_UINTR_MODE\n");
 	} else if (flag & SPDK_PLUS_INTERRUPT_MODE) {
 		spdk_pci_device_enable_spec_interrupts(pci_dev, index);
+		SPDK_ERRLOG("[ DEBUG ] SPDK_PLUS_INTERRUPT_MODE\n");
 	} else {
 		SPDK_ERRLOG("该模式不应调用此函数 mode = %u", flag);
 	}

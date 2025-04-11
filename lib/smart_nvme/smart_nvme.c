@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <x86gprintrin.h>
 #include <spdk/log.h>
+#include <spdk/nvme_zns.h>
 #include "queue_wrapper.h" // Include the queue wrapper header
 
 #ifndef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
@@ -44,6 +45,10 @@
 #define SPDK_PLUS_BUF_SIZE 4096
 
 
+#define DEBUGLOG(fmt, args...) printf("\033[0;33;40m[ DEBUG ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__,##args)
+#define ERRLOG(fmt, args...) printf("\033[0;31;40m[ ERROR ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
+#define INFOLOG(fmt, args...) printf("\033[0;32;40m[  INFO ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
+
 enum nvme_io_mode {
     SPDK_PLUS_READ,
     SPDK_PLUS_WRITE,
@@ -69,16 +74,17 @@ struct io_task {
     void *t;
 };
 
-struct nvme_thread {
+struct spdk_plus_nvme_thread {
 	uint64_t stack_space[0x10000];
 	uint64_t rsp;
 	uint64_t rip;
-    int flags; /* 记录用户中断标志，帮助恢复 */
+    int64_t flags; /* 记录用户中断标志，帮助恢复 */
 };
 
 struct nvme_metadata {
     struct spdk_nvme_ctrlr *ctrlr;
-    struct spdk_plus_nvme_qpair *qpair;
+    struct spdk_plus_nvme_qpair qpair;
+    uint64_t cite_number;
     TAILQ_ENTRY(nvme_metadata) link;
 };
 
@@ -112,19 +118,20 @@ static struct spdk_plus_smart_schedule_module_opts g_smart_schedule_module_opts 
 pthread_t g_control_thread; /* 控制线程 */
 
 /* 用于用户中断切换框架 */
-struct nvme_thread *g_curr_thread[CORE_NUMBER] = {0}; /* 当前线程 */
-struct nvme_thread g_work_thread[CORE_NUMBER]; /* IO线程结构 */
-struct nvme_thread g_idle_thread[CORE_NUMBER]; /* 节能线程结构 */
+struct spdk_plus_nvme_thread *g_curr_thread[CORE_NUMBER]; /* 当前线程 */
+struct spdk_plus_nvme_thread g_work_thread[CORE_NUMBER]; /* IO线程结构 */
+struct spdk_plus_nvme_thread g_idle_thread[CORE_NUMBER]; /* 节能线程结构 */
 uint64_t g_cpuid_uipi_map[CORE_NUMBER]; /* CPU ID到用户中断的映射 */
 bool g_io_completion_notify[CORE_NUMBER]; /* IO完成通知 */
-TAILQ_HEAD(, spdk_plus_smart_nvme)	g_qpair_list;
-TAILQ_HEAD(, nvme_metadata) g_nvme_metadata_list;
+TAILQ_HEAD(, spdk_plus_smart_nvme)	g_qpair_list = TAILQ_HEAD_INITIALIZER(g_qpair_list);
+TAILQ_HEAD(, nvme_metadata) g_nvme_metadata_list = TAILQ_HEAD_INITIALIZER(g_nvme_metadata_list);
 pthread_mutex_t meta_mutex;
 uint32_t lba_size = 0;
+bool g_spdk_plus_exit = false;
 struct spdk_plus_smart_nvme g_back_device; /* NVMe设备 */
 static uint32_t nvme_ctrlr_keep_alive_timeout_in_ms = 10000;
 
-static void switch_thread(struct nvme_thread *from, struct nvme_thread *to);
+void spdk_plus_switch_thread(struct spdk_plus_nvme_thread *from, struct spdk_plus_nvme_thread *to);
 
 void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame,
@@ -133,49 +140,50 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	local_irq_save(g_curr_thread[vector]->flags);
 	_senduipi(g_cpuid_uipi_map[vector]);
 	if(g_curr_thread[vector] == g_idle_thread + vector) {
-		switch_thread(g_idle_thread + vector, g_work_thread + vector);	
+		spdk_plus_switch_thread(g_idle_thread + vector, g_work_thread + vector);	
 		g_curr_thread[vector] = g_idle_thread + vector;
 	} else {
 		g_io_completion_notify[vector] = true;
 	}
 }
 
-static void switch_thread(struct nvme_thread *from, struct nvme_thread *to) {
-	asm volatile(
-				"push %%rbx\n\t"
-				"push %%rbp\n\t"
-				"push %%r12\n\t"
-				"push %%r13\n\t"
-				"push %%r14\n\t"
-				"push %%r15\n\t"
-				"mov %%rsp , %0\n\t"
-				"mov %1 , %%rsp\n\t"
-				"pop %%r15\n\t"
-				"pop %%r14\n\t"
-				"pop %%r13\n\t"
-				"pop %%r12\n\t"
-				"pop %%rbp\n\t"
-				"pop %%rbx\n\t"
-				: "=m"(from->rsp)  // 正确存储 from->rsp
-				: "m"(to->rsp) // 正确加载 to->rsp 和 to->rip
-				);
-	asm volatile ("ret");
+__attribute__((noinline)) void spdk_plus_switch_thread(struct spdk_plus_nvme_thread *from, struct spdk_plus_nvme_thread *to) {
+    asm volatile(
+        "push %%rbx\n\t"
+        "push %%rbp\n\t"
+        "push %%r12\n\t"
+        "push %%r13\n\t"
+        "push %%r14\n\t"
+        "push %%r15\n\t"
+        "mov %%rsp , %0\n\t"
+        "mov %1 , %%rsp\n\t"
+        "pop %%r15\n\t"
+        "pop %%r14\n\t"
+        "pop %%r13\n\t"
+        "pop %%r12\n\t"
+        "pop %%rbp\n\t"
+        "pop %%rbx\n\t"
+        "ret\n\t"
+        : "=m"(from->rsp)  // 正确存储 from->rsp
+        : "m"(to->rsp) // 正确加载 to->rsp 和 to->rip
+        );
 }
 
-static void idle_thread_func(void) {
+static void spdk_plus_idle_thread_func(void) {
 	uint64_t cpu_id;
 
     // 使用内联汇编将 %rbx 的值赋给 loop
     asm volatile(
-        "mov %%rbx, %0"  // 将 %rbx 的值移动到 loop（%0）
+        "mov %%r12, %0"  // 将 %rbx 的值移动到 loop（%0）
         : "=r"(cpu_id)      // 输出操作数：将 %rbx 的值存储到 loop
     );
 
 	{
-		local_irq_save(g_idle_thread[cpu_id].flags);
-		switch_thread(g_idle_thread + cpu_id, g_work_thread + cpu_id);
+		// local_irq_save(g_idle_thread[cpu_id].flags);
+        // DEBUGLOG("cpu_id: %d\n", cpu_id);
+		spdk_plus_switch_thread(g_idle_thread + cpu_id, g_work_thread + cpu_id);
 		g_curr_thread[cpu_id] = g_idle_thread + cpu_id;
-		local_irq_restore(g_idle_thread[cpu_id].flags);
+		// local_irq_restore(g_idle_thread[cpu_id].flags);
 	}
 	uint64_t delay = 20 * spdk_get_ticks_hz() / NS_PER_S;
 	
@@ -186,7 +194,7 @@ begin:
 	    _tpause(0, sleep_time);
     }
 	local_irq_save(g_idle_thread[cpu_id].flags);
-	switch_thread(g_idle_thread + cpu_id, g_work_thread + cpu_id); // TODO: 看这个能不能去掉，因为是没有意义的
+	spdk_plus_switch_thread(g_idle_thread + cpu_id, g_work_thread + cpu_id); // TODO: 看这个能不能去掉，因为是没有意义的
 	goto begin;
 }
 
@@ -347,6 +355,9 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             SPDK_ERRLOG("Unknown schedule module status\n");
     }
     enqueue(qpair->queue, (struct nvme_timestamp){.ts = task->start_time, .io_size = task->io_size, .io_mode = io_mode});
+    DEBUGLOG("io_mode: %d, qpair_mode: %d, queue size: %d\n", io_mode, task->notify_mode, queue_size(qpair->queue));
+    if(qpair == NULL)
+        ERRLOG("qpair is NULL\n");
     return qpair->qpair;
 }
 
@@ -394,10 +405,10 @@ nvme_ctrlr_io_qpair_opts_copy(struct spdk_nvme_io_qpair_opts *dst,
 
 static void
 nvme_prepare_uintr_env(void) {
-    int cpu_id = sched_getcpu();
+    uint32_t cpu_id = sched_getcpu();
     int flags;
     if(g_curr_thread[cpu_id] != NULL) {
-        SPDK_ERRLOG("[ DEBUG ] Thread is already initialized\n");
+        DEBUGLOG("CPU %d already has initalize user interrupt\n", cpu_id);
         return;
     }
     #define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
@@ -406,12 +417,13 @@ nvme_prepare_uintr_env(void) {
         exit(EXIT_FAILURE);
     }
     local_irq_save(flags);
+    local_irq_restore(flags);
     g_idle_thread[cpu_id].flags = flags;
     g_work_thread[cpu_id].flags = flags;
-    g_idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(g_idle_thread[cpu_id].stack_space) + sizeof(g_idle_thread[cpu_id].stack_space) - 0x38);
-    g_idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
-    g_idle_thread[cpu_id].stack_space[0xFFFF] = (uint64_t)idle_thread_func;
-    g_idle_thread[cpu_id].stack_space[0xFFFE] = cpu_id;
+    g_idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(g_idle_thread[cpu_id].stack_space) + sizeof(g_idle_thread[cpu_id].stack_space) - 0x40);
+    g_idle_thread[cpu_id].rip = (uint64_t)spdk_plus_idle_thread_func;
+    g_idle_thread[cpu_id].stack_space[0xFFFF] = (uint64_t)spdk_plus_idle_thread_func;
+    g_idle_thread[cpu_id].stack_space[0xFFFE] = (uint64_t)spdk_plus_idle_thread_func;
     g_idle_thread[cpu_id].stack_space[0xFFFD] = cpu_id;
     g_idle_thread[cpu_id].stack_space[0xFFFC] = cpu_id;
     g_idle_thread[cpu_id].stack_space[0xFFFB] = cpu_id;
@@ -427,10 +439,15 @@ nvme_prepare_uintr_env(void) {
     g_idle_thread[cpu_id].stack_space[0xFFF1] = cpu_id;
     g_idle_thread[cpu_id].stack_space[0xFFF0] = cpu_id;
     g_idle_thread[cpu_id].stack_space[0xFFEF] = cpu_id;
-    switch_thread(g_work_thread + cpu_id, g_idle_thread + cpu_id);
+    g_idle_thread[cpu_id].stack_space[0xFFEE] = cpu_id;
+    local_irq_save(flags);
+    DEBUGLOG("初始化完成用户框架，开始试运行 core id： %u rip: %p %p\n", cpu_id, spdk_plus_idle_thread_func, *(uint64_t*)(g_idle_thread[cpu_id].rsp + 0x38));
+    spdk_plus_switch_thread(g_work_thread + cpu_id, g_idle_thread + cpu_id);
+    DEBUGLOG("CPU %d 第一次试运行完成\n", cpu_id);
     g_curr_thread[cpu_id] = g_work_thread + cpu_id;
-    switch_thread(g_work_thread + cpu_id, g_idle_thread + cpu_id);
+    spdk_plus_switch_thread(g_work_thread + cpu_id, g_idle_thread + cpu_id);
     g_curr_thread[cpu_id] = g_work_thread + cpu_id;
+    DEBUGLOG("试运行成功\n");
 }
 
 
@@ -464,12 +481,13 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         goto failed;
     }
     spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
-    nvme_ctrlr_io_qpair_opts_copy(&opts, user_opts, MIN(opts.opts_size, opts_size));
+    if(user_opts)
+        nvme_ctrlr_io_qpair_opts_copy(&opts, user_opts, MIN(opts.opts_size, opts_size));
     if(opts.interrupt_mode != 0){
         SPDK_ERRLOG("user should not set interrupt mode\n");
         goto failed;
     }
-    smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, user_opts, opts_size);
+    smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, opts_size);
     if (!smart_nvme->poll_qpair.qpair) {
         SPDK_ERRLOG("Failed to allocate poll qpair\n");
         goto failed;
@@ -479,7 +497,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         SPDK_ERRLOG("Failed to create poll queue\n");
         goto failed;
     }
-    smart_nvme->back_poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(g_back_device.ctrlr, user_opts, opts_size);
+    smart_nvme->back_poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(g_back_device.ctrlr, &opts, opts_size);
     if (!smart_nvme->back_poll_qpair.qpair) {
         SPDK_ERRLOG("Failed to allocate back poll qpair\n");
         goto failed;
@@ -490,12 +508,13 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         goto failed;
     }
     opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
-    smart_nvme->int_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, user_opts, opts_size, &smart_nvme->int_qpair.fd);
+    smart_nvme->int_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &smart_nvme->int_qpair.fd);
     if (!smart_nvme->int_qpair.qpair) {
         SPDK_ERRLOG("Failed to allocate int qpair\n");
         goto failed;
     }
-    if(smart_nvme->int_qpair.fd < 0) {
+    DEBUGLOG("int qpair fd: %d\n", smart_nvme->int_qpair.fd);
+    if(smart_nvme->int_qpair.fd <= 0) {
         SPDK_ERRLOG("Failed to get int qpair fd\n");
         goto failed;
     }
@@ -504,18 +523,22 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         SPDK_ERRLOG("Failed to get flags\n");
         goto failed;
     }
+    DEBUGLOG("正常获取到flags: %d\n", flags);
     if (fcntl(smart_nvme->int_qpair.fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
         SPDK_ERRLOG("Failed to set flags\n");
         goto failed;
     }
+    DEBUGLOG("正常设置flags: %d\n", flags);
     smart_nvme->int_qpair.queue = create_queue();
     if (!smart_nvme->int_qpair.queue) {
         SPDK_ERRLOG("Failed to create int queue\n");
         goto failed;
     }
+    DEBUGLOG("正常创建int queue\n");
     nvme_prepare_uintr_env();
+    DEBUGLOG("正常创建uintr env\n");
     opts.interrupt_mode = SPDK_PLUS_UINTR_MODE;
-    smart_nvme->uintr_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, user_opts, opts_size, &smart_nvme->uintr_qpair.fd);
+    smart_nvme->uintr_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &smart_nvme->uintr_qpair.fd);
     if (!smart_nvme->uintr_qpair.qpair) {
         SPDK_ERRLOG("Failed to allocate uintr qpair\n");
         goto failed;
@@ -530,16 +553,20 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         goto failed;
     }
     g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
-    SPDK_ERRLOG("[ DEBUG ]uipi_index: %d\n", uipi_index);
+    DEBUGLOG("uipi_index: %d\n", uipi_index);
     _senduipi(uipi_index);
+    DEBUGLOG("用户中断相关寄存器已预先填充\n");
     smart_nvme->uintr_qpair.queue = create_queue();
+    DEBUGLOG("相关队列已创建\n");
     if (!smart_nvme->uintr_qpair.queue) {
         SPDK_ERRLOG("Failed to create uintr queue\n");
         goto failed;
     }
     memset(smart_nvme->avg_write_latency, 0, sizeof(smart_nvme->avg_write_latency));
     memset(smart_nvme->avg_read_latency, 0, sizeof(smart_nvme->avg_read_latency));
+    DEBUGLOG("数组已清零\n");
     TAILQ_INSERT_TAIL(&g_qpair_list, smart_nvme, link);
+    DEBUGLOG("已将该qpair添加到全局队列中管理\n");
     struct nvme_metadata *nvme_meta = NULL;
     if (pthread_mutex_lock(&meta_mutex) != 0) {
         SPDK_ERRLOG("Failed to lock mutex\n");
@@ -547,6 +574,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     }
     TAILQ_FOREACH(nvme_meta, &g_nvme_metadata_list, link) {
         if(nvme_meta->ctrlr == ctrlr) {
+            nvme_meta->cite_number++;
             if (pthread_mutex_unlock(&meta_mutex) != 0) {
                 SPDK_ERRLOG("Failed to unlock mutex\n");
                 goto failed;
@@ -562,45 +590,46 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     }
     nvme_meta->ctrlr = ctrlr;
     opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
-    nvme_meta->qpair->qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, user_opts, opts_size, &nvme_meta->qpair->fd);
-    if (!nvme_meta->qpair->qpair) {
+    nvme_meta->qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &nvme_meta->qpair.fd);
+    if (!nvme_meta->qpair.qpair) {
         SPDK_ERRLOG("Failed to allocate nvme_meta qpair\n");
         pthread_mutex_unlock(&meta_mutex);
         free(nvme_meta);
         goto failed;
     }
-    if(nvme_meta->qpair->fd < 0) {
+    if(nvme_meta->qpair.fd < 0) {
         SPDK_ERRLOG("Failed to get nvme_meta qpair fd\n");
         pthread_mutex_unlock(&meta_mutex);
         free(nvme_meta);
         goto failed;
     }
-    flags = fcntl(nvme_meta->qpair->fd, F_GETFL, 0);
+    flags = fcntl(nvme_meta->qpair.fd, F_GETFL, 0);
     if (flags == -1) {
         SPDK_ERRLOG("Failed to get flags\n");
         pthread_mutex_unlock(&meta_mutex);
         free(nvme_meta);
         goto failed;
     }
-    if (fcntl(nvme_meta->qpair->fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
+    if (fcntl(nvme_meta->qpair.fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
         SPDK_ERRLOG("Failed to set flags\n");
         pthread_mutex_unlock(&meta_mutex);
         free(nvme_meta);
         goto failed;
     }
-    nvme_meta->qpair->queue = create_queue();
-    if (!nvme_meta->qpair->queue) {
+    nvme_meta->qpair.queue = create_queue();
+    if (!nvme_meta->qpair.queue) {
         SPDK_ERRLOG("Failed to create nvme_meta queue\n");
         pthread_mutex_unlock(&meta_mutex);
         free(nvme_meta);
         goto failed;
     }
+    nvme_meta->cite_number = 1;
     TAILQ_INSERT_TAIL(&g_nvme_metadata_list, nvme_meta, link);
     if (pthread_mutex_unlock(&meta_mutex) != 0) {
         SPDK_ERRLOG("Failed to unlock mutex\n");
         goto failed;
     }
-    SPDK_ERRLOG("[ DEBUG ]nvme_meta->qpair->fd: %d\n", nvme_meta->qpair->fd);
+    SPDK_ERRLOG("[ DEBUG ]nvme_meta->qpair->fd: %d\n", nvme_meta->qpair.fd);
     return smart_nvme;
 
 failed:
@@ -698,6 +727,47 @@ static void update_stat(uint32_t lba_count, struct spdk_plus_smart_nvme *nvme_de
     }
 }
 
+int
+spdk_plus_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device, void *buffer,
+		      uint64_t lba,
+		      uint32_t lba_count, spdk_nvme_cmd_cb cb_fn, void *cb_arg,
+		      uint32_t io_flags) {
+                struct spdk_nvme_qpair *qpair = NULL;
+    struct io_task *task = NULL;
+    int rc;
+
+    task = calloc(1, sizeof(struct io_task));
+    if (!task) {
+        SPDK_ERRLOG("Failed to allocate memory for task\n");
+        rc = SPDK_PLUS_ERR;
+        goto failed;
+    }
+    task->cb_fn = cb_fn;
+    task->io_mode = SPDK_PLUS_READ;
+    task->io_size = nvme_get_statistical_io_size(lba_count);
+    task->nvme_device = nvme_device;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
+    task->t = cb_arg;
+    
+    qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_READ);
+    if (!qpair) {
+        SPDK_ERRLOG("Failed to get suitable qpair\n");
+        rc = SPDK_PLUS_ERR;
+        goto failed;
+    }
+
+
+    rc = spdk_nvme_ns_cmd_read(ns, qpair, buffer, lba, lba_count,
+        io_complete, (void*)task, io_flags);
+    return rc;
+
+failed:
+    if (task) {
+        free(task);
+    }
+    return rc;
+}
+
 int spdk_plus_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
     uint64_t lba, uint32_t lba_count,
     spdk_nvme_cmd_cb cb_fn, void *cb_arg, uint32_t io_flags,
@@ -741,6 +811,49 @@ failed:
     return rc;
 }
 
+int
+spdk_plus_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
+		       void *buffer, uint64_t lba,
+		       uint32_t lba_count, spdk_nvme_cmd_cb cb_fn, void *cb_arg,
+		       uint32_t io_flags){
+    struct spdk_nvme_qpair *qpair = NULL;
+    struct io_task *task = NULL;
+    int rc;
+
+    task = calloc(1, sizeof(struct io_task));
+    if (!task) {
+        SPDK_ERRLOG("Failed to allocate memory for task\n");
+        rc = SPDK_PLUS_ERR;
+        goto failed;
+    }
+    task->cb_fn = cb_fn;
+    task->io_mode = SPDK_PLUS_WRITE;
+    task->io_size = nvme_get_statistical_io_size(lba_count);
+    task->nvme_device = nvme_device;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
+    task->t = cb_arg;
+
+    qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_WRITE);
+    if (!qpair) {
+        SPDK_ERRLOG("Failed to get suitable qpair\n");
+        rc = SPDK_PLUS_ERR;
+        goto failed;
+    }
+
+    rc = spdk_nvme_ns_cmd_write(ns, qpair, buffer, lba, lba_count,
+        io_complete, (void*)task, io_flags);
+    if(rc < 0)
+        ERRLOG("spdk_nvme_ns_cmd_writev failed rc = %d\n", rc);
+    update_stat(lba_count, nvme_device, SPDK_PLUS_WRITE);
+    return rc;
+
+failed:
+    if (task) {
+        free(task);
+    }
+    return rc;
+}
+
 int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
     uint64_t lba, uint32_t lba_count,
     spdk_nvme_cmd_cb cb_fn, void *cb_arg, uint32_t io_flags,
@@ -771,8 +884,10 @@ int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart
     }
 
     rc = spdk_nvme_ns_cmd_writev(ns, qpair, lba, lba_count,
-        io_complete, task, io_flags,
+        io_complete, (void*)task, io_flags,
         reset_sgl_fn, next_sge_fn);
+    if(rc < 0)
+        ERRLOG("spdk_nvme_ns_cmd_writev failed rc = %d\n", rc);
     update_stat(lba_count, nvme_device, SPDK_PLUS_WRITE);
     return rc;
 
@@ -872,7 +987,7 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
                 }
             } while (g_io_completion_notify[nvme_device->cpu_id]);
             /* 看来还需要等待 */
-            switch_thread(g_work_thread + nvme_device->cpu_id, g_idle_thread + nvme_device->cpu_id);
+            spdk_plus_switch_thread(g_work_thread + nvme_device->cpu_id, g_idle_thread + nvme_device->cpu_id);
             g_curr_thread[nvme_device->cpu_id] = g_work_thread + nvme_device->cpu_id;
             goto again;
             
@@ -907,7 +1022,7 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
                     }
                 } while (g_io_completion_notify[nvme_device->cpu_id]);
                 /* 看来还需要等待 */
-                switch_thread(g_work_thread + nvme_device->cpu_id, g_idle_thread + nvme_device->cpu_id);
+                spdk_plus_switch_thread(g_work_thread + nvme_device->cpu_id, g_idle_thread + nvme_device->cpu_id);
                 g_curr_thread[nvme_device->cpu_id] = g_work_thread + nvme_device->cpu_id;
                 goto next;
             } else {
@@ -1167,7 +1282,7 @@ spdk_plus_control_thread(void* arg){
     struct epoll_event events[EPOLL_SIZE];
 
     // 等待事件
-    while (1) {
+    while (!g_spdk_plus_exit) {
         int32_t nfds = epoll_wait(epoll_fd, events, EPOLL_SIZE, -1);
         if (nfds == -1) {
             SPDK_ERRLOG("epoll_wait failed\n");
@@ -1333,5 +1448,154 @@ int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
         SPDK_ERRLOG("spdk_nvme_probe() failed\n");
         return SPDK_PLUS_ERR;
     }
+    INFOLOG("spdk plus env init success, trid: %s\n", trid.traddr);
     return SPDK_PLUS_SUCCESS;
+}
+
+int spdk_plus_nvme_zns_reset_zone(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
+    uint64_t slba, bool select_all,
+    spdk_nvme_cmd_cb cb_fn, void *cb_arg) {
+    struct spdk_nvme_qpair *qpair = NULL;
+    struct io_task *task = NULL;
+    int rc;
+    task = calloc(1, sizeof(struct io_task));
+    if (!task) {
+        SPDK_ERRLOG("Failed to allocate memory for task\n");
+        rc = SPDK_PLUS_ERR;
+        goto failed;
+    }
+    task->cb_fn = cb_fn;
+    task->io_mode = SPDK_PLUS_FLUSH;
+    task->io_size = SPDK_PLUS_MONITOR_FLUSH;
+    task->nvme_device = nvme_device;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
+    task->t = cb_arg;
+
+    qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_FLUSH);
+    if (!qpair) {
+        SPDK_ERRLOG("Failed to get suitable qpair\n");
+        rc = SPDK_PLUS_ERR;
+        goto failed;
+    }
+    rc = spdk_nvme_zns_reset_zone(ns, qpair, slba, select_all,
+        io_complete, task);
+    if (rc != 0) {
+        SPDK_ERRLOG("Failed to send flush command\n");
+        goto failed;
+    }
+    return rc;
+
+failed:
+    if (task) {
+        free(task);
+    }
+    return rc;
+}
+
+int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device) {
+    int rc = 0;
+    if(nvme_device == NULL) {
+        SPDK_ERRLOG("nvme_device is NULL\n");
+        return SPDK_PLUS_ERR_INVALID;
+    }
+    if (nvme_device->poll_qpair.qpair) {
+        rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
+        if (rc != 0) {
+            SPDK_ERRLOG("Failed to free poll qpair\n");
+            goto failed;
+        }
+        destroy_queue(nvme_device->poll_qpair.queue);
+    }
+    if (nvme_device->int_qpair.qpair) {
+        rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->int_qpair.qpair);
+        if (rc != 0) {
+            SPDK_ERRLOG("Failed to free int qpair\n");
+            goto failed;
+        }
+        destroy_queue(nvme_device->int_qpair.queue);
+    }
+    if (nvme_device->uintr_qpair.qpair) {
+        rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->uintr_qpair.qpair);
+        if (rc != 0) {
+            SPDK_ERRLOG("Failed to free uintr qpair\n");
+            goto failed;
+        }
+        destroy_queue(nvme_device->uintr_qpair.queue);
+    }
+    if (nvme_device->back_poll_qpair.qpair) {
+        rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->back_poll_qpair.qpair);
+        if (rc != 0) {
+            SPDK_ERRLOG("Failed to free back poll qpair\n");
+            goto failed;
+        }
+        destroy_queue(nvme_device->back_poll_qpair.queue);
+    }
+    if (nvme_device->fd > 0) {
+        rc = close(nvme_device->fd);
+        if (rc != 0) {
+            SPDK_ERRLOG("Failed to close fd\n");
+            goto failed;
+        }
+    }
+    if (nvme_device->int_qpair.fd >= 0) {
+        rc = close(nvme_device->int_qpair.fd);
+        if (rc != 0) {
+            SPDK_ERRLOG("Failed to close int qpair fd\n");
+            goto failed;
+        }
+    }
+
+failed:
+    if(pthread_mutex_lock(&meta_mutex) < 0)
+    {
+        SPDK_ERRLOG("Failed to lock mutex\n");
+        return SPDK_PLUS_ERR;
+    }
+    struct spdk_plus_smart_nvme *smart_nvme = NULL;
+    TAILQ_FOREACH(smart_nvme, &g_qpair_list, link) {
+        if (smart_nvme == nvme_device) {
+            TAILQ_REMOVE(&g_qpair_list, smart_nvme, link);
+            break;
+        }
+    }
+    struct nvme_metadata *meta = NULL;
+    TAILQ_FOREACH(meta, &g_nvme_metadata_list, link) {
+        if (meta->ctrlr == nvme_device->ctrlr) {
+            meta->cite_number--;
+            if (meta->cite_number == 0) {
+                TAILQ_REMOVE(&g_nvme_metadata_list, meta, link);
+                spdk_nvme_ctrlr_free_io_qpair(meta->qpair.qpair);
+                close(meta->qpair.fd);
+                destroy_queue(meta->qpair.queue);
+                free(meta);
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&meta_mutex);
+    DEBUGLOG("Free nvme device %p rc = %d\n", nvme_device, rc);
+    return rc;
+}
+
+int spdk_plus_env_fini(void) {
+    int rc = 0;
+    g_spdk_plus_exit = true;
+    if (g_back_device.ctrlr) {
+        spdk_nvme_detach(g_back_device.ctrlr);
+        g_back_device.ctrlr = NULL;
+    }
+    if (g_back_device.ns) {
+        g_back_device.ns = NULL;
+    }
+    if (g_back_device.fd > 0) {
+        close(g_back_device.fd);
+        g_back_device.fd = -1;
+    }
+    pthread_mutex_destroy(&meta_mutex);
+    if (g_control_thread) {
+        pthread_join(g_control_thread, NULL);
+        g_control_thread = 0;
+    }
+    INFOLOG("SPDK Plus environment finalized\n");
+    return rc;
 }

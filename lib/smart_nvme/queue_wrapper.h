@@ -1,7 +1,12 @@
+#include <sys/queue.h>
+#include <stdint.h>
+#include <time.h>
+
 struct nvme_timestamp {
     uint32_t io_mode;
     uint32_t io_size;
     struct timespec ts;
+    TAILQ_ENTRY(nvme_timestamp) link;
 };
 
 // 队列类型定义（对外暴露为不透明指针）
