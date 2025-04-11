@@ -83,15 +83,20 @@ struct spdk_plus_smart_nvme {
     struct spdk_plus_nvme_qpair poll_qpair; /* 轮询模式的NVMe队列对 */
     struct spdk_plus_nvme_qpair int_qpair; /* 内核中断模式的NVMe队列对 */
     struct spdk_plus_nvme_qpair uintr_qpair; /* 用户中断模式的NVMe队列对 */
+    struct spdk_plus_nvme_qpair back_poll_qpair; /* 后备轮询模式的NVMe队列对 */
     uint16_t cpu_id; /* CPU ID */
+    int32_t fd; /* 文件描述符 (用于控制线程通知事务时处理) */
     struct spdk_plus_nvme_threshold_opts threshold_opts; /* 阈值选项 */
+    uint64_t io_write_btypes; /* 写入字节数 (循环统计，预定100微秒清除一次) */
+    uint64_t io_read_btypes; /* 读取字节数 (循环统计，预定100微秒清除一次) */
     uint64_t avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM]; /* 平均写延迟 ns 用于中断轮询 */
     uint64_t avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM]; /* 平均读延迟 ns 用于中断轮询 */
+    TAILQ_ENTRY(spdk_plus_smart_nvme)	link;
 };
 
 /* 系统整体初始化 */
 int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
-    struct spdk_plus_smart_schedule_module_opts *opts);
+    struct spdk_plus_smart_schedule_module_opts *opts, const char* dev_name);
 
 /* 注册IO接口 —— 注意调用的时候必须已经到了固定的核心，否则用户中断可能出现问题 */
 struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nvme_ctrlr *ctrlr,

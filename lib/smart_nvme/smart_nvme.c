@@ -1,6 +1,8 @@
 #include <spdk/smart_nvme.h>
 #include <spdk/nvme.h> // Include the header defining struct spdk_nvme_ctrlr
 #include <bits/time.h>
+#include <sys/timerfd.h>
+#include <arpa/inet.h>
 #include <x86gprintrin.h>
 #include <spdk/log.h>
 #include "queue_wrapper.h" // Include the queue wrapper header
@@ -36,6 +38,11 @@
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MIN3(a, b, c) (MIN(MIN((a), (b)), (c)))
 
+#define PORT 11451 // 端口号
+#define BACKLOG 10 // 最大连接队列长度
+#define EPOLL_SIZE BACKLOG // 定义EPOLL_SIZE为10
+#define SPDK_PLUS_BUF_SIZE 4096
+
 
 enum nvme_io_mode {
     SPDK_PLUS_READ,
@@ -43,7 +50,14 @@ enum nvme_io_mode {
     SPDK_PLUS_FLUSH,
 };
 
+enum spdk_plus_nvme_control_cmd {
+    SPDK_PLUS_CLEAR_STAT,
+};
+
 // TODO: 用户中断调频怎么加进去
+// TODO: 硬盘功耗控制
+// TODO: 后备写还没有做
+// TODO: 回写也也没有做
 
 struct io_task {
     enum spdk_plus_monitor_io_size io_size; /* 统计口径IO大小 */
@@ -60,6 +74,12 @@ struct nvme_thread {
 	uint64_t rsp;
 	uint64_t rip;
     int flags; /* 记录用户中断标志，帮助恢复 */
+};
+
+struct nvme_metadata {
+    struct spdk_nvme_ctrlr *ctrlr;
+    struct spdk_plus_nvme_qpair *qpair;
+    TAILQ_ENTRY(nvme_metadata) link;
 };
 
 
@@ -89,6 +109,7 @@ static struct spdk_plus_smart_schedule_module_opts g_smart_schedule_module_opts 
     .write_alpha = 0.5,
 };
 
+pthread_t g_control_thread; /* 控制线程 */
 
 /* 用于用户中断切换框架 */
 struct nvme_thread *g_curr_thread[CORE_NUMBER] = {0}; /* 当前线程 */
@@ -96,7 +117,12 @@ struct nvme_thread g_work_thread[CORE_NUMBER]; /* IO线程结构 */
 struct nvme_thread g_idle_thread[CORE_NUMBER]; /* 节能线程结构 */
 uint64_t g_cpuid_uipi_map[CORE_NUMBER]; /* CPU ID到用户中断的映射 */
 bool g_io_completion_notify[CORE_NUMBER]; /* IO完成通知 */
-
+TAILQ_HEAD(, spdk_plus_smart_nvme)	g_qpair_list;
+TAILQ_HEAD(, nvme_metadata) g_nvme_metadata_list;
+pthread_mutex_t meta_mutex;
+uint32_t lba_size = 0;
+struct spdk_plus_smart_nvme g_back_device; /* NVMe设备 */
+static uint32_t nvme_ctrlr_keep_alive_timeout_in_ms = 10000;
 
 static void switch_thread(struct nvme_thread *from, struct nvme_thread *to);
 
@@ -426,6 +452,11 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     }
     smart_nvme->ctrlr = ctrlr;
     smart_nvme->cpu_id = sched_getcpu();
+    smart_nvme->fd = eventfd(0, EFD_NONBLOCK);
+    if (smart_nvme->fd < 0) {
+        SPDK_ERRLOG("Failed to create eventfd\n");
+        goto failed;
+    }
     nvme_get_default_threshold_opts(&smart_nvme->threshold_opts);
     smart_nvme->ns = spdk_nvme_ctrlr_get_ns(ctrlr, 1); // TODO: 所以这个字段不一定有用
     if (!smart_nvme->ns) {
@@ -441,6 +472,21 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, user_opts, opts_size);
     if (!smart_nvme->poll_qpair.qpair) {
         SPDK_ERRLOG("Failed to allocate poll qpair\n");
+        goto failed;
+    }
+    smart_nvme->poll_qpair.queue = create_queue();
+    if (!smart_nvme->poll_qpair.queue) {
+        SPDK_ERRLOG("Failed to create poll queue\n");
+        goto failed;
+    }
+    smart_nvme->back_poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(g_back_device.ctrlr, user_opts, opts_size);
+    if (!smart_nvme->back_poll_qpair.qpair) {
+        SPDK_ERRLOG("Failed to allocate back poll qpair\n");
+        goto failed;
+    }
+    smart_nvme->back_poll_qpair.queue = create_queue();
+    if (!smart_nvme->back_poll_qpair.queue) {
+        SPDK_ERRLOG("Failed to create back poll queue\n");
         goto failed;
     }
     opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
@@ -462,6 +508,11 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         SPDK_ERRLOG("Failed to set flags\n");
         goto failed;
     }
+    smart_nvme->int_qpair.queue = create_queue();
+    if (!smart_nvme->int_qpair.queue) {
+        SPDK_ERRLOG("Failed to create int queue\n");
+        goto failed;
+    }
     nvme_prepare_uintr_env();
     opts.interrupt_mode = SPDK_PLUS_UINTR_MODE;
     smart_nvme->uintr_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, user_opts, opts_size, &smart_nvme->uintr_qpair.fd);
@@ -481,12 +532,97 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
     SPDK_ERRLOG("[ DEBUG ]uipi_index: %d\n", uipi_index);
     _senduipi(uipi_index);
+    smart_nvme->uintr_qpair.queue = create_queue();
+    if (!smart_nvme->uintr_qpair.queue) {
+        SPDK_ERRLOG("Failed to create uintr queue\n");
+        goto failed;
+    }
     memset(smart_nvme->avg_write_latency, 0, sizeof(smart_nvme->avg_write_latency));
     memset(smart_nvme->avg_read_latency, 0, sizeof(smart_nvme->avg_read_latency));
+    TAILQ_INSERT_TAIL(&g_qpair_list, smart_nvme, link);
+    struct nvme_metadata *nvme_meta = NULL;
+    if (pthread_mutex_lock(&meta_mutex) != 0) {
+        SPDK_ERRLOG("Failed to lock mutex\n");
+        return NULL;
+    }
+    TAILQ_FOREACH(nvme_meta, &g_nvme_metadata_list, link) {
+        if(nvme_meta->ctrlr == ctrlr) {
+            if (pthread_mutex_unlock(&meta_mutex) != 0) {
+                SPDK_ERRLOG("Failed to unlock mutex\n");
+                goto failed;
+            }
+            return smart_nvme;
+        }
+    }
+    nvme_meta = calloc(1, sizeof(struct nvme_metadata));
+    if (!nvme_meta) {
+        SPDK_ERRLOG("Failed to allocate memory for nvme_meta\n");
+        pthread_mutex_unlock(&meta_mutex);
+        goto failed;
+    }
+    nvme_meta->ctrlr = ctrlr;
+    opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
+    nvme_meta->qpair->qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, user_opts, opts_size, &nvme_meta->qpair->fd);
+    if (!nvme_meta->qpair->qpair) {
+        SPDK_ERRLOG("Failed to allocate nvme_meta qpair\n");
+        pthread_mutex_unlock(&meta_mutex);
+        free(nvme_meta);
+        goto failed;
+    }
+    if(nvme_meta->qpair->fd < 0) {
+        SPDK_ERRLOG("Failed to get nvme_meta qpair fd\n");
+        pthread_mutex_unlock(&meta_mutex);
+        free(nvme_meta);
+        goto failed;
+    }
+    flags = fcntl(nvme_meta->qpair->fd, F_GETFL, 0);
+    if (flags == -1) {
+        SPDK_ERRLOG("Failed to get flags\n");
+        pthread_mutex_unlock(&meta_mutex);
+        free(nvme_meta);
+        goto failed;
+    }
+    if (fcntl(nvme_meta->qpair->fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
+        SPDK_ERRLOG("Failed to set flags\n");
+        pthread_mutex_unlock(&meta_mutex);
+        free(nvme_meta);
+        goto failed;
+    }
+    nvme_meta->qpair->queue = create_queue();
+    if (!nvme_meta->qpair->queue) {
+        SPDK_ERRLOG("Failed to create nvme_meta queue\n");
+        pthread_mutex_unlock(&meta_mutex);
+        free(nvme_meta);
+        goto failed;
+    }
+    TAILQ_INSERT_TAIL(&g_nvme_metadata_list, nvme_meta, link);
+    if (pthread_mutex_unlock(&meta_mutex) != 0) {
+        SPDK_ERRLOG("Failed to unlock mutex\n");
+        goto failed;
+    }
+    SPDK_ERRLOG("[ DEBUG ]nvme_meta->qpair->fd: %d\n", nvme_meta->qpair->fd);
     return smart_nvme;
 
 failed:
     if (smart_nvme) {
+        if(smart_nvme->poll_qpair.qpair) {
+            spdk_nvme_ctrlr_free_io_qpair(smart_nvme->poll_qpair.qpair);
+        }
+        if(smart_nvme->int_qpair.qpair) {
+            spdk_nvme_ctrlr_free_io_qpair(smart_nvme->int_qpair.qpair);
+        }
+        if(smart_nvme->uintr_qpair.qpair) {
+            spdk_nvme_ctrlr_free_io_qpair(smart_nvme->uintr_qpair.qpair);
+        }
+        if(smart_nvme->back_poll_qpair.qpair) {
+            spdk_nvme_ctrlr_free_io_qpair(smart_nvme->back_poll_qpair.qpair);
+        }
+        if(smart_nvme->int_qpair.fd >= 0) {
+            close(smart_nvme->int_qpair.fd);
+        }
+        if(smart_nvme->fd > 0) {
+            close(smart_nvme->fd);
+        }
         free(smart_nvme);
     }
     return NULL;
@@ -526,6 +662,42 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion) {
     return;
 }
 
+static void update_stat(uint32_t lba_count, struct spdk_plus_smart_nvme *nvme_device, enum nvme_io_mode io_mode) {
+    uint64_t value = 0;
+    if(read(nvme_device->fd, &value, sizeof(value)) != sizeof(value)) {
+        if(errno != EAGAIN) {
+            SPDK_ERRLOG("Failed to read from eventfd\n");
+        } else {
+            switch(io_mode) {
+                case SPDK_PLUS_READ:
+                    nvme_device->io_read_btypes += lba_count * lba_size;
+                    break;
+                case SPDK_PLUS_WRITE:
+                    nvme_device->io_write_btypes += lba_count * lba_size;
+                    break;
+                case SPDK_PLUS_FLUSH:
+                    break;
+                default:
+                    SPDK_ERRLOG("Unknown IO mode\n");
+            }
+            return;
+        }
+    } else {
+        switch(io_mode) {
+            case SPDK_PLUS_READ:
+                nvme_device->io_read_btypes = lba_count * lba_size;
+                break;
+            case SPDK_PLUS_WRITE:
+                nvme_device->io_write_btypes = lba_count * lba_size;
+                break;
+            case SPDK_PLUS_FLUSH:
+                break;
+            default:
+                SPDK_ERRLOG("Unknown IO mode\n");
+        }
+    }
+}
+
 int spdk_plus_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
     uint64_t lba, uint32_t lba_count,
     spdk_nvme_cmd_cb cb_fn, void *cb_arg, uint32_t io_flags,
@@ -559,6 +731,7 @@ int spdk_plus_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_plus_smart_
     rc = spdk_nvme_ns_cmd_readv(ns, qpair, lba, lba_count,
         io_complete, task, io_flags,
         reset_sgl_fn, next_sge_fn);
+    update_stat(lba_count, nvme_device, SPDK_PLUS_READ);
     return rc;
 
 failed:
@@ -600,6 +773,7 @@ int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart
     rc = spdk_nvme_ns_cmd_writev(ns, qpair, lba, lba_count,
         io_complete, task, io_flags,
         reset_sgl_fn, next_sge_fn);
+    update_stat(lba_count, nvme_device, SPDK_PLUS_WRITE);
     return rc;
 
 failed:
@@ -865,16 +1039,299 @@ spdk_plus_get_default_opts(enum spdk_plus_smart_schedule_module_status status,
     return SPDK_PLUS_SUCCESS;
 }
 
+static void*
+spdk_plus_get_remote_control_function(void* arg){
+    int client_fd = *((int*)arg);
+    free(arg);
+    char buffer[SPDK_PLUS_BUF_SIZE] = {0};
+    while(1) {
+        memset(buffer, 0, sizeof(buffer));
+        ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
+        if (bytes_read <= 0) {
+            if(bytes_read == 0) {
+                SPDK_ERRLOG("Client disconnected\n");
+            } else {
+                SPDK_ERRLOG("Error reading from client\n");
+            }
+            break;
+        }
+        printf("Received from client: %s\n", buffer);
+        // TODO: 处理接收到的数据
+    }
+
+    close(client_fd);
+    return NULL;
+}
+
+static void
+spdk_plus_change_ssd_strategy(void){
+    // TODO: 策略调整
+
+    /* 通知所有qpair清零统计数据 */
+    struct spdk_plus_smart_nvme *smart_nvme = NULL;
+    TAILQ_FOREACH(smart_nvme, &g_qpair_list, link) {
+        if (smart_nvme->ctrlr == NULL) {
+            SPDK_ERRLOG("Controller is NULL\n");
+            continue;
+        }
+        uint64_t cmd = SPDK_PLUS_CLEAR_STAT;
+        int rc = write(smart_nvme->fd, &cmd, sizeof(cmd));
+        if (rc != sizeof(cmd)) {
+            SPDK_ERRLOG("Failed to write to eventfd\n");
+        }
+    }
+}
+
+static void*
+spdk_plus_control_thread(void* arg){
+    if(arg != NULL) {
+        SPDK_ERRLOG("Control thread is not NULL\n");
+        return NULL;
+    }
+    /* 创建网络监听符 */
+    int32_t server_fd, new_socket;
+    struct sockaddr_in address;
+    int32_t addrlen = sizeof(address);
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) {
+        SPDK_ERRLOG("socket failed\n");
+        return NULL;
+    }
+    // 设置地址结构
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY; // 监听所有网络接口
+    address.sin_port = htons(PORT);
+    // 绑定套接字到地址
+    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        perror("bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    // 开始监听
+    if (listen(server_fd, BACKLOG) < 0) {
+        perror("listen failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    /* 创建100us循环的触发一次的描述符 */
+    struct itimerspec ts;
+    int32_t timer_fd = timerfd_create(CLOCK_MONOTONIC_RAW, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (timer_fd < 0) {
+        SPDK_ERRLOG("Failed to create timer fd\n");
+        close(server_fd);
+        return NULL;
+    }
+    // 设置定时器参数
+    memset(&ts, 0, sizeof(ts));
+    ts.it_interval.tv_sec = 0; // 间隔秒数
+    ts.it_interval.tv_nsec = 100000; // 间隔纳秒数（100微秒）
+    ts.it_value.tv_sec = 0; // 初始延迟秒数
+    ts.it_value.tv_nsec = 500000; // 初始延迟纳秒数（500微秒）
+    // 设置定时器
+    if (timerfd_settime(timer_fd, 0, &ts, NULL) == -1) {
+        perror("timerfd_settime");
+        close(timer_fd);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    /* 统一监听 */
+    int32_t epoll_fd = epoll_create1(0);
+    if (epoll_fd == -1) {
+        SPDK_ERRLOG("Failed to create epoll fd\n");
+        close(timer_fd);
+        close(server_fd);
+        return NULL;
+    }
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.fd = server_fd;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) == -1) {
+        perror("epoll_ctl failed");
+        close(server_fd);
+        close(timer_fd);
+        close(epoll_fd);
+        exit(EXIT_FAILURE);
+    }
+    ev.data.fd = timer_fd;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer_fd, &ev) == -1) {
+        perror("epoll_ctl failed");
+        close(server_fd);
+        close(timer_fd);
+        close(epoll_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    struct epoll_event events[EPOLL_SIZE];
+
+    // 等待事件
+    while (1) {
+        int32_t nfds = epoll_wait(epoll_fd, events, EPOLL_SIZE, -1);
+        if (nfds == -1) {
+            SPDK_ERRLOG("epoll_wait failed\n");
+            break;
+        }
+
+        for (int i = 0; i < nfds; i++) {
+            if (events[i].data.fd == server_fd) {
+                // 处理TCP连接请求
+                new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+                if (new_socket < 0) {
+                    SPDK_ERRLOG("accept failed\n");
+                    continue;
+                }
+                printf("Connection accepted from %s:%d\n", inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+                int* pclient = malloc(sizeof(int));
+                if (pclient == NULL) {
+                    SPDK_ERRLOG("Failed to allocate memory for client fd\n");
+                    close(new_socket);
+                    continue;
+                }
+                *pclient = new_socket;
+                pthread_t thread_id;
+                if (pthread_create(&thread_id, NULL, spdk_plus_get_remote_control_function, pclient) != 0) {
+                    SPDK_ERRLOG("Failed to create thread\n");
+                    close(new_socket);
+                    free(pclient);
+                    continue;
+                }
+                pthread_detach(thread_id); // 分离线程
+            } else if (events[i].data.fd == timer_fd) {
+                // 处理定时器事件
+                uint64_t expirations;
+                if (read(timer_fd, &expirations, sizeof(expirations)) != sizeof(expirations)) {
+                    SPDK_ERRLOG("Failed to read from timer fd\n");
+                    continue;
+                }
+                spdk_plus_change_ssd_strategy();
+                printf("Timer expired %llu times\n", (unsigned long long)expirations);
+            }
+        }
+    }
+
+    // 清理资源
+    close(server_fd);
+    close(timer_fd);
+    close(epoll_fd);
+    return NULL;
+}
+
+static bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid, struct spdk_nvme_ctrlr_opts *opts)
+{
+    struct spdk_nvme_transport_id* target_trid = (struct spdk_nvme_transport_id*)(cb_ctx);
+    bool do_attach = false;
+
+    if (trid->trtype == SPDK_NVME_TRANSPORT_PCIE) {
+        do_attach = spdk_nvme_transport_id_compare(target_trid, trid) == 0;
+        if (!do_attach) {
+            SPDK_ERRLOG("trid mismatch: %s != %s\n",
+                spdk_nvme_transport_id_trtype_str(target_trid->trtype),
+                spdk_nvme_transport_id_trtype_str(trid->trtype));
+        }
+    } else {
+        // for non-pcie devices, should always match the specified trid
+        assert(!spdk_nvme_transport_id_compare(target_trid, trid));
+        do_attach = true;
+    }
+
+    if (do_attach) {
+        // dout(0) << __func__ << " found device at: "
+        //     << "trtype=" << spdk_nvme_transport_id_trtype_str(trid->trtype) << ", "
+        //     << "traddr=" << trid->traddr << dendl;
+
+        opts->io_queue_size = UINT16_MAX;
+        opts->io_queue_requests = UINT16_MAX;
+        opts->keep_alive_timeout_ms = nvme_ctrlr_keep_alive_timeout_in_ms;
+    }
+
+    return do_attach;
+}
+
+static void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
+                      struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
+{
+    g_back_device.ctrlr = ctrlr;
+    g_back_device.ns = spdk_nvme_ctrlr_get_ns(ctrlr, 1);
+    if (!g_back_device.ns) {
+        SPDK_ERRLOG("Failed to get default namespace\n");
+        return;
+    }
+    g_back_device.fd = eventfd(0, EFD_NONBLOCK);
+    if (g_back_device.fd < 0) {
+        SPDK_ERRLOG("Failed to create eventfd\n");
+        return;
+    }
+
+}
+
 int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
-    struct spdk_plus_smart_schedule_module_opts *opts) {
+    struct spdk_plus_smart_schedule_module_opts *opts, const char* dev_name) {
     if(opts != NULL) {
         return SPDK_PLUS_ERR_NOT_SUPPORTED;
+    }
+    // 初始化互斥锁
+    if (pthread_mutex_init(&meta_mutex, NULL) != 0) {
+        perror("pthread_mutex_init failed");
+        return EXIT_FAILURE;
     }
     int rc;
     rc = spdk_plus_get_default_opts(status, &g_smart_schedule_module_opts);
     if (rc != SPDK_PLUS_SUCCESS) {
         SPDK_ERRLOG("Failed to get default opts\n");
         return rc;
+    }
+    /* 创建控制线程 */
+    if(pthread_create(&g_control_thread, NULL, spdk_plus_control_thread, NULL) != 0) {
+        SPDK_ERRLOG("Failed to create control thread\n");
+        return SPDK_PLUS_ERR;
+    }
+    if(pthread_detach(g_control_thread) != 0) {
+        SPDK_ERRLOG("Failed to detach control thread\n");
+        return SPDK_PLUS_ERR;
+    }
+    /* 设置后备ssd */
+    char filename[SPDK_PLUS_BUF_SIZE] = {0};
+    strncpy(filename, dev_name, sizeof(filename) - 1);
+    struct spdk_nvme_transport_id trid;
+    trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
+    char* p = strstr(filename, " ns=");
+    char* trid_info = NULL;
+    if (p != NULL) {
+        trid_info = strndup(filename, p - filename);
+    } else {
+        trid_info = strndup(filename, strlen(filename));
+    }
+
+    if (!trid_info) {
+        SPDK_ERRLOG("Failed to allocate space for trid_info\n");
+        return SPDK_PLUS_ERR;
+    }
+
+    rc = spdk_nvme_transport_id_parse(&trid, trid_info);
+    if (rc < 0) {
+        SPDK_ERRLOG("Failed to parse given str: %s\n", trid_info);
+        free(trid_info);
+        return SPDK_PLUS_ERR;
+    }
+    free(trid_info);
+
+    if (trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
+        struct spdk_pci_addr pci_addr;
+        if (spdk_pci_addr_parse(&pci_addr, trid.traddr) < 0) {
+            SPDK_ERRLOG("Invalid traddr=%s\n", trid.traddr);
+            return SPDK_PLUS_ERR_INVALID;
+        }
+        spdk_pci_addr_fmt(trid.traddr, sizeof(trid.traddr), &pci_addr);
+    } else {
+        SPDK_ERRLOG("Invalid transport type not supported\n");
+        return SPDK_PLUS_ERR_NOT_SUPPORTED;
+    }
+
+    if (spdk_nvme_probe(&trid, &trid, probe_cb, attach_cb, NULL) != 0) {
+        SPDK_ERRLOG("spdk_nvme_probe() failed\n");
+        return SPDK_PLUS_ERR;
     }
     return SPDK_PLUS_SUCCESS;
 }
