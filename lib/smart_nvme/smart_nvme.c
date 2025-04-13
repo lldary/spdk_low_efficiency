@@ -952,7 +952,16 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
             {
                 uint64_t sleep_time = nvme_get_sleep_nanotime(nvme_device);
                 nvme_sleep(sleep_time);
-                return nvme_process_completions_poll(nvme_device, max_completions);
+                while(1) {
+                    int32_t tmp_rc = nvme_process_completions_poll(nvme_device, max_completions);
+                    if(tmp_rc < 0) {
+                        return tmp_rc;
+                    }
+                    rc += tmp_rc;
+                    if(tmp_rc > 0) { // 达到最小数目
+                        return rc;
+                    }
+                }
             }break;
             case SPDK_PLUS_SMART_SCHEDULE_MODULE_CUSTOM:
             {
