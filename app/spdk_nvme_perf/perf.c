@@ -58,6 +58,10 @@
 #define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
 #define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
 
+#define DEBUGLOG(fmt, args...) printf("\033[0;33;40m[ DEBUG ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__,##args)
+#define ERRLOG(fmt, args...) printf("\033[0;31;40m[ ERROR ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
+#define INFOLOG(fmt, args...) printf("\033[0;32;40m[  INFO ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
+
 #ifdef SPDK_CONFIG_URING
 #include <liburing.h>
 #endif
@@ -1185,7 +1189,7 @@ power_mode_get_complete(void *ctx, const struct spdk_nvme_cpl *cql) {
 		SPDK_ERRLOG("I/O error: %s\n", spdk_nvme_cpl_get_status_string(&cql->status));
 	}
 	uint32_t cdw0 = cql->cdw0;
-	printf("current power state: %u\n", ((struct power_state_cql*)(&cdw0))->power_state);
+	INFOLOG("current power state: %u\n", ((struct power_state_cql*)(&cdw0))->power_state);
 }
 
 static void
@@ -1195,7 +1199,7 @@ power_mode_update_complete(void *ctx, const struct spdk_nvme_cpl *cpl)
 	if (spdk_nvme_cpl_is_error(cpl)) {
 		SPDK_ERRLOG("I/O error: %s\n", spdk_nvme_cpl_get_status_string(&cpl->status));
 	}
-	printf("Power mode update complete\n");
+	INFOLOG("Power mode update complete\n");
 	if (spdk_nvme_ctrlr_cmd_get_feature(ctrlr, SPDK_NVME_FEAT_POWER_MANAGEMENT, 0,
 					   NULL, 0, power_mode_get_complete, 0) != 0) {
 		SPDK_ERRLOG("get power state failed\n");
