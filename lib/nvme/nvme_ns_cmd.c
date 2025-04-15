@@ -48,7 +48,10 @@ nvme_ns_map_failure_rc(uint32_t lba_count, uint32_t sectors_per_max_io,
 	}
 	return rc;
 }
-
+/* nof和本地读写同时使用条件：需要共享ns指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * ns
+*/
 static inline bool
 _nvme_md_excluded_from_xfer(struct spdk_nvme_ns *ns, uint32_t io_flags)
 {
@@ -57,7 +60,10 @@ _nvme_md_excluded_from_xfer(struct spdk_nvme_ns *ns, uint32_t io_flags)
 	       (ns->flags & SPDK_NVME_NS_DPS_PI_SUPPORTED) &&
 	       (ns->md_size == 8);
 }
-
+/* nof和本地读写同时使用条件：需要共享ns指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * ns
+*/
 static inline uint32_t
 _nvme_get_host_buffer_sector_size(struct spdk_nvme_ns *ns, uint32_t io_flags)
 {
@@ -326,7 +332,12 @@ _nvme_ns_cmd_split_request_prp(struct spdk_nvme_ns *ns,
 
 	return req;
 }
-
+/* nof和本地读写同时使用条件：需要共享ns,qpair,ns->ctrlr指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * ns
+ * ns->ctrlr
+*/
 static struct nvme_request *
 _nvme_ns_cmd_split_request_sgl(struct spdk_nvme_ns *ns,
 			       struct spdk_nvme_qpair *qpair,
@@ -428,7 +439,13 @@ _nvme_ns_cmd_split_request_sgl(struct spdk_nvme_ns *ns,
 
 	return req;
 }
-
+/* nof和本地读写同时使用条件：需要共享ns,ns->ctrlr,qpair和qpair->free_req指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * ns
+ * ns->ctrlr
+ * qpair->free_req 整个链表
+*/
 static inline struct nvme_request *
 _nvme_ns_cmd_rw(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 		const struct nvme_payload *payload, uint32_t payload_offset, uint32_t md_offset,
@@ -667,7 +684,11 @@ spdk_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, vo
 					      rc);
 	}
 }
-
+/* nof和本地读写同时使用条件：需要共享ns和qpair指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * ns
+*/
 int
 spdk_nvme_ns_cmd_read_with_md(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, void *buffer,
 			      void *metadata,

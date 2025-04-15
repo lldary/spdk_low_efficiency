@@ -194,7 +194,7 @@ nvmf_reactor_run(void *arg)
 		}
 	} while (!g_reactors_exit);
 
-	/* free all the lightweight threads */
+	/* free all the lightweight threads */ /* 退出时清理未完成的所有工作 */
 	while (spdk_ring_dequeue(nvmf_reactor->threads, (void **)&lw_thread, 1)) {
 		thread = spdk_thread_get_from_ctx(lw_thread);
 		spdk_set_thread(thread);
@@ -441,13 +441,13 @@ nvmf_create_nvmf_tgt(void)
 	 *	3,The ability to discover controllers that are statically configured.
 	 */
 	subsystem = spdk_nvmf_subsystem_create(g_nvmf_tgt.tgt, SPDK_NVMF_DISCOVERY_NQN,
-					       SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT, 0);
+					       SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT, 0); // 创建发现子系统
 	if (subsystem == NULL) {
 		fprintf(stderr, "failed to create discovery nvmf library subsystem\n");
 		goto error;
 	}
 
-	/* Allow any host to access the discovery subsystem */
+	/* Allow any host to access the discovery subsystem 设置访问权限 */
 	spdk_nvmf_subsystem_set_allow_any_host(subsystem, true);
 
 	fprintf(stdout, "created a nvmf target service\n");
@@ -687,7 +687,7 @@ nvmf_subsystem_init_done(int rc, void *cb_arg)
 {
 	fprintf(stdout, "bdev subsystem init successfully\n");
 
-	rc = spdk_rpc_initialize(g_rpc_addr, NULL);
+	rc = spdk_rpc_initialize(g_rpc_addr, NULL); // 初始化rpc服务，与外部通信
 	if (rc) {
 		spdk_app_stop(rc);
 		return;

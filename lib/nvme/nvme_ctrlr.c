@@ -273,7 +273,10 @@ nvme_ctrlr_proc_remove_io_qpair(struct spdk_nvme_qpair *qpair)
 		}
 	}
 }
-
+/* nof和本地读写同时使用条件：需要共享ctrlr指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * ctrlr
+ */
 void
 spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
 		struct spdk_nvme_io_qpair_opts *opts,
@@ -295,8 +298,8 @@ spdk_nvme_ctrlr_get_default_io_qpair_opts(struct spdk_nvme_ctrlr *ctrlr,
         } \
 
 	SET_FIELD(qprio, SPDK_NVME_QPRIO_URGENT);
-	SET_FIELD(io_queue_size, ctrlr->opts.io_queue_size);
-	SET_FIELD(io_queue_requests, ctrlr->opts.io_queue_requests);
+	SET_FIELD(io_queue_size, ctrlr->opts.io_queue_size); // 这里使用了ctrlr
+	SET_FIELD(io_queue_requests, ctrlr->opts.io_queue_requests); // 这里使用了ctrlr
 	SET_FIELD(delay_cmd_submit, false);
 	SET_FIELD(sq.vaddr, NULL);
 	SET_FIELD(sq.paddr, 0);
@@ -500,6 +503,10 @@ spdk_nvme_ctrlr_get_admin_qp_fd(struct spdk_nvme_ctrlr *ctrlr,
 	return spdk_nvme_qpair_get_fd(ctrlr->adminq, opts);
 }
 /* 注册qpair关键函数 */
+/* nof和本地读写同时使用条件：需要共享ctrlr指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * ctrlr
+*/
 struct spdk_nvme_qpair *
 spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 			       const struct spdk_nvme_io_qpair_opts *user_opts,
@@ -512,7 +519,7 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 
 	nvme_ctrlr_lock(ctrlr);
 
-	if (spdk_unlikely(ctrlr->state != NVME_CTRLR_STATE_READY)) {
+	if (spdk_unlikely(ctrlr->state != NVME_CTRLR_STATE_READY)) { // 这里使用了
 		/* When controller is resetting or initializing, free_io_qids is deleted or not created yet.
 		 * We can't create IO qpair in that case */
 		goto unlock;
@@ -525,7 +532,7 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 	 * This allows for extensions of the opts structure without breaking
 	 * ABI compatibility.
 	 */
-	spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
+	spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts)); // 这里使用了
 	if (user_opts) {
 		nvme_ctrlr_io_qpair_opts_copy(&opts, user_opts, spdk_min(opts.opts_size, opts_size));
 
@@ -5651,7 +5658,10 @@ spdk_nvme_ctrlr_get_transport_id(struct spdk_nvme_ctrlr *ctrlr)
 {
 	return &ctrlr->trid;
 }
-
+/* nof和本地读写同时使用条件：需要共享ctrlr指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * ctrlr
+*/
 int32_t
 spdk_nvme_ctrlr_alloc_qid(struct spdk_nvme_ctrlr *ctrlr)
 {

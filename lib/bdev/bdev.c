@@ -2506,7 +2506,9 @@ spdk_bdev_finish(spdk_bdev_fini_cb cb_fn, void *cb_arg)
 		bdev_finish_wait_for_examine_done(NULL);
 	}
 }
-
+/* nof和本地读写同时使用条件：需要共享ch指向内存和channel->shared_resource指向内存 */
+/* 细节汇总：TODO:
+*/
 struct spdk_bdev_io *
 bdev_channel_get_io(struct spdk_bdev_channel *channel)
 {
@@ -4935,11 +4937,11 @@ spdk_bdev_is_md_interleaved(const struct spdk_bdev *bdev)
 {
 	return (bdev->md_len != 0) && bdev->md_interleave;
 }
-
+/* nof和本地读写同时使用条件：需要共享bdev指向内存 */
 bool
 spdk_bdev_is_md_separate(const struct spdk_bdev *bdev)
 {
-	return (bdev->md_len != 0) && !bdev->md_interleave;
+	return (bdev->md_len != 0) && !bdev->md_interleave; // 这里使用了
 }
 
 bool
@@ -5302,11 +5304,12 @@ spdk_bdev_notify_blockcnt_change(struct spdk_bdev *bdev, uint64_t size)
  *
  * Returns zero on success or non-zero if the byte parameters aren't divisible by the block size.
  */
+/* nof和本地读写同时使用条件：需要共享bdev指向内存 */
 static uint64_t
 bdev_bytes_to_blocks(struct spdk_bdev *bdev, uint64_t offset_bytes, uint64_t *offset_blocks,
 		     uint64_t num_bytes, uint64_t *num_blocks)
 {
-	uint32_t block_size = bdev->blocklen;
+	uint32_t block_size = bdev->blocklen; // 这里使用了
 	uint8_t shift_cnt;
 
 	/* Avoid expensive div operations if possible. These spdk_u32 functions are very cheap. */
@@ -5322,7 +5325,10 @@ bdev_bytes_to_blocks(struct spdk_bdev *bdev, uint64_t offset_bytes, uint64_t *of
 		return (offset_bytes % block_size) | (num_bytes % block_size);
 	}
 }
-
+/* nof和本地读写同时使用条件：需要共享bdev指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * bdev
+*/
 static bool
 bdev_io_valid_blocks(struct spdk_bdev *bdev, uint64_t offset_blocks, uint64_t num_blocks)
 {
@@ -5333,7 +5339,7 @@ bdev_io_valid_blocks(struct spdk_bdev *bdev, uint64_t offset_blocks, uint64_t nu
 	}
 
 	/* Return failure if offset_blocks + num_blocks exceeds the size of the bdev */
-	if (offset_blocks + num_blocks > bdev->blockcnt) {
+	if (offset_blocks + num_blocks > bdev->blockcnt) { // 这里使用了
 		return false;
 	}
 
@@ -5417,17 +5423,22 @@ spdk_bdev_io_get_seek_offset(const struct spdk_bdev_io *bdev_io)
 {
 	return bdev_io->u.bdev.seek.offset;
 }
-
+/* nof和本地读写同时使用条件：需要共享ch指向内存和desc指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * desc
+ * desc->bdev
+ * ch
+*/
 static int
 bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch, void *buf,
 			 void *md_buf, uint64_t offset_blocks, uint64_t num_blocks,
 			 spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
-	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(desc);
+	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(desc); // 这里使用了desc
 	struct spdk_bdev_io *bdev_io;
 	struct spdk_bdev_channel *channel = __io_ch_to_bdev_ch(ch);
 
-	if (!bdev_io_valid_blocks(bdev, offset_blocks, num_blocks)) {
+	if (!bdev_io_valid_blocks(bdev, offset_blocks, num_blocks)) { // 这里使用了desc->bdev
 		return -EINVAL;
 	}
 
@@ -5455,7 +5466,12 @@ bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch
 	bdev_io_submit(bdev_io);
 	return 0;
 }
-
+/* nof和本地读写同时使用条件：需要共享ch指向内存和desc指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * desc
+ * desc->bdev
+ * ch
+*/
 int
 spdk_bdev_read(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	       void *buf, uint64_t offset, uint64_t nbytes,
@@ -5464,21 +5480,26 @@ spdk_bdev_read(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	uint64_t offset_blocks, num_blocks;
 
 	if (bdev_bytes_to_blocks(spdk_bdev_desc_get_bdev(desc), offset, &offset_blocks,
-				 nbytes, &num_blocks) != 0) {
+				 nbytes, &num_blocks) != 0) { // 这里使用了：desc->bdev指向的内存
 		return -EINVAL;
 	}
 
 	return spdk_bdev_read_blocks(desc, ch, buf, offset_blocks, num_blocks, cb, cb_arg);
 }
-
+/* nof和本地读写同时使用条件：需要共享ch指向内存和desc指向内存 */
 int
 spdk_bdev_read_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 		      void *buf, uint64_t offset_blocks, uint64_t num_blocks,
 		      spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
-	return bdev_read_blocks_with_md(desc, ch, buf, NULL, offset_blocks, num_blocks, cb, cb_arg);
+	return bdev_read_blocks_with_md(desc, ch, buf, NULL, offset_blocks, num_blocks, cb, cb_arg); // 这里使用了
 }
-
+/* nof和本地读写同时使用条件：需要共享ch指向内存和desc指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * desc
+ * desc->bdev
+ * ch
+*/
 int
 spdk_bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 			      void *buf, void *md_buf, uint64_t offset_blocks, uint64_t num_blocks,
@@ -5488,7 +5509,7 @@ spdk_bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channe
 		.iov_base = buf,
 	};
 
-	if (md_buf && !spdk_bdev_is_md_separate(spdk_bdev_desc_get_bdev(desc))) {
+	if (md_buf && !spdk_bdev_is_md_separate(spdk_bdev_desc_get_bdev(desc))) { // 这里使用了
 		return -EINVAL;
 	}
 
@@ -9096,12 +9117,12 @@ bdev_desc_release_claims(struct spdk_bdev_desc *desc)
 /*
  * End claims v2
  */
-
+/* nof和本地读写同时使用条件：需要共享desc指向内存 */
 struct spdk_bdev *
 spdk_bdev_desc_get_bdev(struct spdk_bdev_desc *desc)
 {
 	assert(desc != NULL);
-	return desc->bdev;
+	return desc->bdev; // 这里使用了
 }
 
 int

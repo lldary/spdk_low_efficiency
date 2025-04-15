@@ -174,7 +174,7 @@ spdk_subsystem_init_next(int rc)
 		spdk_subsystem_init_next(0);
 	}
 }
-
+/* 初始化所有子系统 */
 void
 spdk_subsystem_init(spdk_subsystem_init_fn cb_fn, void *cb_arg)
 {
@@ -200,7 +200,7 @@ spdk_subsystem_init(spdk_subsystem_init_fn cb_fn, void *cb_arg)
 		}
 	}
 
-	subsystem_sort();
+	subsystem_sort(); // 拓扑排序
 
 	spdk_subsystem_init_next(0);
 }

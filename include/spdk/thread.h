@@ -753,6 +753,9 @@ void spdk_put_io_channel(struct spdk_io_channel *ch);
  *
  * \return a pointer to the context buffer.
  */
+/* nof和本地读写同时使用条件：无 */
+/* 细节汇总：ch只参与了指针计算，没有解引用
+*/
 static inline void *
 spdk_io_channel_get_ctx(struct spdk_io_channel *ch)
 {

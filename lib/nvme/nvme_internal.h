@@ -598,7 +598,10 @@ struct spdk_nvme_ns {
 #define CTRLR_STRING(ctrlr) \
 	(spdk_nvme_trtype_is_fabrics(ctrlr->trid.trtype) ? \
 	ctrlr->trid.subnqn : ctrlr->trid.traddr)
-
+/* nof和本地读写同时使用条件：需要共享ctrlr指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * ctrlr
+*/
 #define NVME_CTRLR_ERRLOG(ctrlr, format, ...) \
 	SPDK_ERRLOG("[%s, %u] " format, CTRLR_STRING(ctrlr), ctrlr->cntlid, ##__VA_ARGS__);
 
@@ -1196,7 +1199,11 @@ nvme_qpair_is_io_queue(struct spdk_nvme_qpair *qpair)
 {
 	return qpair->id != 0;
 }
-
+/* nof和本地读写同时使用条件：需要共享mtx指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * mtx
+ * 额外要求：锁需要设置为多进程共享
+*/
 static inline int
 nvme_robust_mutex_lock(pthread_mutex_t *mtx)
 {
@@ -1210,14 +1217,18 @@ nvme_robust_mutex_lock(pthread_mutex_t *mtx)
 
 	return rc;
 }
-
+/* nof和本地读写同时使用条件：需要共享ctrlr指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * ctrlr
+ * 额外要求：锁需要设置为多进程共享
+*/
 static inline int
 nvme_ctrlr_lock(struct spdk_nvme_ctrlr *ctrlr)
 {
 	int rc;
 
-	rc = nvme_robust_mutex_lock(&ctrlr->ctrlr_lock);
-	ctrlr->lock_depth++;
+	rc = nvme_robust_mutex_lock(&ctrlr->ctrlr_lock); // 这里使用了
+	ctrlr->lock_depth++; //
 	return rc;
 }
 
@@ -1418,7 +1429,11 @@ nvme_request_clear(struct nvme_request *req)
 		req->submit_tick = 0;			\
 		req->accel_sequence = NULL;		\
 	} while (0);
-
+/* nof和本地读写同时使用条件：需要共享qpair和qpair->free_req指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * qpair->free_req 整个链表
+*/
 static inline struct nvme_request *
 nvme_allocate_request(struct spdk_nvme_qpair *qpair,
 		      const struct nvme_payload *payload, uint32_t payload_size, uint32_t md_size,
@@ -1460,7 +1475,11 @@ nvme_allocate_request_null(struct spdk_nvme_qpair *qpair, spdk_nvme_cmd_cb cb_fn
 struct nvme_request *nvme_allocate_request_user_copy(struct spdk_nvme_qpair *qpair,
 		void *buffer, uint32_t payload_size,
 		spdk_nvme_cmd_cb cb_fn, void *cb_arg, bool host_to_controller);
-
+/* nof和本地读写同时使用条件：需要共享qpair和qpair->free_req指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * qpair->free_req 整个链表
+*/
 static inline void
 _nvme_free_request(struct nvme_request *req, struct spdk_nvme_qpair *qpair)
 {

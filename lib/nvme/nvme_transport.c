@@ -51,6 +51,10 @@ nvme_get_next_transport(const struct spdk_nvme_transport *transport)
  * In the I/O path, we have the ability to store the transport struct in the I/O
  * qpairs to avoid taking a performance hit.
  */
+/* nof和本地读写同时使用条件：需要共享g_spdk_nvme_transports所在内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * g_spdk_nvme_transports和整个链表
+*/
 const struct spdk_nvme_transport *
 nvme_get_transport(const char *transport_name)
 {
@@ -655,7 +659,12 @@ nvme_transport_qpair_reset(struct spdk_nvme_qpair *qpair)
 	assert(transport != NULL);
 	return transport->ops.qpair_reset(qpair);
 }
-
+/* nof和本地读写同时使用条件：需要处理qpair的ops */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * qpair->transport->ops
+ * qpair->err_cmd_head 整个链表
+*/
 int
 nvme_transport_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *req)
 {

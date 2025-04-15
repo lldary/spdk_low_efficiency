@@ -1028,7 +1028,12 @@ nvme_qpair_deinit(struct spdk_nvme_qpair *qpair)
 
 	spdk_free(qpair->req_buf);
 }
-
+/* nof和本地读写同时使用条件：需要共享qpair和qpair->err_cmd_head指向内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * qpair->ctrlr
+ * qpair->err_cmd_head 整个链表
+*/
 static inline int
 _nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *req)
 {

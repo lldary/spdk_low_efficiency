@@ -381,6 +381,7 @@ spdk_nvmf_tgt_create(struct spdk_nvmf_target_opts *_opts)
 
 	snprintf(tgt->name, NVMF_TGT_NAME_MAX_LENGTH, "%s", opts.name);
 
+	/* 设置子系统数量 */
 	if (!opts.max_subsystems) {
 		tgt->max_subsystems = SPDK_NVMF_DEFAULT_MAX_SUBSYSTEMS;
 	} else {
@@ -390,32 +391,32 @@ spdk_nvmf_tgt_create(struct spdk_nvmf_target_opts *_opts)
 	tgt->crdt[0] = opts.crdt[0];
 	tgt->crdt[1] = opts.crdt[1];
 	tgt->crdt[2] = opts.crdt[2];
-	tgt->discovery_filter = opts.discovery_filter;
+	tgt->discovery_filter = opts.discovery_filter; // 设置过滤器
 	tgt->discovery_genctr = 0;
 	tgt->dhchap_digests = opts.dhchap_digests;
 	tgt->dhchap_dhgroups = opts.dhchap_dhgroups;
-	TAILQ_INIT(&tgt->transports);
-	TAILQ_INIT(&tgt->poll_groups);
-	TAILQ_INIT(&tgt->referrals);
+	TAILQ_INIT(&tgt->transports); // 初始化传输组
+	TAILQ_INIT(&tgt->poll_groups); // 初始化轮询组
+	TAILQ_INIT(&tgt->referrals); // 初始化引用组
 	tgt->num_poll_groups = 0;
 
-	tgt->subsystem_ids = spdk_bit_array_create(tgt->max_subsystems);
+	tgt->subsystem_ids = spdk_bit_array_create(tgt->max_subsystems); // 创建位图，管理id分配
 	if (tgt->subsystem_ids == NULL) {
 		free(tgt);
 		return NULL;
 	}
 
-	RB_INIT(&tgt->subsystems);
+	RB_INIT(&tgt->subsystems); // 初始化红黑树，用于管理子系统
 
-	pthread_mutex_init(&tgt->mutex, NULL);
+	pthread_mutex_init(&tgt->mutex, NULL); // 初始化互斥锁，保护关键元数据
 
 	spdk_io_device_register(tgt,
 				nvmf_tgt_create_poll_group,
 				nvmf_tgt_destroy_poll_group,
 				sizeof(struct spdk_nvmf_poll_group),
-				tgt->name);
+				tgt->name); // 注册为IO设备，指定创建和销毁轮询组的回调函数
 
-	tgt->state = NVMF_TGT_RUNNING;
+	tgt->state = NVMF_TGT_RUNNING; // 设置nof状态并且将其插入全局列表
 
 	TAILQ_INSERT_HEAD(&g_nvmf_tgts, tgt, link);
 

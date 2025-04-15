@@ -244,7 +244,7 @@ spdk_nvmf_subsystem_create(struct spdk_nvmf_tgt *tgt,
 		num_ns = NVMF_SUBSYSTEM_DEFAULT_NAMESPACES;
 	}
 
-	/* Find a free subsystem id (sid) */
+	/* Find a free subsystem id (sid) 查找空闲id */
 	sid = spdk_bit_array_find_first_clear(tgt->subsystem_ids, 0);
 	if (sid == UINT32_MAX) {
 		SPDK_ERRLOG("No free subsystem IDs are available for subsystem creation\n");
