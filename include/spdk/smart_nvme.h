@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <spdk/nvme.h> /* Include SPDK NVMe header for required definitions */
+#include <spdk/spdk_plus_log.h>
 
 enum spdk_plus_errno {
     SPDK_PLUS_SUCCESS = 0, /* 成功 */

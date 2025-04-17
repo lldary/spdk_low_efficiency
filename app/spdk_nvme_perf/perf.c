@@ -60,7 +60,7 @@
 
 #define DEBUGLOG(fmt, args...) printf("\033[0;33;40m[ DEBUG ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__,##args)
 #define ERRLOG(fmt, args...) printf("\033[0;31;40m[ ERROR ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
-#define INFOLOG(fmt, args...) printf("\033[0;32;40m[  INFO ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
+#define INFOLOG(fmt, args...) printf("\033[0;32;40m[ BRIEF ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
 
 #ifdef SPDK_CONFIG_URING
 #include <liburing.h>
@@ -1189,7 +1189,10 @@ power_mode_get_complete(void *ctx, const struct spdk_nvme_cpl *cql) {
 		SPDK_ERRLOG("I/O error: %s\n", spdk_nvme_cpl_get_status_string(&cql->status));
 	}
 	uint32_t cdw0 = cql->cdw0;
-	INFOLOG("current power state: %u\n", ((struct power_state_cql*)(&cdw0))->power_state);
+	if (ctx == NULL)
+		INFOLOG("before change current power state: %u\n", ((struct power_state_cql*)(&cdw0))->power_state);
+	else
+		INFOLOG("after change current power state: %u\n", ((struct power_state_cql*)(&cdw0))->power_state);
 }
 
 static void
@@ -1201,7 +1204,7 @@ power_mode_update_complete(void *ctx, const struct spdk_nvme_cpl *cpl)
 	}
 	INFOLOG("Power mode update complete\n");
 	if (spdk_nvme_ctrlr_cmd_get_feature(ctrlr, SPDK_NVME_FEAT_POWER_MANAGEMENT, 0,
-					   NULL, 0, power_mode_get_complete, 0) != 0) {
+					   NULL, 0, power_mode_get_complete, (void*)1) != 0) {
 		SPDK_ERRLOG("get power state failed\n");
 	}
 }
@@ -1251,8 +1254,13 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 		goto poll_group_failed;
 	}
 
+	/* 显示当前ssd电源状态 */
+	if (spdk_nvme_ctrlr_cmd_get_feature(entry->u.nvme.ctrlr, SPDK_NVME_FEAT_POWER_MANAGEMENT, 0,
+		NULL, 0, power_mode_get_complete, 0) != 0) {
+		SPDK_ERRLOG("get power state failed\n");
+	}
 	/* 设置ssd电源状态 */
-	if (g_ssd_power_max_mode < 3) {
+	if (g_ssd_power_max_mode != 0) {
 		if (spdk_nvme_ctrlr_cmd_set_feature(entry->u.nvme.ctrlr,
 				SPDK_NVME_FEAT_POWER_MANAGEMENT,
 				g_ssd_power_max_mode, 0,
@@ -1260,6 +1268,8 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 			fprintf(stderr, "set power state failed\n");
 			goto poll_group_failed;
 		}
+		if(g_ssd_power_max_mode > 2)
+			INFOLOG("set power state may failed because power state is not supported %d\n", g_ssd_power_max_mode);
 	}
 
 	group = ns_ctx->u.nvme.group;

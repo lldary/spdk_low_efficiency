@@ -44,11 +44,6 @@
 #define EPOLL_SIZE BACKLOG // 定义EPOLL_SIZE为10
 #define SPDK_PLUS_BUF_SIZE 4096
 
-
-#define DEBUGLOG(fmt, args...) printf("\033[0;33;40m[ DEBUG ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__,##args)
-#define ERRLOG(fmt, args...) printf("\033[0;31;40m[ ERROR ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
-#define INFOLOG(fmt, args...) printf("\033[0;32;40m[  INFO ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
-
 enum nvme_io_mode {
     SPDK_PLUS_READ,
     SPDK_PLUS_WRITE,
@@ -355,7 +350,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             SPDK_ERRLOG("Unknown schedule module status\n");
     }
     enqueue(qpair->queue, (struct nvme_timestamp){.ts = task->start_time, .io_size = task->io_size, .io_mode = io_mode});
-    DEBUGLOG("io_mode: %d, qpair_mode: %d, queue size: %d\n", io_mode, task->notify_mode, queue_size(qpair->queue));
+    DEBUGLOG("io_mode: %d, qpair_mode: %ld, queue size: %d\n", io_mode, task->notify_mode, queue_size(qpair->queue));
     if(qpair == NULL)
         ERRLOG("qpair is NULL\n");
     return qpair->qpair;
@@ -408,7 +403,7 @@ nvme_prepare_uintr_env(void) {
     uint32_t cpu_id = sched_getcpu();
     int flags;
     if(g_curr_thread[cpu_id] != NULL) {
-        DEBUGLOG("CPU %d already has initalize user interrupt\n", cpu_id);
+        DEBUGLOG("CPU %u already has initalize user interrupt\n", cpu_id);
         return;
     }
     #define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
@@ -441,7 +436,7 @@ nvme_prepare_uintr_env(void) {
     g_idle_thread[cpu_id].stack_space[0xFFEF] = cpu_id;
     g_idle_thread[cpu_id].stack_space[0xFFEE] = cpu_id;
     local_irq_save(flags);
-    DEBUGLOG("初始化完成用户框架，开始试运行 core id： %u rip: %p %p\n", cpu_id, spdk_plus_idle_thread_func, *(uint64_t*)(g_idle_thread[cpu_id].rsp + 0x38));
+    DEBUGLOG("初始化完成用户框架，开始试运行 core id： %u rip: %p %lu\n", cpu_id, spdk_plus_idle_thread_func, *(uint64_t*)(g_idle_thread[cpu_id].rsp + 0x38));
     spdk_plus_switch_thread(g_work_thread + cpu_id, g_idle_thread + cpu_id);
     DEBUGLOG("CPU %d 第一次试运行完成\n", cpu_id);
     g_curr_thread[cpu_id] = g_work_thread + cpu_id;
