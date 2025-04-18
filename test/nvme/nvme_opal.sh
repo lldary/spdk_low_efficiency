@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 set -e
 
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
-rpc_py="$rootdir/scripts/rpc.py"
 source "$rootdir/scripts/common.sh"
 source "$rootdir/test/common/autotest_common.sh"
 
 # The OPAL CI tests is only used for P4510 devices.
-mapfile -t bdfs < <(get_nvme_bdfs_by_id 0x0a59)
+mapfile -t bdfs < <(get_nvme_bdfs_by_id 0x0a54)
 if [[ -z ${bdfs[0]} ]]; then
 	echo "No P4510 device found, exit the tests"
 	exit 1
@@ -20,6 +22,7 @@ bdf=${bdfs[0]}
 function opal_revert_and_init() {
 	$SPDK_BIN_DIR/spdk_tgt &
 	spdk_tgt_pid=$!
+	trap 'killprocess $spdk_tgt_pid; exit 1' SIGINT SIGTERM EXIT
 	waitforlisten $spdk_tgt_pid
 
 	$rootdir/scripts/rpc.py bdev_nvme_attach_controller -b "nvme0" -t "pcie" -a ${bdf}
@@ -113,12 +116,12 @@ function opal_bdevio() {
 }
 
 function opal_bdevperf() {
-	$rootdir/test/bdev/bdevperf/bdevperf -z -q 8 -o 4096 -w verify -t 10 &
+	$rootdir/build/examples/bdevperf -z -q 8 -o 4096 -w verify -t 10 &
 	bdevperf_pid=$!
 	trap 'revert; killprocess $bdevperf_pid; exit 1' SIGINT SIGTERM EXIT
 	waitforlisten $bdevperf_pid
 	setup_test_environment
-	$rootdir/test/bdev/bdevperf/bdevperf.py perform_tests
+	$rootdir/examples/bdev/bdevperf/bdevperf.py perform_tests
 	clean_up
 	revert
 	$rpc_py bdev_nvme_detach_controller nvme0

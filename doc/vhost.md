@@ -1,6 +1,6 @@
 # vhost Target {#vhost}
 
-# Table of Contents {#vhost_toc}
+## Table of Contents {#vhost_toc}
 
 - @ref vhost_intro
 - @ref vhost_prereqs
@@ -11,7 +11,7 @@
 - @ref vhost_advanced_topics
 - @ref vhost_bugs
 
-# Introduction {#vhost_intro}
+## Introduction {#vhost_intro}
 
 A vhost target provides a local storage service as a process running on a local machine.
 It is capable of exposing virtualized block devices to QEMU instances or other arbitrary
@@ -28,12 +28,12 @@ techniques as other components in SPDK.  Since SPDK is polling for vhost submiss
 it can signal the VM to skip notifications on submission.  This avoids VMEXITs on I/O
 submission and can significantly reduce CPU usage in the VM on heavy I/O workloads.
 
-# Prerequisites {#vhost_prereqs}
+## Prerequisites {#vhost_prereqs}
 
 This guide assumes the SPDK has been built according to the instructions in @ref
 getting_started.  The SPDK vhost target is built with the default configure options.
 
-## Vhost Command Line Parameters {#vhost_cmd_line_args}
+### Vhost Command Line Parameters {#vhost_cmd_line_args}
 
 Additional command line flags are available for Vhost target.
 
@@ -41,7 +41,7 @@ Param    | Type     | Default                | Description
 -------- | -------- | ---------------------- | -----------
 -S       | string   | $PWD                   | directory where UNIX domain sockets will be created
 
-## Supported Guest Operating Systems
+### Supported Guest Operating Systems
 
 The guest OS must contain virtio-scsi or virtio-blk drivers.  Most Linux and FreeBSD
 distributions include virtio drivers.
@@ -49,7 +49,7 @@ distributions include virtio drivers.
 installed separately.  The SPDK vhost target has been tested with recent versions of Ubuntu,
 Fedora, and Windows
 
-## QEMU
+### QEMU
 
 Userspace vhost-scsi target support was added to upstream QEMU in v2.10.0.  Run
 the following command to confirm your QEMU supports userspace vhost-scsi.
@@ -65,16 +65,7 @@ the following command to confirm your QEMU supports userspace vhost-blk.
 qemu-system-x86_64 -device vhost-user-blk-pci,help
 ~~~
 
-Userspace vhost-nvme target was added as experimental feature for SPDK 18.04
-release, patches for QEMU are available in SPDK's QEMU repository only.
-
-Run the following command to confirm your QEMU supports userspace vhost-nvme.
-
-~~~{.sh}
-qemu-system-x86_64 -device vhost-user-nvme,help
-~~~
-
-# Starting SPDK vhost target {#vhost_start}
+## Starting SPDK vhost target {#vhost_start}
 
 First, run the SPDK setup.sh script to setup some hugepages for the SPDK vhost target
 application.  This will allocate 4096MiB (4GiB) of hugepages, enough for the SPDK
@@ -100,9 +91,9 @@ To list all available vhost options use the following command.
 build/bin/vhost -h
 ~~~
 
-# SPDK Configuration {#vhost_config}
+## SPDK Configuration {#vhost_config}
 
-## Create bdev (block device) {#vhost_bdev_create}
+### Create bdev (block device) {#vhost_bdev_create}
 
 SPDK bdevs are block devices which will be exposed to the guest OS.
 For vhost-scsi, bdevs are exposed as SCSI LUNs on SCSI devices attached to the
@@ -121,9 +112,9 @@ will create a 64MB malloc bdev with 512-byte block size.
 scripts/rpc.py bdev_malloc_create 64 512 -b Malloc0
 ~~~
 
-## Create a vhost device {#vhost_vdev_create}
+### Create a vhost device {#vhost_vdev_create}
 
-### Vhost-SCSI
+#### Vhost-SCSI
 
 The following RPC will create a vhost-scsi controller which can be accessed
 by QEMU via /var/tmp/vhost.0. At the time of creation the controller will be
@@ -152,7 +143,7 @@ To remove a bdev from a vhost-scsi controller use the following RPC:
 scripts/rpc.py vhost_scsi_controller_remove_target vhost.0 0
 ~~~
 
-### Vhost-BLK
+#### Vhost-BLK
 
 The following RPC will create a vhost-blk device exposing Malloc0 bdev.
 The device will be accessible to QEMU via /var/tmp/vhost.1. All the I/O polling
@@ -171,27 +162,7 @@ extra `-r` or `--readonly` parameter.
 scripts/rpc.py vhost_create_blk_controller --cpumask 0x1 -r vhost.1 Malloc0
 ~~~
 
-### Vhost-NVMe (experimental)
-
-The following RPC will attach the Malloc0 bdev to the vhost.0 vhost-nvme
-controller. Malloc0 will appear as Namespace 1 of vhost.0 controller. Users
-can use `--cpumask` parameter to specify which cores should be used for this
-controller. Users must specify the maximum I/O queues supported for the
-controller, at least 1 Namespace is required for each controller.
-
-~~~{.sh}
-$rpc_py vhost_create_nvme_controller --cpumask 0x1 vhost.2 16
-$rpc_py vhost_nvme_controller_add_ns vhost.2 Malloc0
-~~~
-
-Users can use the following command to remove the controller, all the block
-devices attached to controller's Namespace will be removed automatically.
-
-~~~{.sh}
-$rpc_py vhost_delete_controller vhost.2
-~~~
-
-## QEMU {#vhost_qemu_config}
+### QEMU {#vhost_qemu_config}
 
 Now the virtual machine can be started with QEMU.  The following command-line
 parameters must be added to connect the virtual machine to its vhost controller.
@@ -215,28 +186,21 @@ SPDK malloc block device by specifying bootindex=0 for the boot image.
 
 Finally, specify the SPDK vhost devices:
 
-### Vhost-SCSI
+#### Vhost-SCSI
 
 ~~~{.sh}
 -chardev socket,id=char0,path=/var/tmp/vhost.0
 -device vhost-user-scsi-pci,id=scsi0,chardev=char0
 ~~~
 
-### Vhost-BLK
+#### Vhost-BLK
 
 ~~~{.sh}
 -chardev socket,id=char1,path=/var/tmp/vhost.1
 -device vhost-user-blk-pci,id=blk0,chardev=char1
 ~~~
 
-### Vhost-NVMe (experimental)
-
-~~~{.sh}
--chardev socket,id=char2,path=/var/tmp/vhost.2
--device vhost-user-nvme,id=nvme0,chardev=char2,num_io_queues=4
-~~~
-
-## Example output {#vhost_example}
+### Example output {#vhost_example}
 
 This example uses an NVMe bdev alongside Mallocs. SPDK vhost application is started
 on CPU cores 0 and 1, QEMU on cores 2 and 3.
@@ -249,7 +213,7 @@ host:~# HUGEMEM=2048 ./scripts/setup.sh
 ~~~{.sh}
 host:~# ./build/bin/vhost -S /var/tmp -s 1024 -m 0x3 &
 Starting DPDK 17.11.0 initialization...
-[ DPDK EAL parameters: vhost -c 3 -m 1024 --master-lcore=1 --file-prefix=spdk_pid156014 ]
+[ DPDK EAL parameters: vhost -c 3 -m 1024 --main-lcore=1 --file-prefix=spdk_pid156014 ]
 EAL: Detected 48 lcore(s)
 EAL: Probing VFIO support...
 EAL: VFIO support initialized
@@ -267,7 +231,7 @@ EAL:   using IOMMU type 1 (Type 1)
 ~~~
 
 ~~~{.sh}
-host:~# ./scripts/rpc.py bdev_malloc_create 128 4096 Malloc0
+host:~# ./scripts/rpc.py bdev_malloc_create 128 4096 -b Malloc0
 Malloc0
 ~~~
 
@@ -307,9 +271,9 @@ host:~# taskset -c 2,3 qemu-system-x86_64 \
   -drive file=guest_os_image.qcow2,if=none,id=disk \
   -device ide-hd,drive=disk,bootindex=0 \
   -chardev socket,id=spdk_vhost_scsi0,path=/var/tmp/vhost.0 \
-  -device vhost-user-scsi-pci,id=scsi0,chardev=spdk_vhost_scsi0,num_queues=4 \
+  -device vhost-user-scsi-pci,id=scsi0,chardev=spdk_vhost_scsi0,num_queues=2 \
   -chardev socket,id=spdk_vhost_blk0,path=/var/tmp/vhost.1 \
-  -device vhost-user-blk-pci,chardev=spdk_vhost_blk0,num-queues=4
+  -device vhost-user-blk-pci,chardev=spdk_vhost_blk0,num-queues=2
 ~~~
 
 Please note the following two commands are run on the guest VM.
@@ -337,9 +301,9 @@ vhost.c:1006:session_shutdown: *NOTICE*: Exiting
 We can see that `sdb` and `sdc` are SPDK vhost-scsi LUNs, and `vda` is SPDK a
 vhost-blk disk.
 
-# Advanced Topics {#vhost_advanced_topics}
+## Advanced Topics {#vhost_advanced_topics}
 
-## Multi-Queue Block Layer (blk-mq) {#vhost_multiqueue}
+### Multi-Queue Block Layer (blk-mq) {#vhost_multiqueue}
 
 For best performance use the Linux kernel block multi-queue feature with vhost.
 To enable it on Linux, it is required to modify kernel options inside the
@@ -358,7 +322,11 @@ to set `num_queues=4` to saturate physical device. Adding too many queues might 
 vhost performance degradation if many vhost devices are used because each device will require
 additional `num_queues` to be polled.
 
-## Hot-attach/hot-detach {#vhost_hotattach}
+Some Linux distributions report a kernel panic when starting the VM if the number of I/O queues
+specified via the `num-queues` parameter is greater than number of vCPUs. If you need to use
+more I/O queues than vCPUs, check that your OS image supports that configuration.
+
+### Hot-attach/hot-detach {#vhost_hotattach}
 
 Hotplug/hotremove within a vhost controller is called hot-attach/detach. This is to
 distinguish it from SPDK bdev hotplug/hotremove. E.g. if an NVMe bdev is attached
@@ -371,7 +339,7 @@ to hot-attach/detach the bdev from a Vhost-BLK device. If Vhost-BLK device expos
 an NVMe bdev that is hotremoved, all the I/O traffic on that Vhost-BLK device will
 be aborted - possibly flooding a VM with syslog warnings and errors.
 
-### Hot-attach
+#### Hot-attach
 
 Hot-attach is done by simply attaching a bdev to a vhost controller with a QEMU VM
 already started. No other extra action is necessary.
@@ -380,7 +348,7 @@ already started. No other extra action is necessary.
 scripts/rpc.py vhost_scsi_controller_add_target vhost.0 0 Malloc0
 ~~~
 
-### Hot-detach
+#### Hot-detach
 
 Just like hot-attach, the hot-detach is done by simply removing bdev from a controller
 when QEMU VM is already started.
@@ -395,22 +363,16 @@ Removing an entire bdev will hot-detach it from a controller as well.
 scripts/rpc.py bdev_malloc_delete Malloc0
 ~~~
 
-# Known bugs and limitations {#vhost_bugs}
+## Known bugs and limitations {#vhost_bugs}
 
-## Vhost-NVMe (experimental) can only be supported with latest Linux kernel
-
-Vhost-NVMe target was designed for one new feature of NVMe 1.3 specification, Doorbell
-Buffer Config Admin command, which is used for emulated NVMe controller only. Linux 4.12
-added this feature, so a new Guest kernel later than 4.12 is required to test this feature.
-
-## Windows virtio-blk driver before version 0.1.130-1 only works with 512-byte sectors
+### Windows virtio-blk driver before version 0.1.130-1 only works with 512-byte sectors
 
 The Windows `viostor` driver before version 0.1.130-1 is buggy and does not
 correctly support vhost-blk devices with non-512-byte block size.
 See the [bug report](https://bugzilla.redhat.com/show_bug.cgi?id=1411092) for
 more information.
 
-## QEMU vhost-user-blk
+### QEMU vhost-user-blk
 
 QEMU [vhost-user-blk](https://git.qemu.org/?p=qemu.git;a=commit;h=00343e4b54ba) is
 supported from version 2.12.

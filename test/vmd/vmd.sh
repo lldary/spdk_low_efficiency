@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/scripts/common.sh
 source $rootdir/test/common/autotest_common.sh
 
 rpc_py=$rootdir/scripts/rpc.py
-VMD_WHITELIST=()
+VMD_ALLOWED=()
 
 function vmd_identify() {
 	for bdf in $pci_devs; do
-		$SPDK_EXAMPLE_DIR/identify -i 0 -V -r "trtype:PCIe traddr:$bdf"
+		$SPDK_BIN_DIR/spdk_nvme_identify -i 0 -V -r "trtype:PCIe traddr:$bdf"
 	done
 }
 
 function vmd_perf() {
 	for bdf in $pci_devs; do
-		$SPDK_EXAMPLE_DIR/perf -q 128 -w read -o 12288 -t 1 -LL -i 0 -V -r "trtype:PCIe traddr:$bdf"
+		$SPDK_BIN_DIR/spdk_nvme_perf -q 128 -w read -o 12288 -t 1 -LL -i 0 -V -r "trtype:PCIe traddr:$bdf"
 	done
 }
 
@@ -34,7 +37,7 @@ function vmd_bdev_svc() {
 	# Wait until bdev_svc starts
 	waitforlisten $svcpid
 
-	$rpc_py enable_vmd
+	$rpc_py vmd_enable
 	$rpc_py framework_start_init
 
 	for bdf in $pci_devs; do
@@ -52,10 +55,10 @@ vmd_id=$(grep "PCI_DEVICE_ID_INTEL_VMD" $rootdir/include/spdk/pci_ids.h | awk -F
 
 for bdf in $(iter_pci_dev_id 8086 $vmd_id); do
 	if pci_can_use $bdf; then
-		VMD_WHITELIST+=("$bdf")
+		VMD_ALLOWED+=("$bdf")
 	fi
 done
-PCI_WHITELIST="${VMD_WHITELIST[*]}" $rootdir/scripts/setup.sh
+PCI_ALLOWED="${VMD_ALLOWED[*]}" $rootdir/scripts/setup.sh
 
 pci_devs=$($SPDK_BIN_DIR/spdk_lspci | grep "NVMe disk behind VMD" | awk '{print $1}')
 

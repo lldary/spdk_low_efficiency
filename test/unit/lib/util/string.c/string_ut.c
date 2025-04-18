@@ -1,39 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
+ *   Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "util/string.c"
 
@@ -248,24 +221,36 @@ test_sprintf_append_realloc(void)
 	free(str3);
 	free(str4);
 }
+
+static void
+generate_string(char *str, size_t len, int64_t limit, int adjust)
+{
+	/* There isn't a portable way of handling the arithmetic, so */
+	/* perform the calculation in two parts to avoid overflow */
+	int64_t hi = (limit / 10) + (adjust / 10);
+	int64_t lo = (limit % 10) + (adjust % 10);
+
+	/* limit is large and adjust is small, so hi part will be */
+	/* non-zero even if there is a carry, but check it */
+	CU_ASSERT(hi < -1 || hi > 1);
+
+	/* Correct a difference in sign */
+	if ((hi < 0) != (lo < 0) && lo != 0) {
+		lo += (hi < 0) ? -10 : 10;
+		hi += (hi < 0) ? 1 : -1;
+	}
+
+	snprintf(str, len, "%" PRId64 "%01" PRId64, hi + (lo / 10),
+		 (lo < 0) ? (-lo % 10) : (lo % 10));
+}
+
 static void
 test_strtol(void)
 {
 	long int val;
+	char str[256];
 
 	const char *val1 = "no_digits";
-	/* LLONG_MIN - 1 */
-	const char *val2 = "-9223372036854775809";
-	/* LONG_MIN */
-	const char *val3 = "-9223372036854775808";
-	/* LONG_MIN + 1 */
-	const char *val4 = "-9223372036854775807";
-	/* LONG_MAX - 1 */
-	const char *val5 = "9223372036854775806";
-	/* LONG_MAX */
-	const char *val6 = "9223372036854775807";
-	/* LONG_MAX + 1 */
-	const char *val7 = "9223372036854775808";
 	/* digits + chars */
 	const char *val8 = "10_is_ten";
 	/* chars + digits */
@@ -278,22 +263,34 @@ test_strtol(void)
 	val = spdk_strtol(val1, 10);
 	CU_ASSERT(val == -EINVAL);
 
-	val = spdk_strtol(val2, 10);
+	/* LONG_MIN - 1 */
+	generate_string(str, sizeof(str), LONG_MIN, -1);
+	val = spdk_strtol(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
-	val = spdk_strtol(val3, 10);
+	/* LONG_MIN */
+	generate_string(str, sizeof(str), LONG_MIN, 0);
+	val = spdk_strtol(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
-	val = spdk_strtol(val4, 10);
+	/* LONG_MIN + 1 */
+	generate_string(str, sizeof(str), LONG_MIN, +1);
+	val = spdk_strtol(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
-	val = spdk_strtol(val5, 10);
+	/* LONG_MAX - 1 */
+	generate_string(str, sizeof(str), LONG_MAX, -1);
+	val = spdk_strtol(str, 10);
 	CU_ASSERT(val == LONG_MAX - 1);
 
-	val = spdk_strtol(val6, 10);
+	/* LONG_MAX */
+	generate_string(str, sizeof(str), LONG_MAX, 0);
+	val = spdk_strtol(str, 10);
 	CU_ASSERT(val == LONG_MAX);
 
-	val = spdk_strtol(val7, 10);
+	/* LONG_MAX + 1 */
+	generate_string(str, sizeof(str), LONG_MAX, +1);
+	val = spdk_strtol(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
 	val = spdk_strtol(val8, 10);
@@ -317,20 +314,9 @@ static void
 test_strtoll(void)
 {
 	long long int val;
+	char str[256];
 
 	const char *val1 = "no_digits";
-	/* LLONG_MIN - 1 */
-	const char *val2 = "-9223372036854775809";
-	/* LLONG_MIN */
-	const char *val3 = "-9223372036854775808";
-	/* LLONG_MIN + 1 */
-	const char *val4 = "-9223372036854775807";
-	/* LLONG_MAX - 1 */
-	const char *val5 = "9223372036854775806";
-	/* LLONG_MAX */
-	const char *val6 = "9223372036854775807";
-	/* LLONG_MAX + 1 */
-	const char *val7 = "9223372036854775808";
 	/* digits + chars */
 	const char *val8 = "10_is_ten";
 	/* chars + digits */
@@ -343,22 +329,34 @@ test_strtoll(void)
 	val = spdk_strtoll(val1, 10);
 	CU_ASSERT(val == -EINVAL);
 
-	val = spdk_strtoll(val2, 10);
+	/* LLONG_MIN - 1 */
+	generate_string(str, sizeof(str), LLONG_MIN, -1);
+	val = spdk_strtoll(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
-	val = spdk_strtoll(val3, 10);
+	/* LLONG_MIN */
+	generate_string(str, sizeof(str), LLONG_MIN, 0);
+	val = spdk_strtoll(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
-	val = spdk_strtoll(val4, 10);
+	/* LLONG_MIN + 1 */
+	generate_string(str, sizeof(str), LLONG_MIN, +1);
+	val = spdk_strtoll(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
-	val = spdk_strtoll(val5, 10);
+	/* LLONG_MAX - 1 */
+	generate_string(str, sizeof(str), LLONG_MAX, -1);
+	val = spdk_strtoll(str, 10);
 	CU_ASSERT(val == LLONG_MAX - 1);
 
-	val = spdk_strtoll(val6, 10);
+	/* LLONG_MAX */
+	generate_string(str, sizeof(str), LLONG_MAX, 0);
+	val = spdk_strtoll(str, 10);
 	CU_ASSERT(val == LLONG_MAX);
 
-	val = spdk_strtoll(val7, 10);
+	/* LLONG_MAX + 1 */
+	generate_string(str, sizeof(str), LLONG_MAX, +1);
+	val = spdk_strtoll(str, 10);
 	CU_ASSERT(val == -ERANGE);
 
 	val = spdk_strtoll(val8, 10);
@@ -378,13 +376,139 @@ test_strtoll(void)
 	CU_ASSERT(val == 0);
 }
 
+static void
+test_strarray(void)
+{
+	char **r;
+	char **r2;
+
+	r = spdk_strarray_from_string("", ":");
+	CU_ASSERT(strcmp(r[0], "") == 0);
+	CU_ASSERT(r[1] == NULL);
+	spdk_strarray_free(r);
+
+	r = spdk_strarray_from_string(":", ":");
+	CU_ASSERT(strcmp(r[0], "") == 0);
+	CU_ASSERT(strcmp(r[1], "") == 0);
+	CU_ASSERT(r[2] == NULL);
+	spdk_strarray_free(r);
+
+	r = spdk_strarray_from_string("a", ":");
+	CU_ASSERT(strcmp(r[0], "a") == 0);
+	CU_ASSERT(r[1] == NULL);
+	spdk_strarray_free(r);
+
+	r = spdk_strarray_from_string("ab:", ":");
+	CU_ASSERT(strcmp(r[0], "ab") == 0);
+	CU_ASSERT(strcmp(r[1], "") == 0);
+	CU_ASSERT(r[2] == NULL);
+	spdk_strarray_free(r);
+
+	r = spdk_strarray_from_string(":ab", ":");
+	CU_ASSERT(strcmp(r[0], "") == 0);
+	CU_ASSERT(strcmp(r[1], "ab") == 0);
+	CU_ASSERT(r[2] == NULL);
+	spdk_strarray_free(r);
+
+	r = spdk_strarray_from_string("ab:c", ":");
+	CU_ASSERT(strcmp(r[0], "ab") == 0);
+	CU_ASSERT(strcmp(r[1], "c") == 0);
+	CU_ASSERT(r[2] == NULL);
+	spdk_strarray_free(r);
+
+	r = spdk_strarray_from_string(":ab.:c:", ":.");
+	CU_ASSERT(strcmp(r[0], "") == 0);
+	CU_ASSERT(strcmp(r[1], "ab") == 0);
+	CU_ASSERT(strcmp(r[2], "") == 0);
+	CU_ASSERT(strcmp(r[3], "c") == 0);
+	CU_ASSERT(strcmp(r[4], "") == 0);
+	CU_ASSERT(r[5] == NULL);
+	spdk_strarray_free(r);
+
+	r = spdk_strarray_from_string(":ab.:c:", ":.");
+	r2 = spdk_strarray_dup((const char **)r);
+	CU_ASSERT(strcmp(r2[0], "") == 0);
+	CU_ASSERT(strcmp(r2[1], "ab") == 0);
+	CU_ASSERT(strcmp(r2[2], "") == 0);
+	CU_ASSERT(strcmp(r2[3], "c") == 0);
+	CU_ASSERT(strcmp(r2[4], "") == 0);
+	CU_ASSERT(r2[5] == NULL);
+	spdk_strarray_free(r);
+	spdk_strarray_free(r2);
+}
+
+static void
+test_strcpy_replace(void)
+{
+	const char *original = "good morning, hello, thank you";
+	const char *search1 = "evening";
+	const char *replace1 = "unexpected";
+	const char *search2 = "morning";
+	const char *replace2 = "afternoon";
+	const char *expected2 = "good afternoon, hello, thank you";
+	const char *search3 = "morning";
+	const char *replace3 = "night";
+	const char *expected3 = "good night, hello, thank you";
+	const char *search4 = "hello";
+	const char *replace4 = "good bye";
+	const char *expected4 = "good morning, good bye, thank you";
+	const char *search5 = "thank you";
+	const char *replace5 = "you are welcome";
+	const char *expected5 = "good morning, hello, you are welcome";
+	const char *search6 = " ";
+	const char *replace6 = "-";
+	const char *expected6 = "good-morning,-hello,-thank-you";
+	const char *search7 = ",";
+	const char *replace7 = ".";
+	const char *expected7 = "good morning. hello. thank you";
+	char result[256];
+	int rc;
+
+	rc = spdk_strcpy_replace(NULL, 0, NULL, NULL, NULL);
+	CU_ASSERT(rc == -EINVAL);
+
+	rc = spdk_strcpy_replace(result, sizeof(result), original, search1, replace1);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(strcmp(result, original) == 0);
+
+	rc = spdk_strcpy_replace(result, sizeof(result), original, search2, replace2);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(strcmp(result, expected2) == 0);
+
+	/* A case that sizeof(replace) is less than sizeof(search), and the result array is
+	 * smaller than the original string. */
+	rc = spdk_strcpy_replace(result, strlen(expected3) + 1, original, search3, replace3);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(strcmp(result, expected3) == 0);
+
+	/* An error case that the result array is smaller than the string with replaced values
+	 * and a terminated null byte. */
+	rc = spdk_strcpy_replace(result, strlen(expected3), original, search3, replace3);
+	CU_ASSERT(rc == -EINVAL);
+
+	rc = spdk_strcpy_replace(result, sizeof(result), original, search4, replace4);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(strcmp(result, expected4) == 0);
+
+	rc = spdk_strcpy_replace(result, sizeof(result), original, search5, replace5);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(strcmp(result, expected5) == 0);
+
+	rc = spdk_strcpy_replace(result, sizeof(result), original, search6, replace6);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(strcmp(result, expected6) == 0);
+
+	rc = spdk_strcpy_replace(result, sizeof(result), original, search7, replace7);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(strcmp(result, expected7) == 0);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("string", NULL, NULL);
@@ -395,12 +519,12 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_sprintf_append_realloc);
 	CU_ADD_TEST(suite, test_strtol);
 	CU_ADD_TEST(suite, test_strtoll);
+	CU_ADD_TEST(suite, test_strarray);
+	CU_ADD_TEST(suite, test_strcpy_replace);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 
 	return num_failures;

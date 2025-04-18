@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2020 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f "$(dirname "$0")")
 rootdir=$(readlink -f "$testdir/../../")
 source "$testdir/common.sh"
@@ -10,7 +14,7 @@ basic_rw() {
 
 	qds=(1 64)
 	# Generate some bs for tests based on the native_bs
-	for bs in {0..4}; do
+	for bs in {0..2}; do
 		bss+=($((native_bs << bs)))
 	done
 
@@ -44,7 +48,7 @@ basic_rw() {
 }
 
 basic_offset() {
-	# Check if offseting works - using default io size of 4k
+	# Check if offsetting works - using default io size of 4k
 	local count seek skip data data_check
 
 	gen_bytes 4096 > "$test_file0"
@@ -66,12 +70,6 @@ basic_offset() {
 
 	read -rn${#data} data_check < "$test_file1"
 	[[ $data == "$data_check" ]]
-}
-
-plain_copy() {
-	# Test if copy between plain files works as well
-	"${DD_APP[@]}" --if="$test_file0" --of="$test_file1"
-	diff -q "$test_file0" "$test_file1"
 }
 
 cleanup() {
@@ -104,4 +102,3 @@ run_test "dd_bs_lt_native_bs" \
 
 run_test "dd_rw" basic_rw "$native_bs"
 run_test "dd_rw_offset" basic_offset
-run_test "dd_rw_file_copy" plain_copy

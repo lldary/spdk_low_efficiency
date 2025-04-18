@@ -1,36 +1,8 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation. All rights reserved.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation. All rights reserved.
  *   Copyright (c) 2020 Mellanox Technologies LTD. All rights reserved.
  *
  *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -47,7 +19,7 @@ struct ctrlr_entry {
 	struct spdk_nvme_ctrlr			*ctrlr;
 	struct spdk_nvme_transport_id		failover_trid;
 	enum spdk_nvme_transport_type		trtype;
-	struct ctrlr_entry			*next;
+	TAILQ_ENTRY(ctrlr_entry)		link;
 	char					name[1024];
 	int					num_resets;
 };
@@ -56,7 +28,7 @@ struct ns_entry {
 	struct spdk_nvme_ctrlr	*ctrlr;
 	struct spdk_nvme_ns	*ns;
 
-	struct ns_entry		*next;
+	TAILQ_ENTRY(ns_entry)	link;
 	uint32_t		io_size_blocks;
 	uint32_t		num_io_requests;
 	uint64_t		size_in_ios;
@@ -66,17 +38,17 @@ struct ns_entry {
 };
 
 struct ns_worker_ctx {
-	struct ns_entry		*entry;
-	uint64_t		io_completed;
-	uint64_t		current_queue_depth;
-	uint64_t		offset_in_ios;
-	bool			is_draining;
+	struct ns_entry			*entry;
+	uint64_t			io_completed;
+	uint64_t			current_queue_depth;
+	uint64_t			offset_in_ios;
+	bool				is_draining;
 
-	int			num_qpairs;
-	struct spdk_nvme_qpair	**qpair;
-	int			last_qpair;
+	int				num_qpairs;
+	struct spdk_nvme_qpair		**qpair;
+	int				last_qpair;
 
-	struct ns_worker_ctx	*next;
+	TAILQ_ENTRY(ns_worker_ctx)	link;
 };
 
 struct perf_task {
@@ -86,18 +58,18 @@ struct perf_task {
 };
 
 struct worker_thread {
-	struct ns_worker_ctx	*ns_ctx;
-	struct worker_thread	*next;
-	unsigned		lcore;
+	TAILQ_HEAD(, ns_worker_ctx)	ns_ctx;
+	TAILQ_ENTRY(worker_thread)	link;
+	unsigned			lcore;
 };
 
 /* For basic reset handling. */
 static int g_max_ctrlr_resets = 15;
 
-static struct ctrlr_entry *g_controllers = NULL;
-static struct ns_entry *g_namespaces = NULL;
+static TAILQ_HEAD(, ctrlr_entry) g_controllers = TAILQ_HEAD_INITIALIZER(g_controllers);
+static TAILQ_HEAD(, ns_entry) g_namespaces = TAILQ_HEAD_INITIALIZER(g_namespaces);
 static int g_num_namespaces = 0;
-static struct worker_thread *g_workers = NULL;
+static TAILQ_HEAD(, worker_thread) g_workers = TAILQ_HEAD_INITIALIZER(g_workers);
 static int g_num_workers = 0;
 
 static uint64_t g_tsc_rate;
@@ -115,6 +87,7 @@ static bool g_warn;
 static uint32_t g_keep_alive_timeout_in_ms = 0;
 static uint8_t g_transport_retry_count = 4;
 static uint8_t g_transport_ack_timeout = 0; /* disabled */
+static bool g_dpdk_mem_single_seg = false;
 
 static const char *g_core_mask;
 
@@ -126,8 +99,7 @@ struct trid_entry {
 
 static TAILQ_HEAD(, trid_entry) g_trid_list = TAILQ_HEAD_INITIALIZER(g_trid_list);
 
-static inline void
-task_complete(struct perf_task *task);
+static inline void task_complete(struct perf_task *task);
 static void submit_io(struct ns_worker_ctx *ns_ctx, int queue_depth);
 
 static void io_complete(void *ctx, const struct spdk_nvme_cpl *cpl);
@@ -263,7 +235,13 @@ build_nvme_name(char *name, size_t length, struct spdk_nvme_ctrlr *ctrlr)
 		snprintf(name, length, "RDMA (addr:%s subnqn:%s)", trid->traddr, trid->subnqn);
 		break;
 	case SPDK_NVME_TRANSPORT_TCP:
-		snprintf(name, length, "TCP  (addr:%s subnqn:%s)", trid->traddr, trid->subnqn);
+		snprintf(name, length, "TCP (addr:%s subnqn:%s)", trid->traddr, trid->subnqn);
+		break;
+	case SPDK_NVME_TRANSPORT_VFIOUSER:
+		snprintf(name, length, "VFIOUSER (%s)", trid->traddr);
+		break;
+	case SPDK_NVME_TRANSPORT_CUSTOM:
+		snprintf(name, length, "CUSTOM (%s)", trid->traddr);
 		break;
 	default:
 		fprintf(stderr, "Unknown transport type %d\n", trid->trtype);
@@ -344,19 +322,17 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	build_nvme_name(entry->name, sizeof(entry->name), ctrlr);
 
 	g_num_namespaces++;
-	entry->next = g_namespaces;
-	g_namespaces = entry;
+	TAILQ_INSERT_TAIL(&g_namespaces, entry, link);
 }
 
 static void
 unregister_namespaces(void)
 {
-	struct ns_entry *entry = g_namespaces;
+	struct ns_entry *entry, *tmp;
 
-	while (entry) {
-		struct ns_entry *next = entry->next;
+	TAILQ_FOREACH_SAFE(entry, &g_namespaces, link, tmp) {
+		TAILQ_REMOVE(&g_namespaces, entry, link);
 		free(entry);
-		entry = next;
 	}
 }
 
@@ -393,8 +369,7 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct trid_entry *trid_entry)
 
 	entry->ctrlr = ctrlr;
 	entry->trtype = trid_entry->trid.trtype;
-	entry->next = g_controllers;
-	g_controllers = entry;
+	TAILQ_INSERT_TAIL(&g_controllers, entry, link);
 
 	for (nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr);
 	     nsid != 0; nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid)) {
@@ -436,6 +411,8 @@ submit_single_io(struct perf_task *task)
 
 	if (spdk_unlikely(rc != 0)) {
 		fprintf(stderr, "starting I/O failed\n");
+		spdk_dma_free(task->iov.iov_base);
+		free(task);
 	} else {
 		ns_ctx->current_queue_depth++;
 	}
@@ -524,22 +501,18 @@ work_fn(void *arg)
 	printf("Starting thread on core %u\n", worker->lcore);
 
 	/* Allocate queue pairs for each namespace. */
-	ns_ctx = worker->ns_ctx;
-	while (ns_ctx != NULL) {
+	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 		if (nvme_init_ns_worker_ctx(ns_ctx) != 0) {
 			printf("ERROR: init_ns_worker_ctx() failed\n");
 			return 1;
 		}
-		ns_ctx = ns_ctx->next;
 	}
 
 	tsc_end = spdk_get_ticks() + g_time_in_sec * g_tsc_rate;
 
 	/* Submit initial I/O for each namespace. */
-	ns_ctx = worker->ns_ctx;
-	while (ns_ctx != NULL) {
+	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 		submit_io(ns_ctx, g_queue_depth);
-		ns_ctx = ns_ctx->next;
 	}
 
 	while (1) {
@@ -548,10 +521,8 @@ work_fn(void *arg)
 		 * I/O will be submitted in the io_complete callback
 		 * to replace each I/O that is completed.
 		 */
-		ns_ctx = worker->ns_ctx;
-		while (ns_ctx != NULL) {
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 			check_io(ns_ctx);
-			ns_ctx = ns_ctx->next;
 		}
 
 		if (spdk_get_ticks() > tsc_end) {
@@ -562,29 +533,26 @@ work_fn(void *arg)
 	/* drain the io of each ns_ctx in round robin to make the fairness */
 	do {
 		unfinished_ns_ctx = 0;
-		ns_ctx = worker->ns_ctx;
-		while (ns_ctx != NULL) {
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
 			/* first time will enter into this if case */
 			if (!ns_ctx->is_draining) {
 				ns_ctx->is_draining = true;
 			}
 
-			if (ns_ctx->current_queue_depth > 0) {
-				check_io(ns_ctx);
-				if (ns_ctx->current_queue_depth == 0) {
-					nvme_cleanup_ns_worker_ctx(ns_ctx);
-				} else {
-					unfinished_ns_ctx++;
-				}
+			check_io(ns_ctx);
+			if (ns_ctx->current_queue_depth == 0) {
+				nvme_cleanup_ns_worker_ctx(ns_ctx);
+			} else {
+				unfinished_ns_ctx++;
 			}
-			ns_ctx = ns_ctx->next;
 		}
 	} while (unfinished_ns_ctx > 0);
 
 	return 0;
 }
 
-static void usage(char *program_name)
+static void
+usage(char *program_name)
 {
 	printf("%s options", program_name);
 	printf("\n");
@@ -618,7 +586,7 @@ static void usage(char *program_name)
 #ifdef DEBUG
 	printf("\t[-G enable debug logging]\n");
 #else
-	printf("\t[-G enable debug logging (flag disabled, must reconfigure with --enable-debug)\n");
+	printf("\t[-G enable debug logging (flag disabled, must reconfigure with --enable-debug)]\n");
 #endif
 }
 
@@ -692,7 +660,7 @@ parse_args(int argc, char **argv)
 	g_core_mask = NULL;
 	g_max_completions = 0;
 
-	while ((op = getopt(argc, argv, "c:m:o:q:r:k:s:t:w:A:GM:R:T:")) != -1) {
+	while ((op = getopt(argc, argv, "c:gm:o:q:r:k:s:t:w:A:GM:R:T:")) != -1) {
 		switch (op) {
 		case 'm':
 		case 'o':
@@ -742,6 +710,9 @@ parse_args(int argc, char **argv)
 		case 'c':
 			g_core_mask = optarg;
 			break;
+		case 'g':
+			g_dpdk_mem_single_seg = true;
+			break;
 		case 'r':
 			if (add_trid(optarg)) {
 				usage(argv[0]);
@@ -769,12 +740,8 @@ parse_args(int argc, char **argv)
 				usage(argv[0]);
 				exit(EXIT_FAILURE);
 			}
+#ifdef DEBUG
 			spdk_log_set_print_level(SPDK_LOG_DEBUG);
-#ifndef DEBUG
-			fprintf(stderr, "%s must be rebuilt with CONFIG_DEBUG=y for -T flag.\n",
-				argv[0]);
-			usage(argv[0]);
-			return 0;
 #endif
 			break;
 		default:
@@ -872,9 +839,6 @@ register_workers(void)
 	uint32_t i;
 	struct worker_thread *worker;
 
-	g_workers = NULL;
-	g_num_workers = 0;
-
 	SPDK_ENV_FOREACH_CORE(i) {
 		worker = calloc(1, sizeof(*worker));
 		if (worker == NULL) {
@@ -882,9 +846,9 @@ register_workers(void)
 			return -1;
 		}
 
+		TAILQ_INIT(&worker->ns_ctx);
 		worker->lcore = i;
-		worker->next = g_workers;
-		g_workers = worker;
+		TAILQ_INSERT_TAIL(&g_workers, worker, link);
 		g_num_workers++;
 	}
 
@@ -894,21 +858,18 @@ register_workers(void)
 static void
 unregister_workers(void)
 {
-	struct worker_thread *worker = g_workers;
+	struct worker_thread *worker, *tmp_worker;
+	struct ns_worker_ctx *ns_ctx, *tmp_ns_ctx;
 
 	/* Free namespace context and worker thread */
-	while (worker) {
-		struct worker_thread *next_worker = worker->next;
-		struct ns_worker_ctx *ns_ctx = worker->ns_ctx;
-
-		while (ns_ctx) {
-			struct ns_worker_ctx *next_ns_ctx = ns_ctx->next;
+	TAILQ_FOREACH_SAFE(worker, &g_workers, link, tmp_worker) {
+		TAILQ_REMOVE(&g_workers, worker, link);
+		TAILQ_FOREACH_SAFE(ns_ctx, &worker->ns_ctx, link, tmp_ns_ctx) {
+			TAILQ_REMOVE(&worker->ns_ctx, ns_ctx, link);
 			free(ns_ctx);
-			ns_ctx = next_ns_ctx;
 		}
 
 		free(worker);
-		worker = next_worker;
 	}
 }
 
@@ -972,22 +933,25 @@ register_controllers(void)
 static void
 unregister_controllers(void)
 {
-	struct ctrlr_entry *entry = g_controllers;
+	struct ctrlr_entry *entry, *tmp;
+	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
 
-	while (entry) {
-		struct ctrlr_entry *next = entry->next;
-
-		spdk_nvme_detach(entry->ctrlr);
+	TAILQ_FOREACH_SAFE(entry, &g_controllers, link, tmp) {
+		TAILQ_REMOVE(&g_controllers, entry, link);
+		spdk_nvme_detach_async(entry->ctrlr, &detach_ctx);
 		free(entry);
-		entry = next;
+	}
+
+	if (detach_ctx) {
+		spdk_nvme_detach_poll(detach_ctx);
 	}
 }
 
 static int
 associate_workers_with_ns(void)
 {
-	struct ns_entry		*entry = g_namespaces;
-	struct worker_thread	*worker = g_workers;
+	struct ns_entry		*entry = TAILQ_FIRST(&g_namespaces);
+	struct worker_thread	*worker = TAILQ_FIRST(&g_workers);
 	struct ns_worker_ctx	*ns_ctx;
 	int			i, count;
 
@@ -1005,17 +969,17 @@ associate_workers_with_ns(void)
 
 		printf("Associating %s with lcore %d\n", entry->name, worker->lcore);
 		ns_ctx->entry = entry;
-		ns_ctx->next = worker->ns_ctx;
-		worker->ns_ctx = ns_ctx;
 
-		worker = worker->next;
+		TAILQ_INSERT_TAIL(&worker->ns_ctx, ns_ctx, link);
+
+		worker = TAILQ_NEXT(worker, link);
 		if (worker == NULL) {
-			worker = g_workers;
+			worker = TAILQ_FIRST(&g_workers);
 		}
 
-		entry = entry->next;
+		entry = TAILQ_NEXT(entry, link);
 		if (entry == NULL) {
-			entry = g_namespaces;
+			entry = TAILQ_FIRST(&g_namespaces);
 		}
 
 	}
@@ -1037,8 +1001,7 @@ nvme_poll_ctrlrs(void *arg)
 	while (true) {
 		pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
 
-		entry = g_controllers;
-		while (entry) {
+		TAILQ_FOREACH(entry, &g_controllers, link) {
 			rc = spdk_nvme_ctrlr_process_admin_completions(entry->ctrlr);
 			/* This controller has encountered a failure at the transport level. reset it. */
 			if (rc == -ENXIO) {
@@ -1068,7 +1031,6 @@ nvme_poll_ctrlrs(void *arg)
 					fprintf(stderr, "Controller properly reset.\n");
 				}
 			}
-			entry = entry->next;
 		}
 
 		pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
@@ -1080,11 +1042,12 @@ nvme_poll_ctrlrs(void *arg)
 	return NULL;
 }
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
 	int rc;
-	struct worker_thread *worker, *master_worker;
-	unsigned master_core;
+	struct worker_thread *worker, *main_worker;
+	unsigned main_core;
 	struct spdk_env_opts opts;
 	pthread_t thread_id = 0;
 
@@ -1093,6 +1056,7 @@ int main(int argc, char **argv)
 		return rc;
 	}
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "reconnect";
 	if (g_core_mask) {
@@ -1102,10 +1066,11 @@ int main(int argc, char **argv)
 	if (g_dpdk_mem) {
 		opts.mem_size = g_dpdk_mem;
 	}
+	opts.hugepage_single_segments = g_dpdk_mem_single_seg;
 	if (spdk_env_init(&opts) < 0) {
 		fprintf(stderr, "Unable to initialize SPDK env\n");
-		rc = 1;
-		goto cleanup;
+		unregister_trids();
+		return 1;
 	}
 
 	g_tsc_rate = spdk_get_ticks_hz();
@@ -1142,22 +1107,20 @@ int main(int argc, char **argv)
 
 	printf("Initialization complete. Launching workers.\n");
 
-	/* Launch all of the slave workers */
-	master_core = spdk_env_get_current_core();
-	master_worker = NULL;
-	worker = g_workers;
-	while (worker != NULL) {
-		if (worker->lcore != master_core) {
+	/* Launch all of the secondary workers */
+	main_core = spdk_env_get_current_core();
+	main_worker = NULL;
+	TAILQ_FOREACH(worker, &g_workers, link) {
+		if (worker->lcore != main_core) {
 			spdk_env_thread_launch_pinned(worker->lcore, work_fn, worker);
 		} else {
-			assert(master_worker == NULL);
-			master_worker = worker;
+			assert(main_worker == NULL);
+			main_worker = worker;
 		}
-		worker = worker->next;
 	}
 
-	assert(master_worker != NULL);
-	rc = work_fn(master_worker);
+	assert(main_worker != NULL);
+	rc = work_fn(main_worker);
 
 	spdk_env_thread_wait_all();
 
@@ -1170,8 +1133,10 @@ cleanup:
 	unregister_controllers();
 	unregister_workers();
 
+	spdk_env_fini();
+
 	if (rc != 0) {
-		fprintf(stderr, "%s: errors occured\n", argv[0]);
+		fprintf(stderr, "%s: errors occurred\n", argv[0]);
 		/*
 		 * return a generic error to the caller. This allows us to
 		 * distinguish between a failure in the script and something

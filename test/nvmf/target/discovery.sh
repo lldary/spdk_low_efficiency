@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2016 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -7,8 +10,7 @@ source $rootdir/test/nvmf/common.sh
 
 NULL_BDEV_SIZE=102400
 NULL_BLOCK_SIZE=512
-
-rpc_py="$rootdir/scripts/rpc.py"
+NVMF_PORT_REFERRAL=4430
 
 if ! hash nvme; then
 	echo "nvme command not found; skipping discovery test"
@@ -27,8 +29,12 @@ for i in $(seq 1 4); do
 	$rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode$i Null$i
 	$rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode$i -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 done
+$rpc_py nvmf_subsystem_add_listener discovery -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-nvme discover -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
+# Add a referral to another discovery service
+$rpc_py nvmf_discovery_add_referral -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT_REFERRAL
+
+nvme discover "${NVME_HOST[@]}" -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
 echo "Perform nvmf subsystem discovery via RPC"
 $rpc_py nvmf_get_subsystems
@@ -37,6 +43,8 @@ for i in $(seq 1 4); do
 	$rpc_py nvmf_delete_subsystem nqn.2016-06.io.spdk:cnode$i
 	$rpc_py bdev_null_delete Null$i
 done
+
+$rpc_py nvmf_discovery_remove_referral -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT_REFERRAL
 
 check_bdevs=$($rpc_py bdev_get_bdevs | jq -r '.[].name')
 if [ -n "$check_bdevs" ]; then

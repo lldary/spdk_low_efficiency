@@ -1,40 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/opal.h"
 #include "spdk/bdev_module.h"
 #include "vbdev_opal.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 #include "spdk/string.h"
 
 /* OPAL locking range only supports operations on nsid=1 for now */
@@ -42,7 +14,7 @@
 
 struct opal_vbdev {
 	char *name;
-	struct nvme_bdev_ctrlr *nvme_ctrlr;
+	struct nvme_ctrlr *nvme_ctrlr;
 	struct spdk_opal_dev *opal_dev;
 	struct spdk_bdev_part *bdev_part;
 
@@ -126,7 +98,7 @@ vbdev_opal_delete_all_base_config(struct vbdev_opal_part_base *base)
 	struct opal_vbdev *bdev, *tmp_bdev;
 
 	TAILQ_FOREACH_SAFE(bdev, &g_opal_vbdev, tailq, tmp_bdev) {
-		if (!strcmp(nvme_ctrlr_name, bdev->nvme_ctrlr->name)) {
+		if (!strcmp(nvme_ctrlr_name, bdev->nvme_ctrlr->nbdev_ctrlr->name)) {
 			vbdev_opal_delete(bdev);
 		}
 	}
@@ -187,7 +159,7 @@ _vbdev_opal_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bde
 	rc = spdk_bdev_part_submit_request(&ch->part_ch, bdev_io);
 	if (rc) {
 		if (rc == -ENOMEM) {
-			SPDK_DEBUGLOG(SPDK_LOG_VBDEV_OPAL, "opal: no memory, queue io.\n");
+			SPDK_DEBUGLOG(vbdev_opal, "opal: no memory, queue io.\n");
 			io_ctx->ch = _ch;
 			io_ctx->bdev_io = bdev_io;
 			vbdev_opal_queue_io(io_ctx);
@@ -227,7 +199,7 @@ struct spdk_opal_locking_range_info *
 vbdev_opal_get_info_from_bdev(const char *opal_bdev_name, const char *password)
 {
 	struct opal_vbdev *vbdev;
-	struct nvme_bdev_ctrlr *nvme_ctrlr;
+	struct nvme_ctrlr *nvme_ctrlr;
 	int locking_range_id;
 	int rc;
 
@@ -321,18 +293,19 @@ vbdev_opal_create(const char *nvme_ctrlr_name, uint32_t nsid, uint8_t locking_ra
 	int rc;
 	char *opal_vbdev_name;
 	char *base_bdev_name;
-	struct nvme_bdev_ctrlr *nvme_ctrlr;
+	struct nvme_ctrlr *nvme_ctrlr;
 	struct opal_vbdev *opal_bdev;
 	struct vbdev_opal_part_base *opal_part_base = NULL;
 	struct spdk_bdev_part *part_bdev;
 	struct nvme_bdev *nvme_bdev;
+	struct nvme_ns *nvme_ns;
 
 	if (nsid != NSID_SUPPORTED) {
 		SPDK_ERRLOG("nsid %d not supported", nsid);
 		return -EINVAL;
 	}
 
-	nvme_ctrlr = nvme_bdev_ctrlr_get_by_name(nvme_ctrlr_name);
+	nvme_ctrlr = nvme_ctrlr_get_by_name(nvme_ctrlr_name);
 	if (!nvme_ctrlr) {
 		SPDK_ERRLOG("get nvme ctrlr failed\n");
 		return -ENODEV;
@@ -356,7 +329,13 @@ vbdev_opal_create(const char *nvme_ctrlr_name, uint32_t nsid, uint8_t locking_ra
 	opal_bdev->nvme_ctrlr = nvme_ctrlr;
 	opal_bdev->opal_dev = nvme_ctrlr->opal_dev;
 
-	nvme_bdev = TAILQ_FIRST(&nvme_ctrlr->namespaces[nsid - 1]->bdevs);
+	nvme_ns = nvme_ctrlr_get_ns(nvme_ctrlr, nsid);
+	if (nvme_ns == NULL) {
+		free(opal_bdev);
+		return -ENODEV;
+	}
+
+	nvme_bdev = nvme_ns->bdev;
 	assert(nvme_bdev != NULL);
 	base_bdev_name = nvme_bdev->disk.name;
 
@@ -378,15 +357,19 @@ vbdev_opal_create(const char *nvme_ctrlr_name, uint32_t nsid, uint8_t locking_ra
 		}
 		TAILQ_INIT(&opal_part_base->part_tailq);
 
-		opal_part_base->part_base = spdk_bdev_part_base_construct(spdk_bdev_get_by_name(base_bdev_name),
-					    vbdev_opal_base_bdev_hotremove_cb, &opal_if,
-					    &opal_vbdev_fn_table, &opal_part_base->part_tailq, vbdev_opal_base_free,
-					    opal_part_base, sizeof(struct vbdev_opal_channel), NULL, NULL);
-		if (opal_part_base->part_base == NULL) {
-			SPDK_ERRLOG("Could not allocate part_base\n");
+		rc = spdk_bdev_part_base_construct_ext(base_bdev_name,
+						       vbdev_opal_base_bdev_hotremove_cb, &opal_if,
+						       &opal_vbdev_fn_table, &opal_part_base->part_tailq,
+						       vbdev_opal_base_free, opal_part_base,
+						       sizeof(struct vbdev_opal_channel), NULL, NULL,
+						       &opal_part_base->part_base);
+		if (rc != 0) {
+			if (rc != -ENODEV) {
+				SPDK_ERRLOG("Could not allocate part_base\n");
+			}
 			free(opal_bdev);
 			free(opal_part_base);
-			return -ENOMEM;
+			return rc;
 		}
 		opal_part_base->nvme_ctrlr_name = strdup(nvme_ctrlr_name);
 		if (opal_part_base->nvme_ctrlr_name == NULL) {
@@ -466,7 +449,7 @@ vbdev_opal_destruct_bdev(struct opal_vbdev *opal_bdev)
 int
 vbdev_opal_destruct(const char *bdev_name, const char *password)
 {
-	struct nvme_bdev_ctrlr *nvme_ctrlr;
+	struct nvme_ctrlr *nvme_ctrlr;
 	int locking_range_id;
 	int rc;
 	struct opal_vbdev *opal_bdev;
@@ -526,7 +509,7 @@ int
 vbdev_opal_set_lock_state(const char *bdev_name, uint16_t user_id, const char *password,
 			  const char *lock_state)
 {
-	struct nvme_bdev_ctrlr *nvme_ctrlr;
+	struct nvme_ctrlr *nvme_ctrlr;
 	int locking_range_id;
 	int rc;
 	enum spdk_opal_lock_state state_flag;
@@ -574,7 +557,7 @@ int
 vbdev_opal_enable_new_user(const char *bdev_name, const char *admin_password, uint16_t user_id,
 			   const char *user_password)
 {
-	struct nvme_bdev_ctrlr *nvme_ctrlr;
+	struct nvme_ctrlr *nvme_ctrlr;
 	int locking_range_id;
 	int rc;
 	struct opal_vbdev *opal_bdev;
@@ -627,4 +610,4 @@ vbdev_opal_enable_new_user(const char *bdev_name, const char *admin_password, ui
 	return 0;
 }
 
-SPDK_LOG_REGISTER_COMPONENT("vbdev_opal", SPDK_LOG_VBDEV_OPAL)
+SPDK_LOG_REGISTER_COMPONENT(vbdev_opal)

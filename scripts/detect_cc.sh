@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2016 Intel Corporation
+#  All rights reserved.
+#
 set -e
 
 function err() {
@@ -108,8 +111,8 @@ esac
 CCAR="ar"
 if [ "$LTO" = "y" ]; then
 	if [ "$CC_TYPE" = "clang" ]; then
-		if [ "$LD_TYPE" != "gold" ]; then
-			err "Using LTO with clang requires the gold linker."
+		if [[ "$LD_TYPE" != "gold" && "$LD_TYPE" != "lld" ]]; then
+			err "Using LTO with clang requires the gold or lld linker."
 			exit 1
 		fi
 		CCAR="llvm-ar"

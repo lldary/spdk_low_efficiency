@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -36,10 +8,9 @@
 #include "spdk/rpc.h"
 #include "spdk/util.h"
 #include "spdk/bdev_module.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
 #include "bdev_nvme.h"
-#include "common.h"
 #include "spdk/base64.h"
 
 enum spdk_nvme_rpc_type {
@@ -70,7 +41,7 @@ struct rpc_bdev_nvme_send_cmd_ctx {
 	struct spdk_jsonrpc_request	*jsonrpc_request;
 	struct rpc_bdev_nvme_send_cmd_req	req;
 	struct rpc_bdev_nvme_send_cmd_resp	resp;
-	struct nvme_bdev_ctrlr		*nvme_bdev_ctrlr;
+	struct nvme_ctrlr		*nvme_ctrlr;
 	struct spdk_io_channel		*ctrlr_io_ch;
 };
 
@@ -172,7 +143,7 @@ static int
 nvme_rpc_admin_cmd_bdev_nvme(struct rpc_bdev_nvme_send_cmd_ctx *ctx, struct spdk_nvme_cmd *cmd,
 			     void *buf, uint32_t nbytes, uint32_t timeout_ms)
 {
-	struct nvme_bdev_ctrlr *_nvme_ctrlr = ctx->nvme_bdev_ctrlr;
+	struct nvme_ctrlr *_nvme_ctrlr = ctx->nvme_ctrlr;
 	int ret;
 
 	ret = spdk_nvme_ctrlr_cmd_admin_raw(_nvme_ctrlr->ctrlr, cmd, buf,
@@ -186,11 +157,11 @@ nvme_rpc_io_cmd_bdev_nvme(struct rpc_bdev_nvme_send_cmd_ctx *ctx, struct spdk_nv
 			  void *buf, uint32_t nbytes, void *md_buf, uint32_t md_len,
 			  uint32_t timeout_ms)
 {
-	struct nvme_bdev_ctrlr *_nvme_ctrlr = ctx->nvme_bdev_ctrlr;
+	struct nvme_ctrlr *_nvme_ctrlr = ctx->nvme_ctrlr;
 	struct spdk_nvme_qpair *io_qpair;
 	int ret;
 
-	ctx->ctrlr_io_ch = spdk_get_io_channel(_nvme_ctrlr->ctrlr);
+	ctx->ctrlr_io_ch = spdk_get_io_channel(_nvme_ctrlr);
 	io_qpair = bdev_nvme_get_io_qpair(ctx->ctrlr_io_ch);
 
 	ret = spdk_nvme_ctrlr_cmd_io_raw_with_md(_nvme_ctrlr->ctrlr, io_qpair,
@@ -372,7 +343,7 @@ rpc_decode_metadata(const struct spdk_json_val *val, void *out)
 
 	rc = spdk_json_decode_string(val, &text);
 	if (rc) {
-		return rc = val->type == SPDK_JSON_VAL_STRING ? -ENOMEM : -EINVAL;
+		return val->type == SPDK_JSON_VAL_STRING ? -ENOMEM : -EINVAL;
 	}
 	text_strlen = strlen(text);
 
@@ -464,8 +435,8 @@ rpc_bdev_nvme_send_cmd(struct spdk_jsonrpc_request *request,
 		goto invalid;
 	}
 
-	ctx->nvme_bdev_ctrlr = nvme_bdev_ctrlr_get_by_name(ctx->req.name);
-	if (ctx->nvme_bdev_ctrlr == NULL) {
+	ctx->nvme_ctrlr = nvme_ctrlr_get_by_name(ctx->req.name);
+	if (ctx->nvme_ctrlr == NULL) {
 		SPDK_ERRLOG("Failed at device lookup\n");
 		error_code = SPDK_JSONRPC_ERROR_INVALID_PARAMS;
 		ret = -EINVAL;
@@ -484,9 +455,9 @@ rpc_bdev_nvme_send_cmd(struct spdk_jsonrpc_request *request,
 	return;
 
 invalid:
+	if (ctx != NULL) {
+		free_rpc_bdev_nvme_send_cmd_ctx(ctx);
+	}
 	spdk_jsonrpc_send_error_response(request, error_code, spdk_strerror(-ret));
-	free_rpc_bdev_nvme_send_cmd_ctx(ctx);
-	return;
 }
 SPDK_RPC_REGISTER("bdev_nvme_send_cmd", rpc_bdev_nvme_send_cmd, SPDK_RPC_RUNTIME)
-SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_nvme_send_cmd, send_nvme_cmd)

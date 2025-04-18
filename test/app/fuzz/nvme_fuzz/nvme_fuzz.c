@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation. All rights reserved.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation. All rights reserved.
  *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -46,7 +18,6 @@
 #define UNIQUE_OPCODES 256
 
 const char g_nvme_cmd_json_name[] = "struct spdk_nvme_cmd";
-char *g_conf_file;
 char *g_json_file = NULL;
 uint64_t g_runtime_ticks;
 unsigned int g_seed_value = 0;
@@ -55,6 +26,7 @@ int g_runtime;
 int g_num_active_threads = 0;
 uint32_t g_admin_depth = 16;
 uint32_t g_io_depth = 128;
+bool g_check_iommu = true;
 
 bool g_valid_ns_only = false;
 bool g_verbose_mode = false;
@@ -343,7 +315,7 @@ nvme_fuzz_cpl_cb(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 
 	qp->completed_cmd_counter++;
 	if (spdk_unlikely(cpl->status.sc == SPDK_NVME_SC_SUCCESS)) {
-		fprintf(stderr, "The following %s command (command num %lu) completed successfully\n",
+		fprintf(stderr, "The following %s command (command num %" PRIu64 ") completed successfully\n",
 			qp->is_admin ? "Admin" : "I/O", qp->completed_cmd_counter);
 		qp->successful_completed_cmd_counter++;
 		json_dump_nvme_cmd(&ctx->cmd);
@@ -354,7 +326,7 @@ nvme_fuzz_cpl_cb(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 			__sync_bool_compare_and_swap(&g_successful_io_opcodes[ctx->cmd.opc], false, true);
 		}
 	} else if (g_verbose_mode == true) {
-		fprintf(stderr, "The following %s command (command num %lu) failed as expected.\n",
+		fprintf(stderr, "The following %s command (command num %" PRIu64 ") failed as expected.\n",
 			qp->is_admin ? "Admin" : "I/O", qp->completed_cmd_counter);
 		json_dump_nvme_cmd(&ctx->cmd);
 	}
@@ -441,6 +413,9 @@ prep_nvme_cmd(struct nvme_fuzz_ns *ns_entry, struct nvme_fuzz_qp *qp, struct nvm
 			ctx->cmd.nsid = ns_entry->nsid;
 		}
 	}
+
+	/* Fuzzing test not support sequential FUSE commands. */
+	ctx->cmd.fuse = 0;
 }
 
 static int
@@ -512,10 +487,12 @@ free_namespaces(void)
 	struct nvme_fuzz_ns *ns, *tmp;
 
 	TAILQ_FOREACH_SAFE(ns, &g_ns_list, tailq, tmp) {
-		printf("NS: %p I/O qp, Total commands completed: %lu, total successful commands: %lu, random_seed: %u\n",
+		printf("NS: %p I/O qp, Total commands completed: %" PRIu64 ", total successful commands: %" PRIu64
+		       ", random_seed: %u\n",
 		       ns->ns,
 		       ns->io_qp.completed_cmd_counter, ns->io_qp.successful_completed_cmd_counter, ns->io_qp.random_seed);
-		printf("NS: %p admin qp, Total commands completed: %lu, total successful commands: %lu, random_seed: %u\n",
+		printf("NS: %p admin qp, Total commands completed: %" PRIu64 ", total successful commands: %" PRIu64
+		       ", random_seed: %u\n",
 		       ns->ns,
 		       ns->a_qp.completed_cmd_counter, ns->a_qp.successful_completed_cmd_counter, ns->a_qp.random_seed);
 
@@ -537,11 +514,16 @@ static void
 free_controllers(void)
 {
 	struct nvme_fuzz_ctrlr *ctrlr, *tmp;
+	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
 
 	TAILQ_FOREACH_SAFE(ctrlr, &g_ctrlr_list, tailq, tmp) {
 		TAILQ_REMOVE(&g_ctrlr_list, ctrlr, tailq);
-		spdk_nvme_detach(ctrlr->ctrlr);
+		spdk_nvme_detach_async(ctrlr->ctrlr, &detach_ctx);
 		free(ctrlr);
+	}
+
+	if (detach_ctx) {
+		spdk_nvme_detach_poll(detach_ctx);
 	}
 }
 
@@ -573,11 +555,8 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns, uint32_t nsi
 
 	TAILQ_INIT(&ns_entry->io_qp.free_ctx_objs);
 	TAILQ_INIT(&ns_entry->io_qp.outstanding_ctx_objs);
-	if (g_run_admin_commands) {
-		ns_entry->a_qp.qpair = NULL;
-		TAILQ_INIT(&ns_entry->a_qp.free_ctx_objs);
-		TAILQ_INIT(&ns_entry->a_qp.outstanding_ctx_objs);
-	}
+	TAILQ_INIT(&ns_entry->a_qp.free_ctx_objs);
+	TAILQ_INIT(&ns_entry->a_qp.outstanding_ctx_objs);
 	TAILQ_INSERT_TAIL(&g_ns_list, ns_entry, tailq);
 }
 
@@ -605,22 +584,6 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr)
 		}
 		register_ns(ctrlr, ns, nsid);
 	}
-}
-
-static void
-attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
-	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
-{
-	register_ctrlr(ctrlr);
-}
-
-static bool
-probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid, struct spdk_nvme_ctrlr_opts *opts)
-{
-	printf("Controller trtype %s\ttraddr %s\n", spdk_nvme_transport_id_trtype_str(trid->trtype),
-	       trid->traddr);
-
-	return true;
 }
 
 static int
@@ -720,9 +683,10 @@ begin_fuzz(void *ctx)
 {
 	struct nvme_fuzz_ns *ns_entry;
 	struct nvme_fuzz_trid *trid;
+	struct spdk_nvme_ctrlr *ctrlr;
 	int rc;
 
-	if (!spdk_iommu_is_enabled()) {
+	if (g_check_iommu && !spdk_iommu_is_enabled()) {
 		/* Don't set rc to an error code here. We don't want to fail an automated test based on this. */
 		fprintf(stderr, "The IOMMU must be enabled to run this program to avoid unsafe memory accesses.\n");
 		rc = 0;
@@ -730,12 +694,14 @@ begin_fuzz(void *ctx)
 	}
 
 	TAILQ_FOREACH(trid, &g_trid_list, tailq) {
-		if (spdk_nvme_probe(&trid->trid, trid, probe_cb, attach_cb, NULL) != 0) {
-			fprintf(stderr, "spdk_nvme_probe() failed for transport address '%s'\n",
+		ctrlr = spdk_nvme_connect(&trid->trid, NULL, 0);
+		if (ctrlr == NULL) {
+			fprintf(stderr, "spdk_nvme_connect() failed for transport address '%s'\n",
 				trid->trid.traddr);
 			rc = -1;
 			goto out;
 		}
+		register_ctrlr(ctrlr);
 	}
 
 	if (TAILQ_EMPTY(&g_ns_list)) {
@@ -777,70 +743,12 @@ out:
 	spdk_app_stop(rc);
 }
 
-static int
-parse_trids(void)
-{
-	struct spdk_conf *config = NULL;
-	struct spdk_conf_section *sp;
-	const char *trid_char;
-	struct nvme_fuzz_trid *current_trid;
-	int num_subsystems = 0;
-	int rc = 0;
-
-	if (g_conf_file) {
-		config = spdk_conf_allocate();
-		if (!config) {
-			fprintf(stderr, "Unable to allocate an spdk_conf object\n");
-			return -1;
-		}
-
-		rc = spdk_conf_read(config, g_conf_file);
-		if (rc) {
-			fprintf(stderr, "Unable to convert the conf file into a readable system\n");
-			rc = -1;
-			goto exit;
-		}
-
-		sp = spdk_conf_find_section(config, "Nvme");
-
-		if (sp == NULL) {
-			fprintf(stderr, "No Nvme configuration in conf file\n");
-			goto exit;
-		}
-
-		while ((trid_char = spdk_conf_section_get_nmval(sp, "TransportID", num_subsystems, 0)) != NULL) {
-			current_trid = malloc(sizeof(struct nvme_fuzz_trid));
-			if (!current_trid) {
-				fprintf(stderr, "Unable to allocate memory for transport ID\n");
-				rc = -1;
-				goto exit;
-			}
-			rc = spdk_nvme_transport_id_parse(&current_trid->trid, trid_char);
-
-			if (rc < 0) {
-				fprintf(stderr, "failed to parse transport ID: %s\n", trid_char);
-				free(current_trid);
-				rc = -1;
-				goto exit;
-			}
-			TAILQ_INSERT_TAIL(&g_trid_list, current_trid, tailq);
-			num_subsystems++;
-		}
-	}
-
-exit:
-	if (config != NULL) {
-		spdk_conf_free(config);
-	}
-	return rc;
-}
-
 static void
 nvme_fuzz_usage(void)
 {
 	fprintf(stderr, " -a                        Perform admin commands. if -j is specified, \
 only admin commands will run. Otherwise they will be run in tandem with I/O commands.\n");
-	fprintf(stderr, " -C <path>                 Path to a configuration file.\n");
+	fprintf(stderr, " -F                        Transport ID for subsystem that should be fuzzed.\n");
 	fprintf(stderr,
 		" -j <path>                 Path to a json file containing named objects of type spdk_nvme_cmd. If this option is specified, -t will be ignored.\n");
 	fprintf(stderr, " -N                        Target only valid namespace with commands. \
@@ -848,20 +756,34 @@ This helps dig deeper into other errors besides invalid namespace.\n");
 	fprintf(stderr, " -S <integer>              Seed value for test.\n");
 	fprintf(stderr,
 		" -t <integer>              Time in seconds to run the fuzz test. Only valid if -j is not specified.\n");
+	fprintf(stderr, " -U                        Do not check if IOMMU is enabled.\n");
 	fprintf(stderr, " -V                        Enable logging of each submitted command.\n");
 }
 
 static int
 nvme_fuzz_parse(int ch, char *arg)
 {
+	struct nvme_fuzz_trid *trid;
 	int64_t error_test;
+	int rc;
 
 	switch (ch) {
 	case 'a':
 		g_run_admin_commands = true;
 		break;
-	case 'C':
-		g_conf_file = optarg;
+	case 'F':
+		trid = malloc(sizeof(*trid));
+		if (!trid) {
+			fprintf(stderr, "Unable to allocate memory for transport ID\n");
+			return -1;
+		}
+		rc = spdk_nvme_transport_id_parse(&trid->trid, optarg);
+		if (rc < 0) {
+			fprintf(stderr, "failed to parse transport ID: %s\n", optarg);
+			free(trid);
+			return -1;
+		}
+		TAILQ_INSERT_TAIL(&g_trid_list, trid, tailq);
 		break;
 	case 'j':
 		g_json_file = optarg;
@@ -885,6 +807,9 @@ nvme_fuzz_parse(int ch, char *arg)
 			return -1;
 		}
 		break;
+	case 'U':
+		g_check_iommu = false;
+		break;
 	case 'V':
 		g_verbose_mode = true;
 		break;
@@ -901,19 +826,16 @@ main(int argc, char **argv)
 	struct spdk_app_opts opts = {};
 	int rc;
 
-	spdk_app_opts_init(&opts);
+	spdk_app_opts_init(&opts, sizeof(opts));
 	opts.name = "nvme_fuzz";
+	opts.rpc_addr = NULL;
 
 	g_runtime = DEFAULT_RUNTIME;
 	g_run = true;
 
-	if ((rc = spdk_app_parse_args(argc, argv, &opts, "aC:j:NS:t:V", NULL, nvme_fuzz_parse,
+	if ((rc = spdk_app_parse_args(argc, argv, &opts, "aF:j:NS:t:UV", NULL, nvme_fuzz_parse,
 				      nvme_fuzz_usage) != SPDK_APP_PARSE_ARGS_SUCCESS)) {
 		return rc;
-	}
-
-	if (g_conf_file) {
-		parse_trids();
 	}
 
 	if (g_json_file != NULL) {
@@ -927,5 +849,6 @@ main(int argc, char **argv)
 
 	rc = spdk_app_start(&opts, begin_fuzz, NULL);
 
+	spdk_app_fini();
 	return rc;
 }

@@ -1,14 +1,12 @@
 # Getting Started {#getting_started}
 
-# Getting the Source Code {#getting_started_source}
+## Getting the Source Code {#getting_started_source}
 
 ~~~{.sh}
-git clone https://github.com/spdk/spdk
-cd spdk
-git submodule update --init
+git clone https://github.com/spdk/spdk --recursive
 ~~~
 
-# Installing Prerequisites {#getting_started_prerequisites}
+## Installing Prerequisites {#getting_started_prerequisites}
 
 The `scripts/pkgdep.sh` script will automatically install the bare minimum
 dependencies required to build SPDK.
@@ -24,7 +22,7 @@ Option --all will install all dependencies needed by SPDK features.
 sudo scripts/pkgdep.sh --all
 ~~~
 
-# Building {#getting_started_building}
+## Building {#getting_started_building}
 
 Linux:
 
@@ -57,7 +55,7 @@ can enable it by doing the following:
 make
 ~~~
 
-# Running the Unit Tests {#getting_started_unittests}
+## Running the Unit Tests {#getting_started_unittests}
 
 It's always a good idea to confirm your build worked by running the
 unit tests.
@@ -70,7 +68,7 @@ You will see several error messages when running the unit tests, but they are
 part of the test suite. The final message at the end of the script indicates
 success or failure.
 
-# Running the Example Applications {#getting_started_examples}
+## Running the Example Applications {#getting_started_examples}
 
 Before running an SPDK application, some hugepages must be allocated and
 any NVMe and I/OAT devices must be unbound from the native kernel drivers.
@@ -110,8 +108,12 @@ with no arguments to see the help output. If your system has its IOMMU
 enabled you can run the examples as your regular user. If it doesn't, you'll
 need to run as a privileged user (root).
 
-A good example to start with is `build/examples/identify`, which prints
+A good example to start with is `build/bin/spdk_nvme_identify`, which prints
 out information about all of the NVMe devices on your system.
 
 Larger, more fully functional applications are available in the `app`
-directory. This includes the iSCSI and NVMe-oF target.
+directory. This includes the [iSCSI target](https://spdk.io/doc/iscsi.html)
+and [NVMe-oF target](https://spdk.io/doc/nvmf.html) and tools like
+[spdk_top](https://spdk.io/doc/spdk_top.html). This neat program simulates
+regular `top` application and shows SPDK threads, pollers and SPDK assigned
+CPU cores statistics in a form of interactive list.

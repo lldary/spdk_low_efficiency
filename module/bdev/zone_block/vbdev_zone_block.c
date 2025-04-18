@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
+ *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -39,7 +12,10 @@
 #include "spdk/nvme.h"
 #include "spdk/bdev_zone.h"
 
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
+
+/* This namespace UUID was generated using uuid_generate() method. */
+#define BDEV_ZONE_BLOCK_NAMESPACE_UUID "5f3f485a-d6bb-4443-9de7-023683b77389"
 
 static int zone_block_init(void);
 static int zone_block_get_ctx_size(void);
@@ -51,7 +27,6 @@ static struct spdk_bdev_module bdev_zoned_if = {
 	.name = "bdev_zoned_block",
 	.module_init = zone_block_init,
 	.module_fini = zone_block_finish,
-	.config_text = NULL,
 	.config_json = zone_block_config_json,
 	.examine_config = zone_block_examine,
 	.get_ctx_size = zone_block_get_ctx_size,
@@ -270,7 +245,7 @@ _zone_block_complete_unmap(struct spdk_bdev_io *bdev_io, bool success, void *cb_
 	int status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
 
 	/* Complete the original IO and then free the one that we created here
-	 * as a result of issuing an IO via submit_reqeust.
+	 * as a result of issuing an IO via submit_request.
 	 */
 	spdk_bdev_io_complete(orig_io, status);
 	spdk_bdev_free_io(bdev_io);
@@ -293,6 +268,14 @@ zone_block_reset_zone(struct bdev_zone_block *bdev_node, struct zone_block_io_ch
 		zone->zone_info.state = SPDK_BDEV_ZONE_STATE_EMPTY;
 		zone->zone_info.write_pointer = zone->zone_info.zone_id;
 		pthread_spin_unlock(&zone->lock);
+
+		/* The unmap isn't necessary, so if the base bdev doesn't support it, we're done */
+		if (!spdk_bdev_io_type_supported(spdk_bdev_desc_get_bdev(bdev_node->base_desc),
+						 SPDK_BDEV_IO_TYPE_UNMAP)) {
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+			return 0;
+		}
+
 		return spdk_bdev_unmap_blocks(bdev_node->base_desc, ch->base_ch,
 					      zone->zone_info.zone_id, zone->zone_info.capacity,
 					      _zone_block_complete_unmap, bdev_io);
@@ -369,7 +352,7 @@ _zone_block_complete_write(struct spdk_bdev_io *bdev_io, bool success, void *cb_
 	}
 
 	/* Complete the original IO and then free the one that we created here
-	 * as a result of issuing an IO via submit_reqeust.
+	 * as a result of issuing an IO via submit_request.
 	 */
 	spdk_bdev_io_complete(orig_io, status);
 	spdk_bdev_free_io(bdev_io);
@@ -392,7 +375,7 @@ zone_block_write(struct bdev_zone_block *bdev_node, struct zone_block_io_channel
 		zone = zone_block_get_zone_containing_lba(bdev_node, lba);
 	}
 	if (!zone) {
-		SPDK_ERRLOG("Trying to write to invalid zone (lba 0x%lx)\n", lba);
+		SPDK_ERRLOG("Trying to write to invalid zone (lba 0x%" PRIx64 ")\n", lba);
 		return -EINVAL;
 	}
 
@@ -415,7 +398,8 @@ zone_block_write(struct bdev_zone_block *bdev_node, struct zone_block_io_channel
 		lba = wp;
 	} else {
 		if (lba != wp) {
-			SPDK_ERRLOG("Trying to write to zone with invalid address (lba 0x%lx, wp 0x%lx)\n", lba, wp);
+			SPDK_ERRLOG("Trying to write to zone with invalid address (lba 0x%" PRIx64 ", wp 0x%" PRIx64 ")\n",
+				    lba, wp);
 			rc = -EINVAL;
 			goto write_fail;
 		}
@@ -423,7 +407,8 @@ zone_block_write(struct bdev_zone_block *bdev_node, struct zone_block_io_channel
 
 	num_blocks_left = zone->zone_info.zone_id + zone->zone_info.capacity - wp;
 	if (len > num_blocks_left) {
-		SPDK_ERRLOG("Write exceeds zone capacity (lba 0x%" PRIu64 ", len 0x%lx, wp 0x%lx)\n", lba, len, wp);
+		SPDK_ERRLOG("Write exceeds zone capacity (lba 0x%" PRIx64 ", len 0x%" PRIx64 ", wp 0x%" PRIx64
+			    ")\n", lba, len, wp);
 		rc = -EINVAL;
 		goto write_fail;
 	}
@@ -435,18 +420,11 @@ zone_block_write(struct bdev_zone_block *bdev_node, struct zone_block_io_channel
 	}
 	pthread_spin_unlock(&zone->lock);
 
-	if (bdev_io->u.bdev.md_buf == NULL) {
-		rc = spdk_bdev_writev_blocks(bdev_node->base_desc, ch->base_ch, bdev_io->u.bdev.iovs,
-					     bdev_io->u.bdev.iovcnt, lba,
-					     bdev_io->u.bdev.num_blocks, _zone_block_complete_write,
-					     bdev_io);
-	} else {
-		rc = spdk_bdev_writev_blocks_with_md(bdev_node->base_desc, ch->base_ch,
-						     bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt,
-						     bdev_io->u.bdev.md_buf,
-						     lba, bdev_io->u.bdev.num_blocks,
-						     _zone_block_complete_write, bdev_io);
-	}
+	rc = spdk_bdev_writev_blocks_with_md(bdev_node->base_desc, ch->base_ch,
+					     bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt,
+					     bdev_io->u.bdev.md_buf,
+					     lba, bdev_io->u.bdev.num_blocks,
+					     _zone_block_complete_write, bdev_io);
 
 	return rc;
 
@@ -462,7 +440,7 @@ _zone_block_complete_read(struct spdk_bdev_io *bdev_io, bool success, void *cb_a
 	int status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
 
 	/* Complete the original IO and then free the one that we created here
-	 * as a result of issuing an IO via submit_reqeust.
+	 * as a result of issuing an IO via submit_request.
 	 */
 	spdk_bdev_io_complete(orig_io, status);
 	spdk_bdev_free_io(bdev_io);
@@ -479,27 +457,20 @@ zone_block_read(struct bdev_zone_block *bdev_node, struct zone_block_io_channel 
 
 	zone = zone_block_get_zone_containing_lba(bdev_node, lba);
 	if (!zone) {
-		SPDK_ERRLOG("Trying to read from invalid zone (lba 0x%lx)\n", lba);
+		SPDK_ERRLOG("Trying to read from invalid zone (lba 0x%" PRIx64 ")\n", lba);
 		return -EINVAL;
 	}
 
 	if ((lba + len) > (zone->zone_info.zone_id + zone->zone_info.capacity)) {
-		SPDK_ERRLOG("Read exceeds zone capacity (lba 0x%lx, len 0x%lx)\n", lba, len);
+		SPDK_ERRLOG("Read exceeds zone capacity (lba 0x%" PRIx64 ", len 0x%" PRIx64 ")\n", lba, len);
 		return -EINVAL;
 	}
 
-	if (bdev_io->u.bdev.md_buf == NULL) {
-		rc = spdk_bdev_readv_blocks(bdev_node->base_desc, ch->base_ch, bdev_io->u.bdev.iovs,
-					    bdev_io->u.bdev.iovcnt, lba,
-					    len, _zone_block_complete_read,
-					    bdev_io);
-	} else {
-		rc = spdk_bdev_readv_blocks_with_md(bdev_node->base_desc, ch->base_ch,
-						    bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt,
-						    bdev_io->u.bdev.md_buf,
-						    lba, len,
-						    _zone_block_complete_read, bdev_io);
-	}
+	rc = spdk_bdev_readv_blocks_with_md(bdev_node->base_desc, ch->base_ch,
+					    bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt,
+					    bdev_io->u.bdev.md_buf,
+					    lba, len,
+					    _zone_block_complete_read, bdev_io);
 
 	return rc;
 }
@@ -591,15 +562,28 @@ static const struct spdk_bdev_fn_table zone_block_fn_table = {
 };
 
 static void
-zone_block_base_bdev_hotremove_cb(void *ctx)
+zone_block_base_bdev_hotremove_cb(struct spdk_bdev *bdev_find)
 {
 	struct bdev_zone_block *bdev_node, *tmp;
-	struct spdk_bdev *bdev_find = ctx;
 
 	TAILQ_FOREACH_SAFE(bdev_node, &g_bdev_nodes, link, tmp) {
 		if (bdev_find == spdk_bdev_desc_get_bdev(bdev_node->base_desc)) {
 			spdk_bdev_unregister(&bdev_node->bdev, NULL, NULL);
 		}
+	}
+}
+
+static void
+zone_block_base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+			      void *event_ctx)
+{
+	switch (type) {
+	case SPDK_BDEV_EVENT_REMOVE:
+		zone_block_base_bdev_hotremove_cb(bdev);
+		break;
+	default:
+		SPDK_NOTICELOG("Unsupported bdev event: type %d\n", type);
+		break;
 	}
 }
 
@@ -684,6 +668,7 @@ zone_block_init_zone_info(struct bdev_zone_block *bdev_node)
 		zone->zone_info.capacity = bdev_node->zone_capacity;
 		zone->zone_info.write_pointer = zone->zone_info.zone_id + zone->zone_info.capacity;
 		zone->zone_info.state = SPDK_BDEV_ZONE_STATE_FULL;
+		zone->zone_info.type = SPDK_BDEV_ZONE_TYPE_SEQWR;
 		if (pthread_spin_init(&zone->lock, PTHREAD_PROCESS_PRIVATE)) {
 			SPDK_ERRLOG("pthread_spin_init() failed\n");
 			rc = -ENOMEM;
@@ -701,33 +686,51 @@ zone_block_init_zone_info(struct bdev_zone_block *bdev_node)
 }
 
 static int
-zone_block_register(struct spdk_bdev *base_bdev)
+zone_block_register(const char *base_bdev_name)
 {
+	struct spdk_bdev_desc *base_desc;
+	struct spdk_bdev *base_bdev;
 	struct bdev_zone_block_config *name, *tmp;
 	struct bdev_zone_block *bdev_node;
+	struct spdk_uuid ns_uuid;
 	uint64_t zone_size;
 	int rc = 0;
+
+	spdk_uuid_parse(&ns_uuid, BDEV_ZONE_BLOCK_NAMESPACE_UUID);
 
 	/* Check our list of names from config versus this bdev and if
 	 * there's a match, create the bdev_node & bdev accordingly.
 	 */
 	TAILQ_FOREACH_SAFE(name, &g_bdev_configs, link, tmp) {
-		if (strcmp(name->bdev_name, base_bdev->name) != 0) {
+		if (strcmp(name->bdev_name, base_bdev_name) != 0) {
 			continue;
 		}
 
-		if (spdk_bdev_is_zoned(base_bdev)) {
-			SPDK_ERRLOG("Base bdev %s is already a zoned bdev\n", base_bdev->name);
-			rc = -EEXIST;
+		rc = spdk_bdev_open_ext(base_bdev_name, true, zone_block_base_bdev_event_cb,
+					NULL, &base_desc);
+		if (rc == -ENODEV) {
+			return -ENODEV;
+		} else if (rc) {
+			SPDK_ERRLOG("could not open bdev %s\n", base_bdev_name);
 			goto free_config;
+		}
+
+		base_bdev = spdk_bdev_desc_get_bdev(base_desc);
+
+		if (spdk_bdev_is_zoned(base_bdev)) {
+			SPDK_ERRLOG("Base bdev %s is already a zoned bdev\n", base_bdev_name);
+			rc = -EEXIST;
+			goto zone_exist;
 		}
 
 		bdev_node = calloc(1, sizeof(struct bdev_zone_block));
 		if (!bdev_node) {
 			rc = -ENOMEM;
 			SPDK_ERRLOG("could not allocate bdev_node\n");
-			goto free_config;
+			goto zone_exist;
 		}
+
+		bdev_node->base_desc = base_desc;
 
 		/* The base bdev that we're attaching to. */
 		bdev_node->bdev.name = strdup(name->vbdev_name);
@@ -747,8 +750,6 @@ zone_block_register(struct spdk_bdev *base_bdev)
 		bdev_node->zone_shift = spdk_u64log2(zone_size);
 		bdev_node->num_zones = base_bdev->blockcnt / zone_size;
 
-		/* Align num_zones to optimal_open_zones */
-		bdev_node->num_zones -= bdev_node->num_zones % name->optimal_open_zones;
 		bdev_node->zones = calloc(bdev_node->num_zones, sizeof(struct block_zone));
 		if (!bdev_node->zones) {
 			rc = -ENOMEM;
@@ -767,8 +768,8 @@ zone_block_register(struct spdk_bdev *base_bdev)
 		bdev_node->bdev.blockcnt = bdev_node->num_zones * zone_size;
 
 		if (bdev_node->num_zones * name->zone_capacity != base_bdev->blockcnt) {
-			SPDK_DEBUGLOG(SPDK_LOG_VBDEV_ZONE_BLOCK,
-				      "Lost %lu blocks due to zone capacity and base bdev size misalignment\n",
+			SPDK_DEBUGLOG(vbdev_zone_block,
+				      "Lost %" PRIu64 " blocks due to zone capacity and base bdev size misalignment\n",
 				      base_bdev->blockcnt - bdev_node->num_zones * name->zone_capacity);
 		}
 
@@ -779,11 +780,20 @@ zone_block_register(struct spdk_bdev *base_bdev)
 		bdev_node->bdev.dif_type = base_bdev->dif_type;
 		bdev_node->bdev.dif_is_head_of_md = base_bdev->dif_is_head_of_md;
 		bdev_node->bdev.dif_check_flags = base_bdev->dif_check_flags;
+		bdev_node->bdev.dif_pi_format = base_bdev->dif_pi_format;
 
 		bdev_node->bdev.zoned = true;
 		bdev_node->bdev.ctxt = bdev_node;
 		bdev_node->bdev.fn_table = &zone_block_fn_table;
 		bdev_node->bdev.module = &bdev_zoned_if;
+
+		/* Generate UUID based on namespace UUID + base bdev UUID. */
+		rc = spdk_uuid_generate_sha1(&bdev_node->bdev.uuid, &ns_uuid,
+					     (const char *)&base_bdev->uuid, sizeof(struct spdk_uuid));
+		if (rc) {
+			SPDK_ERRLOG("Unable to generate new UUID for zone block bdev\n");
+			goto uuid_generation_failed;
+		}
 
 		/* bdev specific info */
 		bdev_node->bdev.zone_size = zone_size;
@@ -803,19 +813,12 @@ zone_block_register(struct spdk_bdev *base_bdev)
 					sizeof(struct zone_block_io_channel),
 					name->vbdev_name);
 
-		rc = spdk_bdev_open(base_bdev, true, zone_block_base_bdev_hotremove_cb,
-				    base_bdev, &bdev_node->base_desc);
-		if (rc) {
-			SPDK_ERRLOG("could not open bdev %s\n", spdk_bdev_get_name(base_bdev));
-			goto open_failed;
-		}
-
 		/* Save the thread where the base device is opened */
 		bdev_node->thread = spdk_get_thread();
 
-		rc = spdk_bdev_module_claim_bdev(base_bdev, bdev_node->base_desc, bdev_node->bdev.module);
+		rc = spdk_bdev_module_claim_bdev(base_bdev, base_desc, bdev_node->bdev.module);
 		if (rc) {
-			SPDK_ERRLOG("could not claim bdev %s\n", spdk_bdev_get_name(base_bdev));
+			SPDK_ERRLOG("could not claim bdev %s\n", base_bdev_name);
 			goto claim_failed;
 		}
 
@@ -831,17 +834,18 @@ zone_block_register(struct spdk_bdev *base_bdev)
 register_failed:
 	spdk_bdev_module_release_bdev(&bdev_node->bdev);
 claim_failed:
-	spdk_bdev_close(bdev_node->base_desc);
-open_failed:
 	TAILQ_REMOVE(&g_bdev_nodes, bdev_node, link);
 	spdk_io_device_unregister(bdev_node, NULL);
 zone_info_failed:
+uuid_generation_failed:
 	free(bdev_node->zones);
 calloc_failed:
 roundup_failed:
 	free(bdev_node->bdev.name);
 strdup_failed:
 	free(bdev_node);
+zone_exist:
+	spdk_bdev_close(base_desc);
 free_config:
 	zone_block_remove_config(name);
 	return rc;
@@ -851,7 +855,6 @@ int
 vbdev_zone_block_create(const char *bdev_name, const char *vbdev_name, uint64_t zone_capacity,
 			uint64_t optimal_open_zones)
 {
-	struct spdk_bdev *bdev = NULL;
 	int rc = 0;
 
 	if (zone_capacity == 0) {
@@ -872,45 +875,41 @@ vbdev_zone_block_create(const char *bdev_name, const char *vbdev_name, uint64_t 
 		return rc;
 	}
 
-	bdev = spdk_bdev_get_by_name(bdev_name);
-	if (!bdev) {
+	rc = zone_block_register(bdev_name);
+	if (rc == -ENODEV) {
 		/* This is not an error, even though the bdev is not present at this time it may
 		 * still show up later.
 		 */
-		return 0;
+		rc = 0;
 	}
-
-	return zone_block_register(bdev);
+	return rc;
 }
 
 void
 vbdev_zone_block_delete(const char *name, spdk_bdev_unregister_cb cb_fn, void *cb_arg)
 {
 	struct bdev_zone_block_config *name_node;
-	struct spdk_bdev *bdev = NULL;
+	int rc;
 
-	bdev = spdk_bdev_get_by_name(name);
-	if (!bdev || bdev->module != &bdev_zoned_if) {
-		cb_fn(cb_arg, -ENODEV);
-		return;
-	}
-
-	TAILQ_FOREACH(name_node, &g_bdev_configs, link) {
-		if (strcmp(name_node->vbdev_name, bdev->name) == 0) {
-			zone_block_remove_config(name_node);
-			break;
+	rc = spdk_bdev_unregister_by_name(name, &bdev_zoned_if, cb_fn, cb_arg);
+	if (rc == 0) {
+		TAILQ_FOREACH(name_node, &g_bdev_configs, link) {
+			if (strcmp(name_node->vbdev_name, name) == 0) {
+				zone_block_remove_config(name_node);
+				break;
+			}
 		}
+	} else {
+		cb_fn(cb_arg, rc);
 	}
-
-	spdk_bdev_unregister(bdev, cb_fn, cb_arg);
 }
 
 static void
 zone_block_examine(struct spdk_bdev *bdev)
 {
-	zone_block_register(bdev);
+	zone_block_register(bdev->name);
 
 	spdk_bdev_module_examine_done(&bdev_zoned_if);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("vbdev_zone_block", SPDK_LOG_VBDEV_ZONE_BLOCK)
+SPDK_LOG_REGISTER_COMPONENT(vbdev_zone_block)

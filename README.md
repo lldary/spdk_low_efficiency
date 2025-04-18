@@ -1,6 +1,14 @@
 # Storage Performance Development Kit
 
+[![License](https://img.shields.io/github/license/spdk/spdk?style=flat-square&color=blue&label=License)](https://github.com/spdk/spdk/blob/master/LICENSE)
 [![Build Status](https://travis-ci.org/spdk/spdk.svg?branch=master)](https://travis-ci.org/spdk/spdk)
+[![Go Doc](https://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/spdk/spdk/go/rpc)
+[![Go Report Card](https://goreportcard.com/badge/github.com/spdk/spdk/go/rpc)](https://goreportcard.com/report/github.com/spdk/spdk/go/rpc)
+
+NOTE: The SPDK mailing list has moved to a new location. Please visit
+[this URL](https://lists.linuxfoundation.org/mailman/listinfo/spdk) to subscribe
+at the new location. Subscribers from the old location will not be automatically
+migrated to the new location.
 
 The Storage Performance Development Kit ([SPDK](http://www.spdk.io)) provides a set of tools
 and libraries for writing high performance, scalable, user-mode storage
@@ -18,7 +26,7 @@ The development kit currently includes:
 * [vhost target](http://www.spdk.io/doc/vhost.html)
 * [Virtio-SCSI driver](http://www.spdk.io/doc/virtio.html)
 
-# In this readme
+## In this readme
 
 * [Documentation](#documentation)
 * [Prerequisites](#prerequisites)
@@ -129,7 +137,9 @@ Boolean (on/off) options are configured with a 'y' (yes) or 'n' (no). For
 example, this line of `CONFIG` controls whether the optional RDMA (libibverbs)
 support is enabled:
 
-	CONFIG_RDMA?=n
+~~~{.sh}
+CONFIG_RDMA?=n
+~~~
 
 To enable RDMA, this line may be added to `mk/config.mk` with a 'y' instead of
 'n'. For the majority of options this can be done using the `configure` script.
@@ -190,13 +200,16 @@ to do the following steps:
 - run ldconfig specifying the directory containing SPDK shared libraries
 - provide proper `LD_LIBRARY_PATH`
 
+If DPDK shared libraries are used, you may also need to add DPDK shared
+libraries to `LD_LIBRARY_PATH`
+
 Linux:
 
 ~~~{.sh}
 ./configure --with-shared
 make
 ldconfig -v -n ./build/lib
-LD_LIBRARY_PATH=./build/lib/ ./build/bin/spdk_tgt
+LD_LIBRARY_PATH=./build/lib/:./dpdk/build/lib/ ./build/bin/spdk_tgt
 ~~~
 
 <a id="huge"></a>
@@ -217,6 +230,34 @@ configuring 8192MB memory.
 ~~~{.sh}
 sudo HUGEMEM=8192 scripts/setup.sh
 ~~~
+
+There are a lot of other environment variables that can be set to configure
+setup.sh for advanced users. To see the full list, run:
+
+~~~{.sh}
+scripts/setup.sh --help
+~~~
+
+<a id="targets"></a>
+## Target applications
+
+After completing the build process, SPDK target applications can be found in
+`spdk/build/bin` directory:
+
+* [nvmf_tgt](https://spdk.io/doc/nvmf.html) - SPDK NVMe over Fabrics target
+  presents block devices over a fabrics,
+* [iscsi_tgt](https://spdk.io/doc/iscsi.html) - SPDK iSCSI target runs I/O
+  operations remotely with TCP/IP protocol,
+* [vhost](https://spdk.io/doc/vhost.html) - A vhost target provides a local
+  storage service as a process running on a local machine,
+* spdk_tgt - combines capabilities of all three applications.
+
+SPDK runs in a polled mode, which means it continuously checks for operation completions.
+This approach assures faster response than interrupt mode, but also lessens usefulness
+of tools like `top`, which only shows 100% CPU usage for SPDK assigned cores.
+[spdk_top](https://spdk.io/doc/spdk_top.html) is a program which simulates `top` application
+and uses SPDK's [JSON RPC](https://spdk.io/doc/jsonrpc.html) interface to present statistics
+about SPDK threads, pollers and CPU cores as an interactive list.
 
 <a id="examples"></a>
 ## Example Code

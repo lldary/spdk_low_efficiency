@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
 
-rpc_py="$rootdir/scripts/rpc.py"
-SPDK_APP="$SPDK_BIN_DIR/spdk_tgt"
 MEM_SCRIPT="$rootdir/scripts/dpdk_mem_info.py"
 
-$SPDK_APP &
+"${SPDK_APP[@]}" &
 spdkpid=$!
 
 waitforlisten $spdkpid

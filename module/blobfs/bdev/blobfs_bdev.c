@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -42,8 +14,6 @@
 #include "spdk/string.h"
 #include "spdk/rpc.h"
 #include "spdk/util.h"
-
-#include "spdk_internal/log.h"
 
 #include "blobfs_fuse.h"
 
@@ -125,7 +95,6 @@ spdk_blobfs_bdev_detect(const char *bdev_name,
 {
 	struct blobfs_bdev_operation_ctx *ctx;
 	struct spdk_bs_dev *bs_dev;
-	struct spdk_bdev_desc *desc;
 	int rc;
 
 	ctx = calloc(1, sizeof(*ctx));
@@ -140,19 +109,10 @@ spdk_blobfs_bdev_detect(const char *bdev_name,
 	ctx->cb_fn = cb_fn;
 	ctx->cb_arg = cb_arg;
 
-	rc = spdk_bdev_open_ext(bdev_name, true, blobfs_bdev_event_cb, NULL, &desc);
+	rc = spdk_bdev_create_bs_dev_ext(bdev_name, blobfs_bdev_event_cb, NULL, &bs_dev);
 	if (rc != 0) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV, "Failed to open bdev(%s): %s\n", ctx->bdev_name,
-			     spdk_strerror(rc));
-
-		goto invalid;
-	}
-
-	bs_dev = spdk_bdev_create_bs_dev_from_desc(desc);
-	if (bs_dev == NULL) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV,  "Failed to create a blobstore block device from bdev desc");
-		rc = -ENOMEM;
-		spdk_bdev_close(desc);
+		SPDK_INFOLOG(blobfs_bdev, "Failed to create a blobstore block device from bdev (%s)",
+			     bdev_name);
 
 		goto invalid;
 	}
@@ -174,7 +134,6 @@ spdk_blobfs_bdev_create(const char *bdev_name, uint32_t cluster_sz,
 	struct blobfs_bdev_operation_ctx *ctx;
 	struct spdk_blobfs_opts blobfs_opt;
 	struct spdk_bs_dev *bs_dev;
-	struct spdk_bdev_desc *desc;
 	int rc;
 
 	ctx = calloc(1, sizeof(*ctx));
@@ -189,27 +148,17 @@ spdk_blobfs_bdev_create(const char *bdev_name, uint32_t cluster_sz,
 	ctx->cb_fn = cb_fn;
 	ctx->cb_arg = cb_arg;
 
-	/* Creation requires WRITE operation */
-	rc = spdk_bdev_open_ext(bdev_name, true, blobfs_bdev_event_cb, NULL, &desc);
-	if (rc != 0) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV, "Failed to open bdev(%s): %s\n", ctx->bdev_name,
-			     spdk_strerror(rc));
-
-		goto invalid;
-	}
-
-	bs_dev = spdk_bdev_create_bs_dev_from_desc(desc);
-	if (bs_dev == NULL) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV,  "Failed to create a blobstore block device from bdev desc\n");
-		rc = -ENOMEM;
-		spdk_bdev_close(desc);
+	rc = spdk_bdev_create_bs_dev_ext(bdev_name, blobfs_bdev_event_cb, NULL, &bs_dev);
+	if (rc) {
+		SPDK_INFOLOG(blobfs_bdev, "Failed to create a blobstore block device from bdev (%s)\n",
+			     bdev_name);
 
 		goto invalid;
 	}
 
 	rc = spdk_bs_bdev_claim(bs_dev, &blobfs_bdev_module);
 	if (rc) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV, "Blobfs base bdev already claimed by another bdev\n");
+		SPDK_INFOLOG(blobfs_bdev, "Blobfs base bdev already claimed by another bdev\n");
 		bs_dev->destroy(bs_dev);
 
 		goto invalid;
@@ -229,7 +178,7 @@ invalid:
 
 	cb_fn(cb_arg, rc);
 }
-SPDK_LOG_REGISTER_COMPONENT("blobfs_bdev", SPDK_LOG_BLOBFS_BDEV)
+SPDK_LOG_REGISTER_COMPONENT(blobfs_bdev)
 #ifdef SPDK_CONFIG_FUSE
 
 static void
@@ -307,7 +256,6 @@ spdk_blobfs_bdev_mount(const char *bdev_name, const char *mountpoint,
 {
 	struct blobfs_bdev_operation_ctx *ctx;
 	struct spdk_bs_dev *bs_dev;
-	struct spdk_bdev_desc *desc;
 	int rc;
 
 	ctx = calloc(1, sizeof(*ctx));
@@ -323,26 +271,17 @@ spdk_blobfs_bdev_mount(const char *bdev_name, const char *mountpoint,
 	ctx->cb_fn = cb_fn;
 	ctx->cb_arg = cb_arg;
 
-	rc = spdk_bdev_open_ext(bdev_name, true, blobfs_bdev_fuse_event_cb, ctx, &desc);
+	rc = spdk_bdev_create_bs_dev_ext(bdev_name, blobfs_bdev_fuse_event_cb, ctx, &bs_dev);
 	if (rc != 0) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV, "Failed to open bdev(%s): %s\n", ctx->bdev_name,
-			     spdk_strerror(rc));
-
-		goto invalid;
-	}
-
-	bs_dev = spdk_bdev_create_bs_dev_from_desc(desc);
-	if (bs_dev == NULL) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV,  "Failed to create a blobstore block device from bdev desc");
-		rc = -ENOMEM;
-		spdk_bdev_close(desc);
+		SPDK_INFOLOG(blobfs_bdev, "Failed to create a blobstore block device from bdev (%s)",
+			     bdev_name);
 
 		goto invalid;
 	}
 
 	rc = spdk_bs_bdev_claim(bs_dev, &blobfs_bdev_module);
 	if (rc != 0) {
-		SPDK_INFOLOG(SPDK_LOG_BLOBFS_BDEV, "Blobfs base bdev already claimed by another bdev\n");
+		SPDK_INFOLOG(blobfs_bdev, "Blobfs base bdev already claimed by another bdev\n");
 		bs_dev->destroy(bs_dev);
 
 		goto invalid;
@@ -356,6 +295,16 @@ invalid:
 	free(ctx);
 
 	cb_fn(cb_arg, rc);
+}
+
+#else /* SPDK_CONFIG_FUSE */
+
+void
+spdk_blobfs_bdev_mount(const char *bdev_name, const char *mountpoint,
+		       spdk_blobfs_bdev_op_complete cb_fn, void *cb_arg)
+{
+	SPDK_ERRLOG("spdk_blobfs_bdev_mount() is unsupported\n");
+	cb_fn(cb_arg, -ENOTSUP);
 }
 
 #endif

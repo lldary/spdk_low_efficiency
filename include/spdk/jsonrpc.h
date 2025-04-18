@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 /**
@@ -42,6 +14,7 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/json.h"
+#include "spdk/log.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,7 +55,7 @@ struct spdk_jsonrpc_client_response {
  *
  * \param request JSON-RPC request to handle.
  * \param method Function to handle the request.
- * \param param Parameters passed to the function 'method'.
+ * \param params Parameters passed to the function 'method'.
  */
 typedef void (*spdk_jsonrpc_handle_request_fn)(
 	struct spdk_jsonrpc_request *request,
@@ -97,7 +70,7 @@ typedef void (*spdk_jsonrpc_conn_closed_fn)(struct spdk_jsonrpc_server_conn *con
  * Function for specific RPC method response parsing handlers.
  *
  * \param parser_ctx context where analysis are put.
- * \param result json values responsed to this method.
+ * \param result json values responded to this method.
  *
  * \return 0 on success.
  *         SPDK_JSON_PARSE_INVALID on failure.
@@ -154,7 +127,7 @@ struct spdk_jsonrpc_server_conn *spdk_jsonrpc_get_conn(struct spdk_jsonrpc_reque
  * \note Current implementation allow only one close callback per connection.
  *
  * \param conn JSON RPC server connection
- * \param cb calback function
+ * \param cb callback function
  * \param ctx argument for \c cb
  *
  * \return 0 on success, or negated errno code:
@@ -169,7 +142,7 @@ int spdk_jsonrpc_conn_add_close_cb(struct spdk_jsonrpc_server_conn *conn,
  * Remove registered close callback.
  *
  * \param conn JSON RPC server connection
- * \param cb calback function
+ * \param cb callback function
  * \param ctx argument for \c cb
  *
  * \return 0 on success, or negated errno code:
@@ -197,6 +170,14 @@ struct spdk_json_write_ctx *spdk_jsonrpc_begin_result(struct spdk_jsonrpc_reques
  * \param w JSON write context returned from spdk_jsonrpc_begin_result().
  */
 void spdk_jsonrpc_end_result(struct spdk_jsonrpc_request *request, struct spdk_json_write_ctx *w);
+
+/**
+ * Complete a JSON-RPC response and write bool result.
+ *
+ * \param request Request to complete the response for.
+ * \param value Write bool result value.
+ */
+void spdk_jsonrpc_send_bool_response(struct spdk_jsonrpc_request *request, bool value);
 
 /**
  * Send an error response to a JSON-RPC request.
@@ -311,7 +292,7 @@ int spdk_jsonrpc_client_send_request(struct spdk_jsonrpc_client *client,
  * a time while no other threads are actively \c client object.
  *
  * \param client JSON-RPC client.
- * \param timeout Time in miliseconds this function will block. -1 block forever, 0 don't block.
+ * \param timeout Time in milliseconds this function will block. -1 block forever, 0 don't block.
  *
  * \return If no error occurred, this function returns a non-negative number indicating how
  * many ready responses can be retrieved. If an error occurred, this function returns one of
@@ -344,6 +325,25 @@ struct spdk_jsonrpc_client_response *spdk_jsonrpc_client_get_response(struct spd
  */
 void spdk_jsonrpc_client_free_response(struct spdk_jsonrpc_client_response *resp);
 
+/**
+ * Set the log level used by the JSON-RPC server to log RPC request and response objects.
+ *
+ * NOTE: This function should be called only before starting the JSON-RPC server.
+ * Users should set the level set by this function higher than the level set by
+ * spdk_log_set_print_level() or spdk_log_set_level().
+ *
+ * \param level Log level used to log RPC objects.
+ */
+void spdk_jsonrpc_set_log_level(enum spdk_log_level level);
+
+/**
+ * Set the log file used by the JSON-RPC server to log RPC request and response objects.
+ *
+ * NOTE: This function should be called only before starting the JSON-RPC server.
+ *
+ * \param file Log file pointer used to log RPC objects.
+ */
+void spdk_jsonrpc_set_log_file(FILE *file);
 
 #ifdef __cplusplus
 }

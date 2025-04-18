@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2016 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -7,8 +10,6 @@ source $rootdir/test/nvmf/common.sh
 
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
-
-rpc_py="$rootdir/scripts/rpc.py"
 
 nvmftestinit
 
@@ -31,16 +32,17 @@ $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc0 \
 	--nguid "ABCDEF0123456789ABCDEF0123456789" \
 	--eui64 "ABCDEF0123456789"
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
+$rpc_py nvmf_subsystem_add_listener discovery -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
 $rpc_py nvmf_get_subsystems
 
-$SPDK_EXAMPLE_DIR/identify -r "\
+$SPDK_BIN_DIR/spdk_nvme_identify -r "\
         trtype:$TEST_TRANSPORT \
         adrfam:IPv4 \
         traddr:$NVMF_FIRST_TARGET_IP \
         trsvcid:$NVMF_PORT \
         subnqn:nqn.2014-08.org.nvmexpress.discovery" -L all
-$SPDK_EXAMPLE_DIR/identify -r "\
+$SPDK_BIN_DIR/spdk_nvme_identify -r "\
         trtype:$TEST_TRANSPORT \
         adrfam:IPv4 \
         traddr:$NVMF_FIRST_TARGET_IP \

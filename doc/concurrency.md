@@ -1,6 +1,6 @@
 # Message Passing and Concurrency {#concurrency}
 
-# Theory
+## Theory
 
 One of the primary aims of SPDK is to scale linearly with the addition of
 hardware. This can mean many things in practice. For instance, moving from one
@@ -56,7 +56,7 @@ data isn't mutated very often, but is read very frequently, and is often
 employed in the I/O path. This of course trades memory size for computational
 efficiency, so it is used in only the most critical code paths.
 
-# Message Passing Infrastructure
+## Message Passing Infrastructure
 
 SPDK provides several layers of message passing infrastructure. The most
 fundamental libraries in SPDK, for instance, don't do any message passing on
@@ -110,7 +110,19 @@ repeatedly call `spdk_thread_poll()` on each `spdk_thread()` that exists. This
 makes SPDK very portable to a wide variety of asynchronous, event-based
 frameworks such as [Seastar](https://www.seastar.io) or [libuv](https://libuv.org/).
 
-# The event Framework
+## SPDK Spinlocks
+
+There are some cases where locks are used. These should be limited in favor of
+the message passing interface described above. When locks are needed,
+SPDK spinlocks should be used instead of POSIX locks.
+
+POSIX locks like `pthread_mutex_t` and `pthread_spinlock_t` do not properly
+handle locking between SPDK's lightweight threads. SPDK's `spdk_spinlock`
+is safe to use in SPDK libraries and applications. This safety comes from
+imposing restrictions on when locks can be held. See
+[spdk_spinlock](structspdk__spinlock.html) for details.
+
+## The event Framework
 
 The SPDK project didn't want to officially pick an asynchronous, event-based
 framework for all of the example applications it shipped with, in the interest
@@ -122,7 +134,7 @@ signal handlers to cleanly shutdown, and basic command line option parsing.
 Only established applications should consider directly integrating the lower
 level libraries.
 
-# Limitations of the C Language
+## Limitations of the C Language
 
 Message passing is efficient, but it results in asynchronous code.
 Unfortunately, asynchronous code is a challenge in C. It's often implemented by
@@ -140,6 +152,7 @@ function `foo` performs some asynchronous operation and when that completes
 function `bar` is called, then function `bar` performs some operation that
 calls function `baz` on completion, a good way to write it is as such:
 
+```c
     void baz(void *ctx) {
             ...
     }
@@ -151,6 +164,7 @@ calls function `baz` on completion, a good way to write it is as such:
     void foo(void *ctx) {
             async_op(bar, ctx);
     }
+```
 
 Don't split these functions up - keep them as a nice unit that can be read from bottom to top.
 
@@ -162,6 +176,7 @@ them in C we can still write them out by hand. As an example, here's a
 callback chain that performs `foo` 5 times and then calls `bar` - effectively
 an asynchronous for loop.
 
+```c
     enum states {
             FOO_START = 0,
             FOO_END,
@@ -244,6 +259,7 @@ an asynchronous for loop.
 
             run_state_machine(sm);
     }
+```
 
 This is complex, of course, but the `run_state_machine` function can be read
 from top to bottom to get a clear overview of what's happening in the code

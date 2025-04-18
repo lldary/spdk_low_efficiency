@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
@@ -71,18 +74,18 @@ function test_construct_two_lvs_on_the_same_bdev() {
 # try to create two lvs with conflicting aliases
 function test_construct_lvs_conflict_alias() {
 	# create first bdev and lvs
-	malloc1_name=$(rpc_cmd construct_malloc_bdev $MALLOC_SIZE_MB $MALLOC_BS)
-	lvs1_uuid=$(rpc_cmd construct_lvol_store "$malloc1_name" lvs_test)
+	malloc1_name=$(rpc_cmd bdev_malloc_create $MALLOC_SIZE_MB $MALLOC_BS)
+	lvs1_uuid=$(rpc_cmd bdev_lvol_create_lvstore "$malloc1_name" lvs_test)
 
 	# create second bdev and lvs with the same name as previously
-	malloc2_name=$(rpc_cmd construct_malloc_bdev $MALLOC_SIZE_MB $MALLOC_BS)
-	rpc_cmd construct_lvol_store "$malloc2_name" lvs_test && false
+	malloc2_name=$(rpc_cmd bdev_malloc_create $MALLOC_SIZE_MB $MALLOC_BS)
+	rpc_cmd bdev_lvol_create_lvstore "$malloc2_name" lvs_test && false
 
 	# clean up
-	rpc_cmd destroy_lvol_store -u "$lvs1_uuid"
-	rpc_cmd get_lvol_stores -u "$lvs1_uuid" && false
-	rpc_cmd delete_malloc_bdev "$malloc1_name"
-	rpc_cmd delete_malloc_bdev "$malloc2_name"
+	rpc_cmd bdev_lvol_delete_lvstore -u "$lvs1_uuid"
+	rpc_cmd bdev_lvol_get_lvstores -u "$lvs1_uuid" && false
+	rpc_cmd bdev_malloc_delete "$malloc1_name"
+	rpc_cmd bdev_malloc_delete "$malloc2_name"
 	check_leftover_devices
 }
 
@@ -210,7 +213,7 @@ function test_construct_lvol_fio_clear_method_none() {
 	offset=$((last_cluster_of_metadata * jq_out["cluster_size"]))
 	size_metadata_end=$((offset - offset_metadata_end))
 
-	# Check if data on area between end of metadata and first cluster of lvol bdev remained unchaged.
+	# Check if data on area between end of metadata and first cluster of lvol bdev remained unchanged.
 	run_fio_test "$nbd_name" "$offset_metadata_end" "$size_metadata_end" "read" 0x00
 	# Check if data on first lvol bdevs remains unchanged.
 	run_fio_test "$nbd_name" "$offset" "${jq_out["cluster_size"]}" "read" 0xdd
@@ -269,7 +272,7 @@ function test_construct_lvol_fio_clear_method_unmap() {
 	offset=$((last_cluster_of_metadata * jq_out["cluster_size"]))
 	size_metadata_end=$((offset - offset_metadata_end))
 
-	# Check if data on area between end of metadata and first cluster of lvol bdev remained unchaged.
+	# Check if data on area between end of metadata and first cluster of lvol bdev remained unchanged.
 	run_fio_test "$nbd_name" "$offset_metadata_end" "$size_metadata_end" "read" 0xdd
 	# Check if data on lvol bdev was zeroed. Malloc bdev should zero any data that is unmapped.
 	run_fio_test "$nbd_name" "$offset" "${jq_out["cluster_size"]}" "read" 0x00
@@ -530,6 +533,31 @@ function test_construct_nested_lvol() {
 	check_leftover_devices
 }
 
+# List lvols without going through the bdev layer.
+function test_lvol_list() {
+	# create an lvol store
+	malloc_name=$(rpc_cmd bdev_malloc_create $MALLOC_SIZE_MB $MALLOC_BS)
+	lvs_uuid=$(rpc_cmd bdev_lvol_create_lvstore "$malloc_name" lvs_test)
+
+	# An empty lvolstore is not listed by bdev_lvol_get_lvols
+	lvols=$(rpc_cmd bdev_lvol_get_lvols)
+	[ "$(jq -r '. | length' <<< "$lvols")" == "0" ]
+
+	# Create an lvol, it should appear in the list
+	lvol_uuid=$(rpc_cmd bdev_lvol_create -u "$lvs_uuid" lvol_test "$LVS_DEFAULT_CAPACITY_MB")
+	lvols=$(rpc_cmd bdev_lvol_get_lvols)
+	[ "$(jq -r '. | length' <<< "$lvols")" == "1" ]
+	[ "$(jq -r '.[0].uuid' <<< "$lvols")" == "$lvol_uuid" ]
+	[ "$(jq -r '.[0].name' <<< "$lvols")" == "lvol_test" ]
+	[ "$(jq -r '.[0].alias' <<< "$lvols")" == "lvs_test/lvol_test" ]
+	[ "$(jq -r '.[0].lvs.name' <<< "$lvols")" == "lvs_test" ]
+	[ "$(jq -r '.[0].lvs.uuid' <<< "$lvols")" == "$lvs_uuid" ]
+
+	rpc_cmd bdev_lvol_delete_lvstore -u "$lvs_uuid"
+	rpc_cmd bdev_malloc_delete "$malloc_name"
+	check_leftover_devices
+}
+
 # Send SIGTERM after creating lvol store
 function test_sigterm() {
 	# create an lvol store
@@ -560,6 +588,7 @@ run_test "test_construct_lvol_inexistent_lvs" test_construct_lvol_inexistent_lvs
 run_test "test_construct_lvol_full_lvs" test_construct_lvol_full_lvs
 run_test "test_construct_lvol_alias_conflict" test_construct_lvol_alias_conflict
 run_test "test_construct_nested_lvol" test_construct_nested_lvol
+run_test "test_lvol_list" test_lvol_list
 run_test "test_sigterm" test_sigterm
 
 trap - SIGINT SIGTERM EXIT

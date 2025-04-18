@@ -1,39 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
+#include "spdk/util.h"
 
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
 static const char *const spdk_level_names[] = {
 	[SPDK_LOG_ERROR]	= "ERROR",
@@ -45,24 +18,100 @@ static const char *const spdk_level_names[] = {
 
 #define MAX_TMPBUF 1024
 
-static logfunc *g_log = NULL;
+static struct spdk_log_opts g_log_opts = {
+	.log = NULL,
+	.open = NULL,
+	.close = NULL,
+	.user_ctx = NULL,
+};
+static bool g_log_timestamps = true;
+
+enum spdk_log_level g_spdk_log_level;
+enum spdk_log_level g_spdk_log_print_level;
 
 void
-spdk_log_open(logfunc *logf)
+spdk_log_set_level(enum spdk_log_level level)
 {
-	if (logf) {
-		g_log = logf;
+	assert(level >= SPDK_LOG_DISABLED);
+	assert(level <= SPDK_LOG_DEBUG);
+	g_spdk_log_level = level;
+}
+
+enum spdk_log_level
+spdk_log_get_level(void) {
+	return g_spdk_log_level;
+}
+
+void
+spdk_log_set_print_level(enum spdk_log_level level)
+{
+	assert(level >= SPDK_LOG_DISABLED);
+	assert(level <= SPDK_LOG_DEBUG);
+	g_spdk_log_print_level = level;
+}
+
+enum spdk_log_level
+spdk_log_get_print_level(void) {
+	return g_spdk_log_print_level;
+}
+
+static void
+log_open(void *ctx)
+{
+	openlog("spdk", LOG_PID, LOG_LOCAL7);
+}
+
+static void
+log_close(void *ctx)
+{
+	closelog();
+}
+
+void
+spdk_log_open(spdk_log_cb *log)
+{
+	if (log) {
+		struct spdk_log_opts opts = {.log = log};
+		opts.size = SPDK_SIZEOF(&opts, log);
+		spdk_log_open_ext(&opts);
 	} else {
-		openlog("spdk", LOG_PID, LOG_LOCAL7);
+		spdk_log_open_ext(NULL);
+	}
+}
+
+void
+spdk_log_open_ext(struct spdk_log_opts *opts)
+{
+	if (!opts) {
+		g_log_opts.open = log_open;
+		g_log_opts.close = log_close;
+		goto out;
+	}
+
+	g_log_opts.log = SPDK_GET_FIELD(opts, log, NULL);
+	g_log_opts.open = SPDK_GET_FIELD(opts, open, NULL);
+	g_log_opts.close = SPDK_GET_FIELD(opts, close, NULL);
+	g_log_opts.user_ctx = SPDK_GET_FIELD(opts, user_ctx, NULL);
+
+out:
+	if (g_log_opts.open) {
+		g_log_opts.open(g_log_opts.user_ctx);
 	}
 }
 
 void
 spdk_log_close(void)
 {
-	if (!g_log) {
-		closelog();
+	if (g_log_opts.close) {
+		g_log_opts.close(g_log_opts.user_ctx);
 	}
+	memset(&g_log_opts, 0, sizeof(g_log_opts));
+}
+
+void
+spdk_log_enable_timestamps(bool value)
+{
+	g_log_timestamps = value;
 }
 
 static void
@@ -72,6 +121,11 @@ get_timestamp_prefix(char *buf, int buf_size)
 	char date[24];
 	struct timespec ts;
 	long usec;
+
+	if (!g_log_timestamps) {
+		buf[0] = '\0';
+		return;
+	}
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 	info = localtime(&ts.tv_sec);
@@ -96,16 +150,40 @@ spdk_log(enum spdk_log_level level, const char *file, const int line, const char
 	va_end(ap);
 }
 
+int
+spdk_log_to_syslog_level(enum spdk_log_level level)
+{
+	switch (level) {
+	case SPDK_LOG_DEBUG:
+	case SPDK_LOG_INFO:
+		return LOG_INFO;
+	case SPDK_LOG_NOTICE:
+		return LOG_NOTICE;
+	case SPDK_LOG_WARN:
+		return LOG_WARNING;
+	case SPDK_LOG_ERROR:
+		return LOG_ERR;
+	case SPDK_LOG_DISABLED:
+		return -1;
+	default:
+		break;
+	}
+
+	return LOG_INFO;
+}
+
 void
 spdk_vlog(enum spdk_log_level level, const char *file, const int line, const char *func,
 	  const char *format, va_list ap)
 {
 	int severity = LOG_INFO;
-	char buf[MAX_TMPBUF];
+	char *buf, _buf[MAX_TMPBUF], *ext_buf = NULL;
 	char timestamp[64];
+	va_list ap_copy;
+	int rc;
 
-	if (g_log) {
-		g_log(level, file, line, func, format, ap);
+	if (g_log_opts.log) {
+		g_log_opts.log(level, file, line, func, format, ap);
 		return;
 	}
 
@@ -113,25 +191,27 @@ spdk_vlog(enum spdk_log_level level, const char *file, const int line, const cha
 		return;
 	}
 
-	switch (level) {
-	case SPDK_LOG_ERROR:
-		severity = LOG_ERR;
-		break;
-	case SPDK_LOG_WARN:
-		severity = LOG_WARNING;
-		break;
-	case SPDK_LOG_NOTICE:
-		severity = LOG_NOTICE;
-		break;
-	case SPDK_LOG_INFO:
-	case SPDK_LOG_DEBUG:
-		severity = LOG_INFO;
-		break;
-	case SPDK_LOG_DISABLED:
+	severity = spdk_log_to_syslog_level(level);
+	if (severity < 0) {
 		return;
 	}
 
-	vsnprintf(buf, sizeof(buf), format, ap);
+	buf = _buf;
+
+	va_copy(ap_copy, ap);
+	rc = vsnprintf(_buf, sizeof(_buf), format, ap);
+	if (rc > MAX_TMPBUF) {
+		/* The output including the terminating was more than MAX_TMPBUF bytes.
+		 * Try allocating memory large enough to hold the output.
+		 */
+		rc = vasprintf(&ext_buf, format, ap_copy);
+		if (rc < 0) {
+			/* Failed to allocate memory. Allow output to be truncated. */
+		} else {
+			buf = ext_buf;
+		}
+	}
+	va_end(ap_copy);
 
 	if (level <= g_spdk_log_print_level) {
 		get_timestamp_prefix(timestamp, sizeof(timestamp));
@@ -149,6 +229,39 @@ spdk_vlog(enum spdk_log_level level, const char *file, const int line, const cha
 			syslog(severity, "%s", buf);
 		}
 	}
+
+	free(ext_buf);
+}
+
+void
+spdk_vflog(FILE *fp, const char *file, const int line, const char *func,
+	   const char *format, va_list ap)
+{
+	char buf[MAX_TMPBUF];
+	char timestamp[64];
+
+	vsnprintf(buf, sizeof(buf), format, ap);
+
+	get_timestamp_prefix(timestamp, sizeof(timestamp));
+
+	if (file) {
+		fprintf(fp, "%s%s:%4d:%s: %s", timestamp, file, line, func, buf);
+	} else {
+		fprintf(fp, "%s%s", timestamp, buf);
+	}
+
+	fflush(fp);
+}
+
+void
+spdk_flog(FILE *fp, const char *file, const int line, const char *func,
+	  const char *format, ...)
+{
+	va_list ap;
+
+	va_start(ap, format);
+	spdk_vflog(fp, file, line, func, format, ap);
+	va_end(ap);
 }
 
 static void

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#  Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -48,11 +52,6 @@ if "${VHOST_APP[@]}" -c /path/to/non_existing_file/conf -f "$VHOST_DIR/vhost/vho
 fi
 rm -f $VHOST_DIR/vhost/vhost.pid
 
-# Testing vhost start with invalid config. Vhost will exit with error as bdev module init failed
-if "${VHOST_APP[@]}" -c $testdir/invalid.config; then
-	fail "vhost started when specifying invalid config file"
-fi
-
 # Expecting vhost to fail if an incorrect argument is given
 if "${VHOST_APP[@]}" -x -h; then
 	fail "vhost started with invalid -x command line option"
@@ -68,7 +67,7 @@ notice "==============="
 notice ""
 notice "running SPDK"
 notice ""
-vhost_run 0
+vhost_run -n 0 -- -m 0xf
 notice ""
 rpc_py="$rootdir/scripts/rpc.py -s $(get_vhost_dir 0)/rpc.sock"
 $rpc_py bdev_malloc_create -b Malloc0 128 4096
@@ -93,8 +92,13 @@ if $rpc_py vhost_delete_controller unk0 > /dev/null; then
 fi
 
 # SCSI
-notice "Trying to create scsi controller with incorrect cpumask"
-if $rpc_py vhost_create_scsi_controller vhost.invalid.cpumask --cpumask 0x2; then
+notice "Trying to create scsi controller with incorrect cpumask outside of application cpumask"
+if $rpc_py vhost_create_scsi_controller vhost.invalid.cpumask --cpumask 0xf0; then
+	error "Creating scsi controller with incorrect cpumask succeeded, but it shouldn't"
+fi
+
+notice "Trying to create scsi controller with incorrect cpumask partially outside of application cpumask"
+if $rpc_py vhost_create_scsi_controller vhost.invalid.cpumask --cpumask 0xff; then
 	error "Creating scsi controller with incorrect cpumask succeeded, but it shouldn't"
 fi
 
@@ -168,12 +172,14 @@ if $rpc_py vhost_scsi_controller_remove_target naa.0 8 > /dev/null; then
 	error "Removing device 8 from controller naa.0 succeeded, but it shouldn't"
 fi
 
-notice "Re-adding device 0 to naa.0"
-$rpc_py vhost_scsi_controller_add_target naa.0 0 Malloc0
-
 # BLK
-notice "Trying to create block controller with incorrect cpumask"
-if $rpc_py vhost_create_blk_controller vhost.invalid.cpumask Malloc0 --cpumask 0x2; then
+notice "Trying to create block controller with incorrect cpumask outside of application cpumask"
+if $rpc_py vhost_create_blk_controller vhost.invalid.cpumask Malloc0 --cpumask 0xf0; then
+	error "Creating block controller with incorrect cpumask succeeded, but it shouldn't"
+fi
+
+notice "Trying to create block controller with incorrect cpumask partially outside of application cpumask"
+if $rpc_py vhost_create_blk_controller vhost.invalid.cpumask Malloc0 --cpumask 0xff; then
 	error "Creating block controller with incorrect cpumask succeeded, but it shouldn't"
 fi
 
@@ -198,6 +204,13 @@ if $rpc_py vhost_create_blk_controller blk_ctrl Malloc0; then
 	error "Creating block controller with claimed bdev succeeded, but shouldn't"
 fi
 $rpc_py bdev_lvol_delete_lvstore -l lvs
+
+notice "Trying to create already existing block transport layer"
+# vhost_user_blk transport is created by default on application start,
+# so first rpc call to create the transport should fail with EEXIST.
+if $rpc_py virtio_blk_create_transport vhost_user_blk; then
+	error "Creating already existing virtio blk transport succeeded, but shouldn't"
+fi
 
 notice "Testing done -> shutting down"
 notice "killing vhost app"

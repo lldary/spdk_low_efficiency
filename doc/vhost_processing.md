@@ -1,6 +1,6 @@
 # Virtualized I/O with Vhost-user {#vhost_processing}
 
-# Table of Contents {#vhost_processing_toc}
+## Table of Contents {#vhost_processing_toc}
 
 - @ref vhost_processing_intro
 - @ref vhost_processing_qemu
@@ -8,7 +8,7 @@
 - @ref vhost_processing_io_path
 - @ref vhost_spdk_optimizations
 
-# Introduction {#vhost_processing_intro}
+## Introduction {#vhost_processing_intro}
 
 This document is intended to provide an overview of how Vhost works behind the
 scenes. Code snippets used in this document might have been simplified for the
@@ -18,12 +18,10 @@ reference.
 Reading from the
 [Virtio specification](http://docs.oasis-open.org/virtio/virtio/v1.0/virtio-v1.0.html):
 
-```
-The purpose of virtio and [virtio] specification is that virtual environments
-and guests should have a straightforward, efficient, standard and extensible
-mechanism for virtual devices, rather than boutique per-environment or per-OS
-mechanisms.
-```
+> The purpose of virtio and [virtio] specification is that virtual environments
+> and guests should have a straightforward, efficient, standard and extensible
+> mechanism for virtual devices, rather than boutique per-environment or per-OS
+> mechanisms.
 
 Virtio devices use virtqueues to transport data efficiently. Virtqueue is a set
 of three different single-producer, single-consumer ring structures designed to
@@ -44,31 +42,31 @@ The initial vhost implementation is a part of the Linux kernel and uses ioctl
 interface to communicate with userspace applications. What makes it possible for
 SPDK to expose a vhost device is Vhost-user protocol.
 
-The [Vhost-user specification](https://git.qemu.org/?p=qemu.git;a=blob_plain;f=docs/interop/vhost-user.txt;hb=HEAD)
+The [Vhost-user specification](https://qemu-project.gitlab.io/qemu/interop/vhost-user.html)
 describes the protocol as follows:
 
-```
-[Vhost-user protocol] is aiming to complement the ioctl interface used to
-control the vhost implementation in the Linux kernel. It implements the control
-plane needed to establish virtqueue sharing with a user space process on the
-same host. It uses communication over a Unix domain socket to share file
-descriptors in the ancillary data of the message.
+> [Vhost-user protocol] is aiming to complement the ioctl interface used to
+> control the vhost implementation in the Linux kernel. It implements the control
+> plane needed to establish virtqueue sharing with a user space process on the
+> same host. It uses communication over a Unix domain socket to share file
+> descriptors in the ancillary data of the message.
+>
+> The protocol defines 2 sides of the communication, front-end and back-end.
+> The front-end is the application that shares its virtqueues, in our case QEMU.
+> The back-end is the consumer of the virtqueues.
+>
+> In the current implementation QEMU is the front-end, and the back-end is
+> the external process consuming the virtio queues, for example a software
+> Ethernet switch running in user space, such as Snabbswitch, or a block
+> device back-end processing read and write to a virtual disk.
+>
+> The front-end and back-end can be either a client (i.e. connecting) or
+> server (listening) in the socket communication.
 
-The protocol defines 2 sides of the communication, master and slave. Master is
-the application that shares its virtqueues, in our case QEMU. Slave is the
-consumer of the virtqueues.
-
-In the current implementation QEMU is the Master, and the Slave is intended to
-be a software Ethernet switch running in user space, such as Snabbswitch.
-
-Master and slave can be either a client (i.e. connecting) or server (listening)
-in the socket communication.
-```
-
-SPDK vhost is a Vhost-user slave server. It exposes Unix domain sockets and
+SPDK vhost is a Vhost-user back-end server. It exposes Unix domain sockets and
 allows external applications to connect.
 
-# QEMU {#vhost_processing_qemu}
+## QEMU {#vhost_processing_qemu}
 
 One of major Vhost-user use cases is networking (DPDK) or storage (SPDK)
 offload in QEMU. The following diagram presents how QEMU-based VM
@@ -76,11 +74,11 @@ communicates with SPDK Vhost-SCSI device.
 
 ![QEMU/SPDK vhost data flow](img/qemu_vhost_data_flow.svg)
 
-# Device initialization {#vhost_processing_init}
+## Device initialization {#vhost_processing_init}
 
 All initialization and management information is exchanged using Vhost-user
 messages. The connection always starts with the feature negotiation. Both
-the Master and the Slave exposes a list of their implemented features and
+the front-end and the back-end expose a list of their implemented features and
 upon negotiation they choose a common set of those. Most of these features are
 implementation-related, but also regard e.g. multiqueue support or live migration.
 
@@ -90,15 +88,15 @@ physically-discontiguous regions and Vhost-user specification puts a limit on
 their number - currently 8. The driver sends a single message for each region with
 the following data:
 
- * file descriptor - for mmap
- * user address - for memory translations in Vhost-user messages (e.g.
-   translating vring addresses)
- * guest address - for buffers addresses translations in vrings (for QEMU this
-   is a physical address inside the guest)
- * user offset - positive offset for the mmap
- * size
+- file descriptor - for mmap
+- user address - for memory translations in Vhost-user messages (e.g.
+  translating vring addresses)
+- guest address - for buffers addresses translations in vrings (for QEMU this
+  is a physical address inside the guest)
+- user offset - positive offset for the mmap
+- size
 
-The Master will send new memory regions after each memory change - usually
+The front-end will send new memory regions after each memory change - usually
 hotplug/hotremove. The previous mappings will be removed.
 
 Drivers may also request a device config, consisting of e.g. disk geometry.
@@ -108,24 +106,24 @@ as they use common SCSI I/O to inquiry the underlying disk(s).
 Afterwards, the driver requests the number of maximum supported queues and
 starts sending virtqueue data, which consists of:
 
- * unique virtqueue id
- * index of the last processed vring descriptor
- * vring addresses (from user address space)
- * call descriptor (for interrupting the driver after I/O completions)
- * kick descriptor (to listen for I/O requests - unused by SPDK)
+- unique virtqueue id
+- index of the last processed vring descriptor
+- vring addresses (from user address space)
+- call descriptor (for interrupting the driver after I/O completions)
+- kick descriptor (to listen for I/O requests - unused by SPDK)
 
 If multiqueue feature has been negotiated, the driver has to send a specific
 *ENABLE* message for each extra queue it wants to be polled. Other queues are
 polled as soon as they're initialized.
 
-# I/O path {#vhost_processing_io_path}
+## I/O path {#vhost_processing_io_path}
 
-The Master sends I/O by allocating proper buffers in shared memory, filling
+The front-end sends I/O by allocating proper buffers in shared memory, filling
 the request data, and putting guest addresses of those buffers into virtqueues.
 
 A Virtio-Block request looks as follows.
 
-```
+```c
 struct virtio_blk_req {
         uint32_t type; // READ, WRITE, FLUSH (read-only)
         uint64_t offset; // offset in the disk (read-only)
@@ -135,7 +133,7 @@ struct virtio_blk_req {
 ```
 And a Virtio-SCSI request as follows.
 
-```
+```c
 struct virtio_scsi_req_cmd {
   struct virtio_scsi_cmd_req *req; // request data (read-only)
   struct iovec read_only_buffers[]; // scatter-gatter list for WRITE I/Os
@@ -149,7 +147,7 @@ to be converted into a chain of such descriptors. A single descriptor can be
 either readable or writable, so each I/O request consists of at least two
 (request + response).
 
-```
+```c
 struct virtq_desc {
         /* Address (guest-physical). */
         le64 addr;
@@ -186,7 +184,7 @@ proper data and interrupts the guest by doing an eventfd_write on the call
 descriptor for proper virtqueue. There are multiple interrupt coalescing
 features involved, but they are not be discussed in this document.
 
-## SPDK optimizations {#vhost_spdk_optimizations}
+### SPDK optimizations {#vhost_spdk_optimizations}
 
 Due to its poll-mode nature, SPDK vhost removes the requirement for I/O submission
 notifications, drastically increasing the vhost server throughput and decreasing

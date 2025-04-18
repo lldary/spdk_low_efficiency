@@ -1,35 +1,8 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #include "spdk/string.h"
 #include "jsonrpc_internal.h"
 #include "spdk/util.h"
@@ -125,7 +98,7 @@ jsonrpc_client_recv(struct spdk_jsonrpc_client *client)
 	rc = recv(client->sockfd, client->recv_buf + client->recv_offset,
 		  client->recv_buf_size - client->recv_offset - 1, 0);
 	if (rc < 0) {
-		/* For EINTR we pretend that nothing was reveived. */
+		/* For EINTR we pretend that nothing was received. */
 		if (errno == EINTR) {
 			return 0;
 		} else {
@@ -227,21 +200,13 @@ static int
 jsonrpc_client_connect(struct spdk_jsonrpc_client *client, int domain, int protocol,
 		       struct sockaddr *server_addr, socklen_t addrlen)
 {
-	int rc, flags;
+	int rc;
 
-	client->sockfd = socket(domain, SOCK_STREAM, protocol);
+	client->sockfd = socket(domain, SOCK_STREAM | SOCK_NONBLOCK, protocol);
 	if (client->sockfd < 0) {
 		rc = errno;
 		SPDK_ERRLOG("socket() failed\n");
 		return -rc;
-	}
-
-	flags = fcntl(client->sockfd, F_GETFL);
-	if (flags < 0 || fcntl(client->sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
-		rc = errno;
-		SPDK_ERRLOG("fcntl(): can't set nonblocking mode for socket (%d): %s\n",
-			    errno, spdk_strerror(errno));
-		goto err;
 	}
 
 	rc = connect(client->sockfd, server_addr, addrlen);
@@ -316,8 +281,8 @@ spdk_jsonrpc_client_connect(const char *addr, int addr_family)
 
 		rc = getaddrinfo(host, port, &hints, &res);
 		if (rc != 0) {
-			SPDK_ERRLOG("Unable to look up RPC connnect address '%s' (%d): %s\n", addr, rc, gai_strerror(rc));
-			rc = -EINVAL;
+			SPDK_ERRLOG("Unable to look up RPC connect address '%s' (%d): %s\n", addr, rc, gai_strerror(rc));
+			rc = -(abs(rc));
 			goto err;
 		}
 
@@ -391,8 +356,9 @@ spdk_jsonrpc_client_poll(struct spdk_jsonrpc_client *client, int timeout)
 	}
 }
 
-int spdk_jsonrpc_client_send_request(struct spdk_jsonrpc_client *client,
-				     struct spdk_jsonrpc_client_request *req)
+int
+spdk_jsonrpc_client_send_request(struct spdk_jsonrpc_client *client,
+				 struct spdk_jsonrpc_client_request *req)
 {
 	if (client->request != NULL) {
 		return -ENOSPC;

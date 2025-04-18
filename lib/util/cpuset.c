@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) Intel Corporation. All rights reserved.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation. All rights reserved.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/cpuset.h"
@@ -37,7 +9,7 @@
 struct spdk_cpuset *
 spdk_cpuset_alloc(void)
 {
-	return (struct spdk_cpuset *)calloc(sizeof(struct spdk_cpuset), 1);
+	return (struct spdk_cpuset *)calloc(1, sizeof(struct spdk_cpuset));
 }
 
 void
@@ -132,19 +104,36 @@ spdk_cpuset_get_cpu(const struct spdk_cpuset *set, uint32_t cpu)
 	return (set->cpus[cpu / 8] >> (cpu % 8)) & 1U;
 }
 
+void
+spdk_cpuset_for_each_cpu(const struct spdk_cpuset *set,
+			 void (*fn)(void *ctx, uint32_t cpu), void *ctx)
+{
+	uint8_t n;
+	unsigned int i, j;
+	for (i = 0; i < sizeof(set->cpus); i++) {
+		n = set->cpus[i];
+		for (j = 0; j < 8; j++) {
+			if (n & (1 << j)) {
+				fn(ctx, i * 8 + j);
+			}
+		}
+	}
+}
+
+static void
+count_fn(void *ctx, uint32_t cpu)
+{
+	uint32_t *count = ctx;
+
+	(*count)++;
+}
+
 uint32_t
 spdk_cpuset_count(const struct spdk_cpuset *set)
 {
 	uint32_t count = 0;
-	uint8_t n;
-	unsigned int i;
-	for (i = 0; i < sizeof(set->cpus); i++) {
-		n = set->cpus[i];
-		while (n) {
-			n &= (n - 1);
-			count++;
-		}
-	}
+
+	spdk_cpuset_for_each_cpu(set, count_fn, &count);
 	return count;
 }
 
@@ -287,13 +276,17 @@ parse_mask(const char *mask, struct spdk_cpuset *set, size_t len)
 	spdk_cpuset_zero(set);
 	for (i = len - 1; i >= 0; i--) {
 		c = mask[i];
+		if (c == ',') {
+			/* Linux puts comma delimiters in its cpumasks, just skip them. */
+			continue;
+		}
 		val = hex_value(c);
 		if (val < 0) {
 			/* Invalid character */
 			SPDK_ERRLOG("Invalid character in core mask '%s' (%c)\n", mask, c);
 			return -1;
 		}
-		for (j = 0; j < 4 && lcore < sizeof(set->cpus); j++, lcore++) {
+		for (j = 0; j < 4 && lcore < SPDK_CPUSET_SIZE; j++, lcore++) {
 			if ((1 << j) & val) {
 				spdk_cpuset_set_cpu(set, lcore, true);
 			}

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES.
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -8,21 +12,15 @@ source $rootdir/test/nvmf/common.sh
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
-rpc_py="$rootdir/scripts/rpc.py"
-
 function starttarget() {
+	nvmftestinit
+
 	# Start the target
 	nvmfappstart -m 0x1E
 
 	$rpc_py nvmf_create_transport $NVMF_TRANSPORT_OPTS -u 8192
 
 	num_subsystems=({1..10})
-	# SoftRoce does not have enough queues available for
-	# this test. Detect if we're using software RDMA.
-	# If so, only use two subsystem.
-	if check_ip_is_soft_roce "$NVMF_FIRST_TARGET_IP"; then
-		num_subsystems=({1..2})
-	fi
 
 	timing_enter create_subsystems
 	# Create subsystems
@@ -91,7 +89,8 @@ function nvmf_shutdown_tc1() {
 	kill -0 $nvmfpid
 
 	# Connect with bdevperf and confirm it works
-	$rootdir/test/bdev/bdevperf/bdevperf -r /var/tmp/bdevperf.sock --json <(gen_nvmf_target_json "${num_subsystems[@]}") -q 64 -o 65536 -w verify -t 1
+	$rootdir/build/examples/bdevperf --json <(gen_nvmf_target_json "${num_subsystems[@]}") \
+		-q 64 -o 65536 -w verify -t 1
 
 	stoptarget
 }
@@ -101,7 +100,7 @@ function nvmf_shutdown_tc2() {
 	starttarget
 
 	# Run bdevperf
-	$rootdir/test/bdev/bdevperf/bdevperf -r /var/tmp/bdevperf.sock --json <(gen_nvmf_target_json "${num_subsystems[@]}") -q 64 -o 65536 -w verify -t 10 &
+	$rootdir/build/examples/bdevperf -r /var/tmp/bdevperf.sock --json <(gen_nvmf_target_json "${num_subsystems[@]}") -q 64 -o 65536 -w verify -t 10 &
 	perfpid=$!
 	waitforlisten $perfpid /var/tmp/bdevperf.sock
 	$rpc_py -s /var/tmp/bdevperf.sock framework_wait_init
@@ -123,7 +122,7 @@ function nvmf_shutdown_tc3() {
 	starttarget
 
 	# Run bdevperf
-	$rootdir/test/bdev/bdevperf/bdevperf -r /var/tmp/bdevperf.sock --json <(gen_nvmf_target_json "${num_subsystems[@]}") -q 64 -o 65536 -w verify -t 10 &
+	$rootdir/build/examples/bdevperf -r /var/tmp/bdevperf.sock --json <(gen_nvmf_target_json "${num_subsystems[@]}") -q 64 -o 65536 -w verify -t 10 &
 	perfpid=$!
 	waitforlisten $perfpid /var/tmp/bdevperf.sock
 	$rpc_py -s /var/tmp/bdevperf.sock framework_wait_init
@@ -135,21 +134,37 @@ function nvmf_shutdown_tc3() {
 
 	# Kill the target half way through
 	killprocess $nvmfpid
-	nvmfpid=
-
-	# Verify bdevperf exits successfully
 	sleep 1
-	# TODO: Right now the NVMe-oF initiator will not correctly detect broken connections
-	# and so it will never shut down. Just kill it.
-	kill -9 $perfpid || true
+	NOT wait $perfpid
 
 	stoptarget
 }
 
-nvmftestinit
+# Test 4: Kill the target unexpectedly with I/O outstanding, highly fragmented payload
+function nvmf_shutdown_tc4() {
+	starttarget
+
+	# Run nvme_perf with highly fragmented payload
+	$rootdir/build/bin/spdk_nvme_perf -q 128 -o 45056 -O 4096 -w randwrite -t 20 -r "trtype:$TEST_TRANSPORT adrfam:IPV4 traddr:$NVMF_FIRST_TARGET_IP trsvcid:$NVMF_PORT" -P 4 &
+	perfpid=$!
+	sleep 5
+	# Expand the trap to clean up bdevperf if something goes wrong
+	trap 'process_shm --id $NVMF_APP_SHM_ID; kill -9 $perfpid || true; nvmftestfini; exit 1' SIGINT SIGTERM EXIT
+
+	# Kill the target half way through
+	killprocess $nvmfpid
+	sleep 1
+	# Due to IOs are completed with errors, perf exits with bad status
+	NOT wait $perfpid
+	stoptarget
+}
 
 run_test "nvmf_shutdown_tc1" nvmf_shutdown_tc1
 run_test "nvmf_shutdown_tc2" nvmf_shutdown_tc2
 run_test "nvmf_shutdown_tc3" nvmf_shutdown_tc3
+# Temporarily disable on e810 due to issue #3523
+if ! [[ "$SPDK_TEST_NVMF_NICS" == "e810" && "$TEST_TRANSPORT" == "rdma" ]]; then
+	run_test "nvmf_shutdown_tc4" nvmf_shutdown_tc4
+fi
 
 trap - SIGINT SIGTERM EXIT

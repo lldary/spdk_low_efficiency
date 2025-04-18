@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2015 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -52,7 +24,7 @@ struct ioat_device {
 	TAILQ_ENTRY(ioat_device) tailq;
 };
 
-static TAILQ_HEAD(, ioat_device) g_devices;
+static TAILQ_HEAD(, ioat_device) g_devices = TAILQ_HEAD_INITIALIZER(g_devices);
 static struct ioat_device *g_next_device;
 
 static struct user_config g_user_config;
@@ -234,8 +206,6 @@ attach_cb(void *cb_ctx, struct spdk_pci_device *pci_dev, struct spdk_ioat_chan *
 static int
 ioat_init(void)
 {
-	TAILQ_INIT(&g_devices);
-
 	if (spdk_ioat_probe(NULL, probe_cb, attach_cb) != 0) {
 		fprintf(stderr, "ioat_probe() failed\n");
 		return 1;
@@ -399,6 +369,7 @@ init(void)
 {
 	struct spdk_env_opts opts;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "ioat_perf";
 	opts.core_mask = g_user_config.core_mask;
@@ -488,12 +459,12 @@ associate_workers_with_chan(void)
 						   g_user_config.queue_depth * 2, /* src + dst */
 						   g_user_config.xfer_size_bytes,
 						   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-						   SPDK_ENV_SOCKET_ID_ANY);
+						   SPDK_ENV_NUMA_ID_ANY);
 		t->task_pool = spdk_mempool_create(task_pool_name,
 						   g_user_config.queue_depth,
 						   sizeof(struct ioat_task),
 						   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-						   SPDK_ENV_SOCKET_ID_ANY);
+						   SPDK_ENV_NUMA_ID_ANY);
 		if (!t->data_pool || !t->task_pool) {
 			fprintf(stderr, "Could not allocate buffer pool.\n");
 			spdk_mempool_free(t->data_pool);
@@ -522,8 +493,8 @@ int
 main(int argc, char **argv)
 {
 	int rc;
-	struct worker_thread *worker, *master_worker;
-	unsigned master_core;
+	struct worker_thread *worker, *main_worker;
+	unsigned main_core;
 
 	if (parse_args(argc, argv) != 0) {
 		return 1;
@@ -564,22 +535,22 @@ main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	/* Launch all of the slave workers */
-	master_core = spdk_env_get_current_core();
-	master_worker = NULL;
+	/* Launch all of the secondary workers */
+	main_core = spdk_env_get_current_core();
+	main_worker = NULL;
 	worker = g_workers;
 	while (worker != NULL) {
-		if (worker->core != master_core) {
+		if (worker->core != main_core) {
 			spdk_env_thread_launch_pinned(worker->core, work_fn, worker);
 		} else {
-			assert(master_worker == NULL);
-			master_worker = worker;
+			assert(main_worker == NULL);
+			main_worker = worker;
 		}
 		worker = worker->next;
 	}
 
-	assert(master_worker != NULL);
-	rc = work_fn(master_worker);
+	assert(main_worker != NULL);
+	rc = work_fn(main_worker);
 	if (rc != 0) {
 		goto cleanup;
 	}
@@ -592,5 +563,6 @@ cleanup:
 	unregister_workers();
 	ioat_exit();
 
+	spdk_env_fini();
 	return rc;
 }

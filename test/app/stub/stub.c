@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -40,25 +12,32 @@
 
 static char g_path[256];
 static struct spdk_poller *g_poller;
+/* default sleep time in ms */
+static uint32_t g_sleep_time = 1000;
+static uint32_t g_io_queue_size;
 
 struct ctrlr_entry {
 	struct spdk_nvme_ctrlr *ctrlr;
-	struct ctrlr_entry *next;
+	TAILQ_ENTRY(ctrlr_entry) link;
 };
 
-static struct ctrlr_entry *g_controllers = NULL;
+static TAILQ_HEAD(, ctrlr_entry) g_controllers = TAILQ_HEAD_INITIALIZER(g_controllers);
 
 static void
 cleanup(void)
 {
-	struct ctrlr_entry *ctrlr_entry = g_controllers;
+	struct ctrlr_entry *ctrlr_entry, *tmp;
+	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
 
-	while (ctrlr_entry) {
-		struct ctrlr_entry *next = ctrlr_entry->next;
-
-		spdk_nvme_detach(ctrlr_entry->ctrlr);
+	TAILQ_FOREACH_SAFE(ctrlr_entry, &g_controllers, link, tmp) {
+		TAILQ_REMOVE(&g_controllers, ctrlr_entry, link);
+		spdk_nvme_cuse_unregister(ctrlr_entry->ctrlr);
+		spdk_nvme_detach_async(ctrlr_entry->ctrlr, &detach_ctx);
 		free(ctrlr_entry);
-		ctrlr_entry = next;
+	}
+
+	if (detach_ctx) {
+		spdk_nvme_detach_poll(detach_ctx);
 	}
 }
 
@@ -70,8 +49,11 @@ usage(char *executable_name)
 	printf(" -i shared memory ID [required]\n");
 	printf(" -m mask    core mask for DPDK\n");
 	printf(" -n channel number of memory channels used for DPDK\n");
-	printf(" -p core    master (primary) core for DPDK\n");
+	printf(" -L flag    enable log flag\n");
+	printf(" -p core    main (primary) core for DPDK\n");
 	printf(" -s size    memory size in MB for DPDK\n");
+	printf(" -t msec    sleep time (ms) between checking for admin completions\n");
+	printf(" -q size    override default io_queue_size when attaching controllers\n");
 	printf(" -H         show this usage\n");
 }
 
@@ -79,11 +61,9 @@ static bool
 probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	 struct spdk_nvme_ctrlr_opts *opts)
 {
-	/*
-	 * Set the io_queue_size to UINT16_MAX to initialize
-	 * the controller with the possible largest queue size.
-	 */
-	opts->io_queue_size = UINT16_MAX;
+	if (g_io_queue_size > 0) {
+		opts->io_queue_size = g_io_queue_size;
+	}
 	return true;
 }
 
@@ -100,14 +80,21 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	}
 
 	entry->ctrlr = ctrlr;
-	entry->next = g_controllers;
-	g_controllers = entry;
+	TAILQ_INSERT_TAIL(&g_controllers, entry, link);
+	if (spdk_nvme_cuse_register(ctrlr) != 0) {
+		fprintf(stderr, "could not register ctrlr with cuse\n");
+	}
 }
 
 static int
 stub_sleep(void *arg)
 {
-	usleep(1000 * 1000);
+	struct ctrlr_entry *ctrlr_entry, *tmp;
+
+	usleep(g_sleep_time * 1000);
+	TAILQ_FOREACH_SAFE(ctrlr_entry, &g_controllers, link, tmp) {
+		spdk_nvme_ctrlr_process_admin_completions(ctrlr_entry->ctrlr);
+	}
 	return 0;
 }
 
@@ -116,6 +103,13 @@ stub_start(void *arg1)
 {
 	int shm_id = (intptr_t)arg1;
 
+	snprintf(g_path, sizeof(g_path), "/var/run/spdk_stub%d", shm_id);
+
+	/* If sentinel file already exists from earlier crashed stub, delete
+	 * it now to avoid mknod() failure after spdk_nvme_probe() completes.
+	 */
+	unlink(g_path);
+
 	spdk_unaffinitize_thread();
 
 	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL) != 0) {
@@ -123,7 +117,6 @@ stub_start(void *arg1)
 		exit(1);
 	}
 
-	snprintf(g_path, sizeof(g_path), "/var/run/spdk_stub%d", shm_id);
 	if (mknod(g_path, S_IFREG, 0) != 0) {
 		fprintf(stderr, "could not create sentinel file %s\n", g_path);
 		exit(1);
@@ -148,17 +141,27 @@ main(int argc, char **argv)
 	long int val;
 
 	/* default value in opts structure */
-	spdk_app_opts_init(&opts);
+	spdk_app_opts_init(&opts, sizeof(opts));
 
 	opts.name = "stub";
 	opts.rpc_addr = NULL;
+	opts.env_context = "--proc-type=primary";
 
-	while ((ch = getopt(argc, argv, "i:m:n:p:s:H")) != -1) {
+	while ((ch = getopt(argc, argv, "i:m:n:p:q:s:t:HL:")) != -1) {
 		if (ch == 'm') {
 			opts.reactor_mask = optarg;
-		} else if (ch == '?') {
+		} else if (ch == 'L') {
+			if (spdk_log_set_flag(optarg) != 0) {
+				SPDK_ERRLOG("unknown flag: %s\n", optarg);
+				usage(argv[0]);
+				exit(EXIT_FAILURE);
+			}
+#ifdef DEBUG
+			opts.print_level = SPDK_LOG_DEBUG;
+#endif
+		} else if (ch == '?' || ch == 'H') {
 			usage(argv[0]);
-			exit(1);
+			exit(EXIT_SUCCESS);
 		} else {
 			val = spdk_strtol(optarg, 10);
 			if (val < 0) {
@@ -173,15 +176,20 @@ main(int argc, char **argv)
 				opts.mem_channel = val;
 				break;
 			case 'p':
-				opts.master_core = val;
+				opts.main_core = val;
 				break;
 			case 's':
 				opts.mem_size = val;
 				break;
-			case 'H':
+			case 't':
+				g_sleep_time = val;
+				break;
+			case 'q':
+				g_io_queue_size = val;
+				break;
 			default:
 				usage(argv[0]);
-				exit(EXIT_SUCCESS);
+				exit(EXIT_FAILURE);
 			}
 		}
 	}

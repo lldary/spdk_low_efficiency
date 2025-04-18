@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2015 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /** \file
@@ -52,6 +24,10 @@ extern "C" {
 #define SPDK_PCI_VID_VIRTIO		0x1af4
 #define SPDK_PCI_VID_CNEXLABS		0x1d1d
 #define SPDK_PCI_VID_VMWARE		0x15ad
+#define SPDK_PCI_VID_REDHAT		0x1b36
+#define SPDK_PCI_VID_NUTANIX		0x4e58
+#define SPDK_PCI_VID_HUAWEI		0x19e5
+#define SPDK_PCI_VID_MICROSOFT		0x1414
 
 #define SPDK_PCI_CLASS_ANY_ID		0xffffff
 /**
@@ -63,7 +39,8 @@ extern "C" {
  */
 #define SPDK_PCI_CLASS_NVME		0x010802
 
-#define PCI_DEVICE_ID_INTEL_IDXD	0x0b25
+#define PCI_DEVICE_ID_INTEL_DSA		0x0b25
+#define PCI_DEVICE_ID_INTEL_IAA		0x0cfe
 
 #define PCI_DEVICE_ID_INTEL_IOAT_SNB0	0x3c20
 #define PCI_DEVICE_ID_INTEL_IOAT_SNB1	0x3c21
@@ -127,10 +104,23 @@ extern "C" {
 #define PCI_DEVICE_ID_VIRTIO_SCSI_LEGACY 0x1004
 #define PCI_DEVICE_ID_VIRTIO_BLK_MODERN	0x1042
 #define PCI_DEVICE_ID_VIRTIO_SCSI_MODERN 0x1048
+#define PCI_DEVICE_ID_VIRTIO_FS		0x105A
 
 #define PCI_DEVICE_ID_VIRTIO_VHOST_USER 0x1017
 
-#define PCI_DEVICE_ID_INTEL_VMD		0x201d
+#define PCI_DEVICE_ID_INTEL_VMD_SKX	0x201d
+#define PCI_DEVICE_ID_INTEL_VMD_ICX	0x28c0
+
+#define PCI_ROOT_PORT_A_INTEL_SKX	0x2030
+#define PCI_ROOT_PORT_B_INTEL_SKX	0x2031
+#define PCI_ROOT_PORT_C_INTEL_SKX	0x2032
+#define PCI_ROOT_PORT_D_INTEL_SKX	0x2033
+#define PCI_ROOT_PORT_A_INTEL_ICX	0x347a
+#define PCI_ROOT_PORT_B_INTEL_ICX	0x347b
+#define PCI_ROOT_PORT_C_INTEL_ICX	0x347c
+#define PCI_ROOT_PORT_D_INTEL_ICX	0x347d
+
+
 
 #ifdef __cplusplus
 }

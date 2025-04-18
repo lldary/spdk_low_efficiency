@@ -1,35 +1,7 @@
-/*-
- *   BSD LICENSE
- *
+/*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2008-2012 Daisuke Aoyama <aoyama@peach.ne.jp>.
- *   Copyright (c) Intel Corporation.
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef SPDK_SCSI_INTERNAL_H
@@ -43,7 +15,9 @@
 #include "spdk/trace.h"
 #include "spdk/dif.h"
 
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
+
+#define SPDK_SCSI_DEV_MAX_LUN	256
 
 enum {
 	SPDK_SCSI_TASK_UNKNOWN = -1,
@@ -92,7 +66,7 @@ struct spdk_scsi_dev {
 
 	char					name[SPDK_SCSI_DEV_MAX_NAME + 1];
 
-	struct spdk_scsi_lun			*lun[SPDK_SCSI_DEV_MAX_LUN];
+	TAILQ_HEAD(, spdk_scsi_lun)		luns;
 
 	int					num_ports;
 	struct spdk_scsi_port			port[SPDK_SCSI_DEV_MAX_PORTS];
@@ -111,6 +85,12 @@ struct spdk_scsi_lun {
 	/** LUN id for this logical unit. */
 	int id;
 
+	/** The LUN is removed */
+	bool removed;
+
+	/** The LUN is resizing */
+	bool resizing;
+
 	/** Pointer to the SCSI device containing this LUN. */
 	struct spdk_scsi_dev *dev;
 
@@ -126,14 +106,8 @@ struct spdk_scsi_lun {
 	/** I/O channel for the bdev associated with this LUN. */
 	struct spdk_io_channel *io_channel;
 
-	/**  The reference number for this LUN, thus we can correctly free the io_channel */
-	uint32_t ref;
-
 	/** Poller to release the resource of the lun when it is hot removed */
 	struct spdk_poller *hotremove_poller;
-
-	/** The LUN is removed */
-	bool removed;
 
 	/** Callback to be fired when LUN removal is first triggered. */
 	void (*hotremove_cb)(const struct spdk_scsi_lun *lun, void *arg);
@@ -141,14 +115,11 @@ struct spdk_scsi_lun {
 	/** Argument for hotremove_cb */
 	void *hotremove_ctx;
 
-	/** Registrant head for I_T nexus */
-	TAILQ_HEAD(, spdk_scsi_pr_registrant) reg_head;
-	/** Persistent Reservation Generation */
-	uint32_t pr_generation;
-	/** Reservation for the LUN */
-	struct spdk_scsi_pr_reservation reservation;
-	/** Reservation holder for SPC2 RESERVE(6) and RESERVE(10) */
-	struct spdk_scsi_pr_registrant scsi2_holder;
+	/** Callback to be fired when the bdev size of related LUN has changed. */
+	void (*resize_cb)(const struct spdk_scsi_lun *, void *);
+
+	/** Argument for resize_cb */
+	void *resize_ctx;
 
 	/** List of open descriptors for this LUN. */
 	TAILQ_HEAD(, spdk_scsi_lun_desc) open_descs;
@@ -167,9 +138,26 @@ struct spdk_scsi_lun {
 
 	/** poller to check completion of tasks prior to reset */
 	struct spdk_poller *reset_poller;
+
+	/** A structure to connect LUNs in a list. */
+	TAILQ_ENTRY(spdk_scsi_lun) tailq;
+
+	/**  The reference number for this LUN, thus we can correctly free the io_channel */
+	uint32_t ref;
+
+	/** Persistent Reservation Generation */
+	uint32_t pr_generation;
+	/** Registrant head for I_T nexus */
+	TAILQ_HEAD(, spdk_scsi_pr_registrant) reg_head;
+	/** Reservation for the LUN */
+	struct spdk_scsi_pr_reservation reservation;
+	/** Reservation holder for SPC2 RESERVE(6) and RESERVE(10) */
+	struct spdk_scsi_pr_registrant scsi2_holder;
 };
 
-struct spdk_scsi_lun *scsi_lun_construct(struct spdk_bdev *bdev,
+struct spdk_scsi_lun *scsi_lun_construct(const char *bdev_name,
+		void (*resize_cb)(const struct spdk_scsi_lun *, void *),
+		void *resize_ctx,
 		void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
 		void *hotremove_ctx);
 void scsi_lun_destruct(struct spdk_scsi_lun *lun);
@@ -204,11 +192,5 @@ int scsi_pr_check(struct spdk_scsi_task *task);
 int scsi2_reserve(struct spdk_scsi_task *task, uint8_t *cdb);
 int scsi2_release(struct spdk_scsi_task *task);
 int scsi2_reserve_check(struct spdk_scsi_task *task);
-
-struct spdk_scsi_globals {
-	pthread_mutex_t mutex;
-};
-
-extern struct spdk_scsi_globals g_scsi;
 
 #endif /* SPDK_SCSI_INTERNAL_H */

@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2021-2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
@@ -45,15 +18,15 @@
 
 /*
  * The following is not a public header file, but the CLI does expose
- * some internals of blobstore for dev/debug puposes so we
+ * some internals of blobstore for dev/debug purposes so we
  * include it here.
  */
 #include "../lib/blob/blobstore.h"
 static void cli_start(void *arg1);
 
 static const char *program_name = "blobcli";
-/* default name for .conf file, any name can be used however with -c switch */
-static const char *program_conf = "blobcli.conf";
+/* default name for .json file, any name can be used however with -j switch */
+static const char *program_conf = "blobcli.json";
 
 /*
  * CMD mode runs one command at a time which can be annoying as the init takes
@@ -84,6 +57,8 @@ enum cli_action_type {
 	CLI_DUMP_BS,
 	CLI_SHELL_EXIT,
 	CLI_HELP,
+	CLI_RECOVER,
+	CLI_DELETE_BLOB,
 };
 
 #define BUFSIZE 255
@@ -159,11 +134,13 @@ print_cmds(void)
 	printf("\t-n <# clusters> - create new blob\n");
 	printf("\t-p <blobid> - set the superblob to the ID provided\n");
 	printf("\t-r <blobid> name - remove xattr name/value pair\n");
+	printf("\t-R - recover the blobstore: like fsck for the blobstore\n");
 	printf("\t-s <blobid> | bs - show blob info or blobstore info\n");
-	printf("\t-x <blobid> name value - set xattr name/value pair\n");
-	printf("\t-X - exit when in interactive shell mode\n");
 	printf("\t-S - enter interactive shell mode\n");
 	printf("\t-T <filename> - automated script mode\n");
+	printf("\t-w <blobid> - delete (whack) a blob\n");
+	printf("\t-x <blobid> name value - set xattr name/value pair\n");
+	printf("\t-X - exit when in interactive shell mode\n");
 	printf("\n");
 }
 
@@ -179,7 +156,7 @@ usage(struct cli_context_t *cli_context, char *msg)
 
 	if (!cli_context || cli_context->cli_mode == CLI_MODE_CMD) {
 		printf("Version %s\n", SPDK_VERSION_STRING);
-		printf("Usage: %s [-c SPDK config_file] Command\n", program_name);
+		printf("Usage: %s [-j SPDK josn_config_file] Command\n", program_name);
 		printf("\n%s is a command line tool for interacting with blobstore\n",
 		       program_name);
 		printf("on the underlying device specified in the conf file passed\n");
@@ -277,7 +254,7 @@ close_cb(void *arg1, int bserrno)
 }
 
 /*
- * Callback function for sync'ing metadata.
+ * Callback function for syncing metadata.
  */
 static void
 sync_cb(void *arg1, int bserrno)
@@ -350,7 +327,7 @@ blob_create_cb(void *arg1, spdk_blob_id blobid, int bserrno)
 	}
 
 	cli_context->blobid = blobid;
-	printf("New blob id %" PRIu64 "\n", cli_context->blobid);
+	printf("New blob id 0x%" PRIx64 "\n", cli_context->blobid);
 
 	/* if we're in script mode, we need info on all blobids for later */
 	if (cli_context->cli_mode == CLI_MODE_SCRIPT) {
@@ -393,7 +370,7 @@ show_bs_cb(void *arg1, spdk_blob_id blobid, int bserrno)
 	printf("\tAPI Version: %d\n", SPDK_BS_VERSION);
 
 	if (bserrno != -ENOENT) {
-		printf("\tsuper blob ID: %" PRIu64 "\n", cli_context->superid);
+		printf("\tsuper blob ID: 0x%" PRIx64 "\n", cli_context->superid);
 	} else {
 		printf("\tsuper blob ID: none assigned\n");
 	}
@@ -437,7 +414,7 @@ show_blob(struct cli_context_t *cli_context)
 
 	printf("Blob Public Info:\n");
 
-	printf("blob ID: %" PRIu64 "\n", cli_context->blobid);
+	printf("blob ID: 0x%" PRIx64 "\n", cli_context->blobid);
 
 	val = spdk_blob_get_num_clusters(cli_context->blob);
 	printf("# of clusters: %" PRIu64 "\n", val);
@@ -512,7 +489,7 @@ blob_iter_cb(void *arg1, struct spdk_blob *blob, int bserrno)
 
 	if (cli_context->action == CLI_LIST_BLOBS) {
 		printf("\nList BLOBS:\n");
-		printf("Found blob with ID# %" PRIu64 "\n",
+		printf("Found blob with ID# 0x%" PRIx64 "\n",
 		       spdk_blob_get_id(blob));
 	} else if (spdk_blob_get_id(blob) == cli_context->blobid) {
 		/*
@@ -573,6 +550,8 @@ set_xattr_cb(void *cb_arg, struct spdk_blob *blob, int bserrno)
 	spdk_blob_sync_md(cli_context->blob, sync_cb, cli_context);
 }
 
+static void __read_dump_cb(void *arg1);
+
 /*
  * Callback function for reading a blob for dumping to a file.
  */
@@ -597,6 +576,19 @@ read_dump_cb(void *arg1, int bserrno)
 			  bserrno);
 		return;
 	}
+
+	/* This completion may have occurred in the context of a read to
+	 * an unallocated cluster.  So we can't issue the next read here, or
+	 * we risk overflowing the stack.  So use spdk_thread_send_msg() to
+	 * make sure we unwind before doing the next read.
+	 */
+	spdk_thread_send_msg(spdk_get_thread(), __read_dump_cb, cli_context);
+}
+
+static void
+__read_dump_cb(void *arg1)
+{
+	struct cli_context_t *cli_context = arg1;
 
 	printf(".");
 	if (++cli_context->io_unit_count < cli_context->blob_io_units) {
@@ -700,6 +692,12 @@ dump_imp_open_cb(void *cb_arg, struct spdk_blob *blob, int bserrno)
 			return;
 		}
 
+		if (cli_context->blob->active.num_clusters == 0) {
+			fclose(cli_context->fp);
+			spdk_blob_close(cli_context->blob, close_cb, cli_context);
+			return;
+		}
+
 		/* read a io_unit of data from the blob */
 		spdk_blob_io_read(cli_context->blob, cli_context->channel,
 				  cli_context->buff, cli_context->io_unit_count,
@@ -794,6 +792,24 @@ fill_blob_cb(void *arg1, struct spdk_blob *blob, int bserrno)
 }
 
 /*
+ * Callback for deleting a blob
+ */
+static void
+delete_blob_cb(void *arg1, int bserrno)
+{
+	struct cli_context_t *cli_context = arg1;
+
+	if (bserrno) {
+		unload_bs(cli_context, "Error in delete_blob callback",
+			  bserrno);
+		return;
+	}
+
+	printf("Blob 0x%lx has been deleted.\n", cli_context->blobid);
+	unload_bs(cli_context, "", 0);
+}
+
+/*
  * Multiple actions require us to open the bs first so here we use
  * a common callback to set a bunch of values and then move on to
  * the next step saved off via function pointer.
@@ -849,6 +865,13 @@ load_bs_cb(void *arg1, struct spdk_blob_store *bs, int bserrno)
 		spdk_bs_open_blob(cli_context->bs, cli_context->blobid,
 				  fill_blob_cb, cli_context);
 		break;
+	case CLI_RECOVER:
+		unload_bs(cli_context, "", 0);
+		break;
+	case CLI_DELETE_BLOB:
+		spdk_bs_delete_blob(cli_context->bs, cli_context->blobid,
+				    delete_blob_cb, cli_context);
+		break;
 
 	default:
 		/* should never get here */
@@ -857,30 +880,52 @@ load_bs_cb(void *arg1, struct spdk_blob_store *bs, int bserrno)
 	}
 }
 
+static void
+base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+		   void *event_ctx)
+{
+	printf("Unsupported bdev event: type %d on bdev %s\n", type, spdk_bdev_get_name(bdev));
+}
+
 /*
  * Load the blobstore.
  */
 static void
 load_bs(struct cli_context_t *cli_context)
 {
-	struct spdk_bdev *bdev = NULL;
 	struct spdk_bs_dev *bs_dev = NULL;
+	int rc;
+	struct spdk_bs_opts	opts = {};
+	struct spdk_bs_opts	*optsp = NULL;
 
-	bdev = spdk_bdev_get_by_name(cli_context->bdev_name);
-	if (bdev == NULL) {
-		printf("Could not find a bdev\n");
+	rc = spdk_bdev_create_bs_dev_ext(cli_context->bdev_name, base_bdev_event_cb,
+					 NULL, &bs_dev);
+	if (rc != 0) {
+		printf("Could not create blob bdev, %s!!\n", spdk_strerror(-rc));
 		spdk_app_stop(-1);
 		return;
 	}
 
-	bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
-	if (bs_dev == NULL) {
-		printf("Could not create blob bdev!!\n");
-		spdk_app_stop(-1);
-		return;
+	if (cli_context->action == CLI_RECOVER) {
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.force_recover = true;
+		optsp = &opts;
 	}
 
-	spdk_bs_load(bs_dev, NULL, load_bs_cb, cli_context);
+	spdk_bs_load(bs_dev, optsp, load_bs_cb, cli_context);
+}
+
+static int
+print_bdev(void *ctx, struct spdk_bdev *bdev)
+{
+	uint32_t *count = ctx;
+
+	(*count)++;
+
+	printf("\tbdev Name: %s\n", spdk_bdev_get_name(bdev));
+	printf("\tbdev Product Name: %s\n",
+	       spdk_bdev_get_product_name(bdev));
+	return 0;
 }
 
 /*
@@ -889,19 +934,14 @@ load_bs(struct cli_context_t *cli_context)
 static void
 list_bdevs(struct cli_context_t *cli_context)
 {
-	struct spdk_bdev *bdev = NULL;
+	uint32_t count = 0;
 
 	printf("\nList bdevs:\n");
 
-	bdev = spdk_bdev_first();
-	if (bdev == NULL) {
+	spdk_for_each_bdev(&count, print_bdev);
+
+	if (count == 0) {
 		printf("Could not find a bdev\n");
-	}
-	while (bdev) {
-		printf("\tbdev Name: %s\n", spdk_bdev_get_name(bdev));
-		printf("\tbdev Product Name: %s\n",
-		       spdk_bdev_get_product_name(bdev));
-		bdev = spdk_bdev_next(bdev);
 	}
 
 	printf("\n");
@@ -939,20 +979,14 @@ bs_init_cb(void *cb_arg, struct spdk_blob_store *bs,
 static void
 init_bs(struct cli_context_t *cli_context)
 {
-	struct spdk_bdev *bdev = NULL;
+	int rc;
 
-	bdev = spdk_bdev_get_by_name(cli_context->bdev_name);
-	if (bdev == NULL) {
-		printf("Could not find a bdev\n");
-		spdk_app_stop(-1);
-		return;
-	}
-	printf("Init blobstore using bdev Product Name: %s\n",
-	       spdk_bdev_get_product_name(bdev));
+	printf("Init blobstore using bdev Name: %s\n", cli_context->bdev_name);
 
-	cli_context->bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
-	if (cli_context->bs_dev == NULL) {
-		printf("Could not create blob bdev!!\n");
+	rc = spdk_bdev_create_bs_dev_ext(cli_context->bdev_name, base_bdev_event_cb, NULL,
+					 &cli_context->bs_dev);
+	if (rc != 0) {
+		printf("Could not create blob bdev, %s!!\n", spdk_strerror(-rc));
 		spdk_app_stop(-1);
 		return;
 	}
@@ -992,11 +1026,14 @@ bsdump_print_xattr(FILE *fp, const char *bstype, const char *name, const void *v
 	} else if (strncmp(bstype, "LVOLSTORE", SPDK_BLOBSTORE_TYPE_LENGTH) == 0) {
 		if (strcmp(name, "name") == 0) {
 			fprintf(fp, "%s", (char *)value);
-		} else if (strcmp(name, "uuid") == 0 && value_len == sizeof(struct spdk_uuid)) {
-			char uuid[SPDK_UUID_STRING_LEN];
+		} else if (strcmp(name, "uuid") == 0) {
+			struct spdk_uuid uuid;
 
-			spdk_uuid_fmt_lower(uuid, sizeof(uuid), (struct spdk_uuid *)value);
-			fprintf(fp, "%s", uuid);
+			if (spdk_uuid_parse(&uuid, (const char *)value) == 0) {
+				fprintf(fp, "%s", (const char *)value);
+			} else {
+				fprintf(fp, "? Invalid UUID");
+			}
 		} else {
 			fprintf(fp, "?");
 		}
@@ -1011,20 +1048,14 @@ bsdump_print_xattr(FILE *fp, const char *bstype, const char *name, const void *v
 static void
 dump_bs(struct cli_context_t *cli_context)
 {
-	struct spdk_bdev *bdev = NULL;
+	int rc;
 
-	bdev = spdk_bdev_get_by_name(cli_context->bdev_name);
-	if (bdev == NULL) {
-		printf("Could not find a bdev\n");
-		spdk_app_stop(-1);
-		return;
-	}
-	printf("Init blobstore using bdev Product Name: %s\n",
-	       spdk_bdev_get_product_name(bdev));
+	printf("Init blobstore using bdev Name: %s\n", cli_context->bdev_name);
 
-	cli_context->bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
-	if (cli_context->bs_dev == NULL) {
-		printf("Could not create blob bdev!!\n");
+	rc = spdk_bdev_create_bs_dev_ext(cli_context->bdev_name, base_bdev_event_cb, NULL,
+					 &cli_context->bs_dev);
+	if (rc != 0) {
+		printf("Could not create blob bdev, %s!!\n", spdk_strerror(-rc));
 		spdk_app_stop(-1);
 		return;
 	}
@@ -1042,7 +1073,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 	int cmd_chosen = 0;
 	char resp;
 
-	while ((op = getopt(argc, argv, "b:c:d:f:hil:m:n:p:r:s:DST:Xx:")) != -1) {
+	while ((op = getopt(argc, argv, "b:d:f:hij:l:m:n:p:r:s:w:DRST:Xx:")) != -1) {
 		switch (op) {
 		case 'b':
 			if (strcmp(cli_context->bdev_name, "") == 0) {
@@ -1050,13 +1081,6 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			} else {
 				printf("Current setting for -b is: %s\n", cli_context->bdev_name);
 				usage(cli_context, "ERROR: -b option can only be set once.\n");
-			}
-			break;
-		case 'c':
-			if (cli_context->app_started == false) {
-				cli_context->config_file = optarg;
-			} else {
-				usage(cli_context, "ERROR: -c option not valid during shell mode.\n");
 			}
 			break;
 		case 'D':
@@ -1067,7 +1091,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_DUMP_BLOB;
-				cli_context->blobid = spdk_strtoll(optarg, 10);
+				cli_context->blobid = spdk_strtoll(optarg, 0);
 				snprintf(cli_context->file, BUFSIZE, "%s", argv[optind]);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
@@ -1077,8 +1101,8 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_FILL;
-				cli_context->blobid = spdk_strtoll(optarg, 10);
-				cli_context->fill_value = spdk_strtol(argv[optind], 10);
+				cli_context->blobid = spdk_strtoll(optarg, 0);
+				cli_context->fill_value = spdk_strtol(argv[optind], 0);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
 			}
@@ -1106,11 +1130,18 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 				cli_context->action = CLI_INIT_BS;
 			}
 			break;
+		case 'j':
+			if (cli_context->app_started == false) {
+				cli_context->config_file = optarg;
+			} else {
+				usage(cli_context, "ERROR: -j option not valid during shell mode.\n");
+			}
+			break;
 		case 'r':
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_REM_XATTR;
-				cli_context->blobid = spdk_strtoll(optarg, 10);
+				cli_context->blobid = spdk_strtoll(optarg, 0);
 				snprintf(cli_context->key, BUFSIZE, "%s", argv[optind]);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
@@ -1131,7 +1162,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_IMPORT_BLOB;
-				cli_context->blobid = spdk_strtoll(optarg, 10);
+				cli_context->blobid = spdk_strtoll(optarg, 0);
 				snprintf(cli_context->file, BUFSIZE, "%s", argv[optind]);
 			} else {
 				usage(cli_context, "ERROR: missing parameter.\n");
@@ -1149,7 +1180,11 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 		case 'p':
 			cmd_chosen++;
 			cli_context->action = CLI_SET_SUPER;
-			cli_context->superid = spdk_strtoll(optarg, 10);
+			cli_context->superid = spdk_strtoll(optarg, 0);
+			break;
+		case 'R':
+			cmd_chosen++;
+			cli_context->action = CLI_RECOVER;
 			break;
 		case 'S':
 			if (cli_context->cli_mode == CLI_MODE_CMD) {
@@ -1164,7 +1199,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 				cli_context->action = CLI_SHOW_BS;
 			} else {
 				cli_context->action = CLI_SHOW_BLOB;
-				cli_context->blobid = spdk_strtoll(optarg, 10);
+				cli_context->blobid = spdk_strtoll(optarg, 0);
 			}
 			break;
 		case 'T':
@@ -1181,6 +1216,11 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 				cli_context->action = CLI_NONE;
 			}
 			break;
+		case 'w':
+			cmd_chosen++;
+			cli_context->action = CLI_DELETE_BLOB;
+			cli_context->blobid = spdk_strtoll(optarg, 0);
+			break;
 		case 'X':
 			cmd_chosen++;
 			cli_context->action = CLI_SHELL_EXIT;
@@ -1189,7 +1229,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 			if (argv[optind] != NULL || argv[optind + 1] != NULL) {
 				cmd_chosen++;
 				cli_context->action = CLI_SET_XATTR;
-				cli_context->blobid = spdk_strtoll(optarg, 10);
+				cli_context->blobid = spdk_strtoll(optarg, 0);
 				snprintf(cli_context->key, BUFSIZE, "%s", argv[optind]);
 				snprintf(cli_context->value, BUFSIZE, "%s", argv[optind + 1]);
 			} else {
@@ -1213,7 +1253,7 @@ cmd_parser(int argc, char **argv, struct cli_context_t *cli_context)
 	 * We don't check the local boolean because in some modes it will have been set
 	 * on and earlier command.
 	 */
-	if (strcmp(cli_context->bdev_name, "") == 0) {
+	if ((strcmp(cli_context->bdev_name, "") == 0) && (cli_context->action != CLI_HELP)) {
 		usage(cli_context, "Error: -b option is required.\n");
 		cmd_chosen = 0;
 	}
@@ -1454,6 +1494,8 @@ cli_start(void *arg1)
 	case CLI_DUMP_BLOB:
 	case CLI_IMPORT_BLOB:
 	case CLI_FILL:
+	case CLI_RECOVER:
+	case CLI_DELETE_BLOB:
 		load_bs(cli_context);
 		break;
 	case CLI_INIT_BS:
@@ -1533,8 +1575,8 @@ main(int argc, char **argv)
 	/* if the config file doesn't exist, tell them how to make one */
 	if (access(cli_context->config_file, F_OK) == -1) {
 		printf("Error: No config file found.\n");
-		printf("To create a config file named 'blobcli.conf' for your NVMe device:\n");
-		printf("   <path to spdk>/scripts/gen_nvme.sh > blobcli.conf\n");
+		printf("To create a config file named 'blobcli.json' for your NVMe device:\n");
+		printf("   <path to spdk>/scripts/gen_nvme.sh --json-with-subsystems > blobcli.json\n");
 		printf("and then re-run the cli tool.\n");
 		exit(-1);
 	}
@@ -1553,9 +1595,10 @@ main(int argc, char **argv)
 	}
 
 	/* Set default values in opts struct along with name and conf file. */
-	spdk_app_opts_init(&opts);
+	spdk_app_opts_init(&opts, sizeof(opts));
 	opts.name = "blobcli";
-	opts.config_file = cli_context->config_file;
+	opts.json_config_file = cli_context->config_file;
+	opts.rpc_addr = NULL;
 
 	cli_context->app_started = true;
 	rc = spdk_app_start(&opts, cli_start, cli_context);

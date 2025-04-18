@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -19,7 +22,7 @@ CPUMASK=0x02
 NUM_JOBS=1
 ISCSI_TGT_CM=0x02
 
-# Performance test for iscsi_tgt, run on devices with proper hardware support (target and inititator)
+# Performance test for iscsi_tgt, run on devices with proper hardware support (target and initiator)
 function usage() {
 	[[ -n $2 ]] && (
 		echo "$2"
@@ -101,7 +104,7 @@ trap 'rm -f $testdir/perf.job; killprocess $pid; print_backtrace; exit 1' ERR SI
 waitforlisten "$pid" "$testdir/rpc_iscsi.sock"
 $rpc_py iscsi_set_options -b "iqn.2016-06.io.spdk" -f "/usr/local/etc/spdk/auth.conf" -o 30 -i -l 0 -a 16
 $rpc_py framework_start_init
-$rootdir/scripts/gen_nvme.sh --json | $rpc_py load_subsystem_config
+$rootdir/scripts/gen_nvme.sh | $rpc_py load_subsystem_config
 sleep 1
 timing_exit run_iscsi_app
 

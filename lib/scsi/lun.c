@@ -1,35 +1,7 @@
-/*-
- *   BSD LICENSE
- *
+/*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2008-2012 Daisuke Aoyama <aoyama@peach.ne.jp>.
- *   Copyright (c) Intel Corporation.
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "scsi_internal.h"
@@ -47,7 +19,7 @@ scsi_lun_complete_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task)
 {
 	if (lun) {
 		TAILQ_REMOVE(&lun->tasks, task, scsi_link);
-		spdk_trace_record(TRACE_SCSI_TASK_DONE, lun->dev->id, 0, (uintptr_t)task, 0);
+		spdk_trace_record(TRACE_SCSI_TASK_DONE, lun->dev->id, 0, (uintptr_t)task);
 	}
 	task->cpl_fn(task);
 }
@@ -125,10 +97,35 @@ scsi_lun_append_mgmt_task(struct spdk_scsi_lun *lun,
 	TAILQ_INSERT_TAIL(&lun->pending_mgmt_tasks, task, scsi_link);
 }
 
+static bool
+_scsi_lun_handle_unit_attention(struct spdk_scsi_task *task)
+{
+	uint8_t *cdb = task->cdb;
+
+	assert(task->cdb);
+
+	switch (cdb[0]) {
+	case SPDK_SPC_INQUIRY:
+	case SPDK_SPC_REPORT_LUNS:
+	case SPDK_SPC_REQUEST_SENSE:
+		return false;
+	default:
+		return true;
+	}
+}
+
 static void
 _scsi_lun_execute_mgmt_task(struct spdk_scsi_lun *lun)
 {
 	struct spdk_scsi_task *task;
+	static const char *spdk_scsi_task_names[] = {
+		"abort task",
+		"abort task set",
+		"clear task set",
+		"lun reset",
+		"target reset"
+	};
+	const char *scsi_tn = "unknown task";
 
 	if (!TAILQ_EMPTY(&lun->mgmt_tasks)) {
 		return;
@@ -150,33 +147,30 @@ _scsi_lun_execute_mgmt_task(struct spdk_scsi_lun *lun)
 		return;
 	}
 
+	if (task->function < SPDK_COUNTOF(spdk_scsi_task_names)) {
+		scsi_tn = spdk_scsi_task_names[task->function];
+	}
+
 	switch (task->function) {
-	case SPDK_SCSI_TASK_FUNC_ABORT_TASK:
-		task->response = SPDK_SCSI_TASK_MGMT_RESP_REJECT_FUNC_NOT_SUPPORTED;
-		SPDK_ERRLOG("ABORT_TASK failed\n");
-		break;
-
-	case SPDK_SCSI_TASK_FUNC_ABORT_TASK_SET:
-		task->response = SPDK_SCSI_TASK_MGMT_RESP_REJECT_FUNC_NOT_SUPPORTED;
-		SPDK_ERRLOG("ABORT_TASK_SET failed\n");
-		break;
-
 	case SPDK_SCSI_TASK_FUNC_LUN_RESET:
+	case SPDK_SCSI_TASK_FUNC_TARGET_RESET:
+		SPDK_NOTICELOG("Bdev scsi reset on %s\n", scsi_tn);
 		bdev_scsi_reset(task);
 		return;
 
+	case SPDK_SCSI_TASK_FUNC_ABORT_TASK:
+	case SPDK_SCSI_TASK_FUNC_ABORT_TASK_SET:
 	default:
-		SPDK_ERRLOG("Unknown Task Management Function!\n");
 		/*
 		 * Task management functions other than those above should never
 		 * reach this point having been filtered by the frontend. Reject
 		 * the task as being unsupported.
 		 */
+		SPDK_ERRLOG("%s not supported\n", scsi_tn);
 		task->response = SPDK_SCSI_TASK_MGMT_RESP_REJECT_FUNC_NOT_SUPPORTED;
+		scsi_lun_complete_mgmt_task(lun, task);
 		break;
 	}
-
-	scsi_lun_complete_mgmt_task(lun, task);
 }
 
 void
@@ -193,9 +187,19 @@ _scsi_lun_execute_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task)
 	int rc;
 
 	task->status = SPDK_SCSI_STATUS_GOOD;
-	spdk_trace_record(TRACE_SCSI_TASK_START, lun->dev->id, task->length, (uintptr_t)task, 0);
+	spdk_trace_record(TRACE_SCSI_TASK_START, lun->dev->id, task->length, (uintptr_t)task);
 	TAILQ_INSERT_TAIL(&lun->tasks, task, scsi_link);
-	if (!lun->removed) {
+	if (spdk_unlikely(lun->removed)) {
+		spdk_scsi_task_process_abort(task);
+		rc = SPDK_SCSI_TASK_COMPLETE;
+	} else if (spdk_unlikely(lun->resizing) && _scsi_lun_handle_unit_attention(task)) {
+		spdk_scsi_task_set_status(task, SPDK_SCSI_STATUS_CHECK_CONDITION,
+					  SPDK_SCSI_SENSE_UNIT_ATTENTION,
+					  SPDK_SCSI_ASC_CAPACITY_DATA_HAS_CHANGED,
+					  SPDK_SCSI_ASCQ_CAPACITY_DATA_HAS_CHANGED);
+		lun->resizing = false;
+		rc = SPDK_SCSI_TASK_COMPLETE;
+	} else {
 		/* Check the command is allowed or not when reservation is exist */
 		if (spdk_unlikely(lun->reservation.flags & SCSI_SPC2_RESERVE)) {
 			rc = scsi2_reserve_check(task);
@@ -208,9 +212,6 @@ _scsi_lun_execute_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task)
 		} else {
 			rc = bdev_scsi_execute(task);
 		}
-	} else {
-		spdk_scsi_task_process_abort(task);
-		rc = SPDK_SCSI_TASK_COMPLETE;
 	}
 
 	switch (rc) {
@@ -278,19 +279,13 @@ static void
 scsi_lun_remove(struct spdk_scsi_lun *lun)
 {
 	struct spdk_scsi_pr_registrant *reg, *tmp;
-	struct spdk_thread *thread;
 
 	TAILQ_FOREACH_SAFE(reg, &lun->reg_head, link, tmp) {
 		TAILQ_REMOVE(&lun->reg_head, reg, link);
 		free(reg);
 	}
 
-	thread = spdk_get_thread();
-	if (thread != lun->thread) {
-		spdk_thread_send_msg(lun->thread, _scsi_lun_remove, lun);
-	} else {
-		_scsi_lun_remove(lun);
-	}
+	spdk_thread_exec_msg(lun->thread, _scsi_lun_remove, lun);
 }
 
 static int
@@ -393,23 +388,48 @@ scsi_lun_hot_remove(void *remove_ctx)
 	}
 }
 
+static void
+bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+	      void *event_ctx)
+{
+	struct spdk_scsi_lun *lun = (struct spdk_scsi_lun *)event_ctx;
+	switch (type) {
+	case SPDK_BDEV_EVENT_REMOVE:
+		SPDK_NOTICELOG("bdev name (%s) received event(SPDK_BDEV_EVENT_REMOVE)\n", spdk_bdev_get_name(bdev));
+		scsi_lun_hot_remove(event_ctx);
+		break;
+	case SPDK_BDEV_EVENT_RESIZE:
+		SPDK_NOTICELOG("bdev name (%s) received event(SPDK_BDEV_EVENT_RESIZE)\n", spdk_bdev_get_name(bdev));
+		lun->resizing = true;
+		if (lun->resize_cb) {
+			lun->resize_cb(lun, lun->resize_ctx);
+		}
+		break;
+	default:
+		SPDK_NOTICELOG("Unsupported bdev event: type %d\n", type);
+		break;
+	}
+}
+
 /**
  * \brief Constructs a new spdk_scsi_lun object based on the provided parameters.
  *
- * \param bdev  bdev associated with this LUN
+ * \param bdev_name Bdev name to open and associate with this LUN
  *
- * \return NULL if bdev == NULL
+ * \return NULL if bdev whose name matches is not found
  * \return pointer to the new spdk_scsi_lun object otherwise
  */
-struct spdk_scsi_lun *scsi_lun_construct(struct spdk_bdev *bdev,
+struct spdk_scsi_lun *scsi_lun_construct(const char *bdev_name,
+		void (*resize_cb)(const struct spdk_scsi_lun *, void *),
+		void *resize_ctx,
 		void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
 		void *hotremove_ctx)
 {
 	struct spdk_scsi_lun *lun;
 	int rc;
 
-	if (bdev == NULL) {
-		SPDK_ERRLOG("bdev must be non-NULL\n");
+	if (bdev_name == NULL) {
+		SPDK_ERRLOG("bdev_name must be non-NULL\n");
 		return NULL;
 	}
 
@@ -419,10 +439,10 @@ struct spdk_scsi_lun *scsi_lun_construct(struct spdk_bdev *bdev,
 		return NULL;
 	}
 
-	rc = spdk_bdev_open(bdev, true, scsi_lun_hot_remove, lun, &lun->bdev_desc);
+	rc = spdk_bdev_open_ext(bdev_name, true, bdev_event_cb, lun, &lun->bdev_desc);
 
 	if (rc != 0) {
-		SPDK_ERRLOG("bdev %s cannot be opened, error=%d\n", spdk_bdev_get_name(bdev), rc);
+		SPDK_ERRLOG("bdev %s cannot be opened, error=%d\n", bdev_name, rc);
 		free(lun);
 		return NULL;
 	}
@@ -434,10 +454,16 @@ struct spdk_scsi_lun *scsi_lun_construct(struct spdk_bdev *bdev,
 	TAILQ_INIT(&lun->mgmt_tasks);
 	TAILQ_INIT(&lun->pending_mgmt_tasks);
 
-	lun->bdev = bdev;
+	/* Bdev is not removed while it is opened. */
+	lun->bdev = spdk_bdev_desc_get_bdev(lun->bdev_desc);
 	lun->io_channel = NULL;
 	lun->hotremove_cb = hotremove_cb;
 	lun->hotremove_ctx = hotremove_ctx;
+
+	lun->resize_cb = resize_cb;
+	lun->resize_ctx = resize_ctx;
+	lun->resizing = false;
+
 	TAILQ_INIT(&lun->open_descs);
 	TAILQ_INIT(&lun->reg_head);
 

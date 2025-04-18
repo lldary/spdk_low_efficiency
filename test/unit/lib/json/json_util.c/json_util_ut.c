@@ -1,39 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "json/json_util.c"
 
@@ -252,6 +224,37 @@ test_decode_object(void)
 }
 
 static void
+test_free_object(void)
+{
+	struct my_object {
+		char *my_name;
+		uint32_t my_int;
+		char *my_other_name;
+		char *empty_string;
+	};
+	struct spdk_json_object_decoder decoders[] = {
+		{"first", offsetof(struct my_object, my_name), spdk_json_decode_string, false},
+		{"second", offsetof(struct my_object, my_int), spdk_json_decode_uint32, false},
+		{"third", offsetof(struct my_object, my_other_name), spdk_json_decode_string, true},
+		{"fourth", offsetof(struct my_object, empty_string), spdk_json_decode_string, false},
+	};
+	struct my_object output = {
+		.my_name = strdup("hello"),
+		.my_int = 3,
+		.my_other_name = strdup("world"),
+		.empty_string = NULL
+	};
+
+	SPDK_CU_ASSERT_FATAL(output.my_name != NULL);
+	SPDK_CU_ASSERT_FATAL(output.my_other_name != NULL);
+
+	spdk_json_free_object(decoders, 4, &output);
+	CU_ASSERT(output.my_name == NULL);
+	CU_ASSERT(output.my_other_name == NULL);
+	CU_ASSERT(output.empty_string == NULL);
+}
+
+static void
 test_decode_array(void)
 {
 	struct spdk_json_val values[4];
@@ -453,7 +456,7 @@ test_decode_uint16(void)
 
 	/* incorrect type */
 	v.type = SPDK_JSON_VAL_STRING;
-	v.start = "Strin";
+	v.start = "String";
 	v.len = 5;
 	CU_ASSERT(spdk_json_decode_uint16(&v, &i) != 0);
 
@@ -766,11 +769,53 @@ test_decode_string(void)
 	free(value);
 }
 
+static void
+test_decode_uuid(void)
+{
+	struct spdk_json_val v;
+	struct spdk_uuid expected, uuid = {};
+	const char *uuidstr = "e524acae-8c26-43e4-882a-461b8690583b";
+	const char *invalid = "e524acae-8c26";
+	int rc;
+
+	rc = spdk_uuid_parse(&expected, uuidstr);
+	CU_ASSERT_EQUAL(rc, 0);
+
+	/* Check a valid UUID */
+	v.type = SPDK_JSON_VAL_STRING;
+	v.start = (void *)uuidstr;
+	v.len = strlen(uuidstr);
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, 0);
+	CU_ASSERT_EQUAL(spdk_uuid_compare(&uuid, &expected), 0);
+
+	/* Check empty string as UUID */
+	v.type = SPDK_JSON_VAL_STRING;
+	v.start = "";
+	v.len = 0;
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, -1);
+
+	/* Check non-empty string that's not a UUID */
+	v.type = SPDK_JSON_VAL_STRING;
+	v.start = (void *)invalid;
+	v.len = strlen(invalid);
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, -1);
+
+	/* Check decoding UUID on a non-string value */
+	v.type = SPDK_JSON_VAL_TRUE;
+	v.start = NULL;
+	v.len = 0;
+	rc = spdk_json_decode_uuid(&v, &uuid);
+	CU_ASSERT_EQUAL(rc, -1);
+}
+
 char ut_json_text[] =
 	"{"
 	"	\"string\": \"Some string data\","
 	"	\"object\": { "
-	"		\"another_string\": \"Yet anoter string data\","
+	"		\"another_string\": \"Yet another string data\","
 	"		\"array name with space\": [1, [], {} ]"
 	"	},"
 	"	\"array\": [ \"Text\", 2, {} ]"
@@ -829,6 +874,34 @@ test_find(void)
 	key2 = val2 = NULL;
 	rc = spdk_json_find(val, "another_string", &key2, &val2, SPDK_JSON_VAL_ARRAY_BEGIN);
 	CU_ASSERT(rc == -EDOM);
+
+	free(values);
+}
+
+static void
+test_find_array(void)
+{
+	char array_json_text[] = "[ \"Text\", 2, {} ]";
+	struct spdk_json_val *values, *key;
+	ssize_t values_cnt;
+	ssize_t rc;
+
+	values_cnt = spdk_json_parse(array_json_text, strlen(array_json_text), NULL, 0, NULL, 0);
+	SPDK_CU_ASSERT_FATAL(values_cnt > 0);
+
+	values = calloc(values_cnt, sizeof(struct spdk_json_val));
+	SPDK_CU_ASSERT_FATAL(values != NULL);
+
+	rc = spdk_json_parse(array_json_text, strlen(array_json_text), values, values_cnt, NULL, 0);
+	SPDK_CU_ASSERT_FATAL(values_cnt == rc);
+
+	/* spdk_json_find cannot be used on arrays.  The element "Text" does exist in the array,
+	 * but spdk_json_find can only be used for finding keys in an object.  So this
+	 * test should fail.
+	 */
+	key = NULL;
+	rc = spdk_json_find(values, "Text", &key, NULL, SPDK_JSON_VAL_STRING);
+	CU_ASSERT(rc == -EPROTOTYPE);
 
 	free(values);
 }
@@ -918,12 +991,12 @@ test_iterating(void)
 	free(values);
 }
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("json", NULL, NULL);
@@ -940,14 +1013,15 @@ int main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_decode_uint32);
 	CU_ADD_TEST(suite, test_decode_uint64);
 	CU_ADD_TEST(suite, test_decode_string);
+	CU_ADD_TEST(suite, test_decode_uuid);
 	CU_ADD_TEST(suite, test_find);
+	CU_ADD_TEST(suite, test_find_array);
 	CU_ADD_TEST(suite, test_iterating);
+	CU_ADD_TEST(suite, test_free_object);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 
 	return num_failures;

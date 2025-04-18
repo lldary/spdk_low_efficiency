@@ -1,38 +1,10 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2024 Samsung Electonrics Co., Ltd.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /** \file
- * Net framework abstraction layer
+ * Network related helper functions
  */
 
 #ifndef SPDK_NET_H
@@ -40,78 +12,58 @@
 
 #include "spdk/stdinc.h"
 
-#include "spdk/queue.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct spdk_sock;
-
-struct spdk_net_framework {
-	const char *name;
-
-	void (*init)(void);
-	void (*fini)(void);
-
-	STAILQ_ENTRY(spdk_net_framework) link;
-};
-
 /**
- * Register a net framework.
+ * Gets the name of the network interface for the given IP address.
  *
- * \param frame Net framework to register.
- */
-void spdk_net_framework_register(struct spdk_net_framework *frame);
-
-#define SPDK_NET_FRAMEWORK_REGISTER(name, frame) \
-static void __attribute__((constructor)) net_framework_register_##name(void) \
-{ \
-	spdk_net_framework_register(frame); \
-}
-
-/**
- * Initialize the network interfaces by getting information through netlink socket.
+ * \param ip IP address to find the interface name for
+ * \param ifc string output parameter for the interface name
+ * \param len length of the ifc parameter in bytes
  *
- * \return 0 on success, 1 on failure.
+ * \return 0 if successful, the interface name will be copied to the ifc parameter
+ *         -ENODEV if an interface name could not be identified
+ *         -ENOMEM the provided ifc string was too small
  */
-int spdk_interface_init(void);
+int spdk_net_get_interface_name(const char *ip, char *ifc, size_t len);
 
 /**
- * Destroy the network interfaces.
- */
-void spdk_interface_destroy(void);
-
-/**
- * Net framework initialization callback.
+ * Gets the address string for a given struct sockaddr
  *
- * \param cb_arg Callback argument.
- * \param rc 0 if net framework initialized successfully or negative errno if it failed.
- */
-typedef void (*spdk_net_init_cb)(void *cb_arg, int rc);
-
-/**
- * Net framework finish callback.
+ * \param sa sockaddr to get the address string for
+ * \param addr string to put the address
+ * \param len length of the the addr parameter
  *
- * \param cb_arg Callback argument.
+ * \return 0 if successful, negative -errno otherwise
  */
-typedef void (*spdk_net_fini_cb)(void *cb_arg);
-
-void spdk_net_framework_init_next(int rc);
+int spdk_net_get_address_string(struct sockaddr *sa, char *addr, size_t len);
 
 /**
- * Start all registered frameworks.
+ * Checks if the given fd is a loopback interface or not.
  *
- * \return 0 on success.
+ * \param fd file descriptor to check
+ *
+ * \return true if the fd is loopback, false if not
  */
-void spdk_net_framework_start(spdk_net_init_cb cb_fn, void *cb_arg);
+bool spdk_net_is_loopback(int fd);
 
-void spdk_net_framework_fini_next(void);
-
-/**
- * Stop all registered frameworks.
+/*
+ * Get local and peer addresses of the given fd.
+ *
+ * \param fd file descriptor to get address.
+ * \param laddr A pointer (may be NULL) to the buffer to hold the local address.
+ * \param llen Length of the buffer 'laddr'.
+ * \param lport A pointer (may be NULL) to the buffer to hold the local port info.
+ * \param paddr A pointer (may be NULL) to the buffer to hold the peer address.
+ * \param plen Length of the buffer 'paddr'.
+ * \param pport A pointer (may be NULL) to the buffer to hold the peer port info.
+ *
+ * \return 0 on success, -1 on failure.
  */
-void spdk_net_framework_fini(spdk_net_fini_cb cb_fn, void *cb_arg);
+int spdk_net_getaddr(int fd, char *laddr, int llen, uint16_t *lport,
+		     char *paddr, int plen, uint16_t *pport);
 
 #ifdef __cplusplus
 }

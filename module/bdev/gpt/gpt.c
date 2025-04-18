@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "gpt.h"
@@ -37,7 +9,7 @@
 #include "spdk/endian.h"
 #include "spdk/event.h"
 
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
 #define GPT_PRIMARY_PARTITION_TABLE_LBA 0x1
 #define PRIMARY_PARTITION_NUMBER 4
@@ -120,7 +92,7 @@ gpt_read_partitions(struct spdk_gpt *gpt)
 
 	partition_entry_size = from_le32(&head->size_of_partition_entry);
 	if (partition_entry_size != sizeof(struct spdk_gpt_partition_entry)) {
-		SPDK_ERRLOG("Partition_entry_size(%x) != expected(%lx)\n",
+		SPDK_ERRLOG("Partition_entry_size(%x) != expected(%zx)\n",
 			    partition_entry_size, sizeof(struct spdk_gpt_partition_entry));
 		return -1;
 	}
@@ -202,7 +174,7 @@ gpt_read_header(struct spdk_gpt *gpt)
 	to_le32(&head->header_crc32, original_crc);
 
 	if (new_crc != original_crc) {
-		SPDK_ERRLOG("head crc32 does not match, provided=%u, caculated=%u\n",
+		SPDK_ERRLOG("head crc32 does not match, provided=%u, calculated=%u\n",
 			    original_crc, new_crc);
 		return -1;
 	}
@@ -239,7 +211,7 @@ gpt_check_mbr(struct spdk_gpt *gpt)
 
 	mbr = (struct spdk_mbr *)gpt->buf;
 	if (from_le16(&mbr->mbr_signature) != SPDK_MBR_SIGNATURE) {
-		SPDK_DEBUGLOG(SPDK_LOG_GPT_PARSE, "Signature mismatch, provided=%x,"
+		SPDK_DEBUGLOG(gpt_parse, "Signature mismatch, provided=%x,"
 			      "expected=%x\n", from_le16(&mbr->disk_signature),
 			      SPDK_MBR_SIGNATURE);
 		return -1;
@@ -256,7 +228,7 @@ gpt_check_mbr(struct spdk_gpt *gpt)
 	if (ret == GPT_PROTECTIVE_MBR) {
 		expected_start_lba = GPT_PRIMARY_PARTITION_TABLE_LBA;
 		if (from_le32(&mbr->partitions[primary_partition].start_lba) != expected_start_lba) {
-			SPDK_DEBUGLOG(SPDK_LOG_GPT_PARSE, "start lba mismatch, provided=%u, expected=%u\n",
+			SPDK_DEBUGLOG(gpt_parse, "start lba mismatch, provided=%u, expected=%u\n",
 				      from_le32(&mbr->partitions[primary_partition].start_lba),
 				      expected_start_lba);
 			return -1;
@@ -265,13 +237,13 @@ gpt_check_mbr(struct spdk_gpt *gpt)
 		total_lba_size = from_le32(&mbr->partitions[primary_partition].size_lba);
 		if ((total_lba_size != ((uint32_t) gpt->total_sectors - 1)) &&
 		    (total_lba_size != 0xFFFFFFFF)) {
-			SPDK_DEBUGLOG(SPDK_LOG_GPT_PARSE,
+			SPDK_DEBUGLOG(gpt_parse,
 				      "GPT Primary MBR size does not equal: (record_size %u != actual_size %u)!\n",
 				      total_lba_size, (uint32_t) gpt->total_sectors - 1);
 			return -1;
 		}
 	} else {
-		SPDK_DEBUGLOG(SPDK_LOG_GPT_PARSE, "Currently only support GPT Protective MBR format\n");
+		SPDK_DEBUGLOG(gpt_parse, "Currently only support GPT Protective MBR format\n");
 		return -1;
 	}
 
@@ -290,7 +262,7 @@ gpt_parse_mbr(struct spdk_gpt *gpt)
 
 	rc = gpt_check_mbr(gpt);
 	if (rc) {
-		SPDK_DEBUGLOG(SPDK_LOG_GPT_PARSE, "Failed to detect gpt in MBR\n");
+		SPDK_DEBUGLOG(gpt_parse, "Failed to detect gpt in MBR\n");
 		return rc;
 	}
 
@@ -317,4 +289,4 @@ gpt_parse_partition_table(struct spdk_gpt *gpt)
 	return 0;
 }
 
-SPDK_LOG_REGISTER_COMPONENT("gpt_parse", SPDK_LOG_GPT_PARSE)
+SPDK_LOG_REGISTER_COMPONENT(gpt_parse)

@@ -1,40 +1,13 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
 
 #include "CUnit/Basic.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "spdk/util.h"
 
@@ -43,24 +16,18 @@
 
 #include "spdk_internal/mock.h"
 
-/* Unit test bdev mockup */
-struct spdk_bdev {
-	char name[100];
-};
+DEFINE_STUB(spdk_scsi_lun_is_removing, bool,
+	    (const struct spdk_scsi_lun *lun), false);
 
-static struct spdk_bdev g_bdevs[] = {
-	{"malloc0"},
-	{"malloc1"},
+static char *g_bdev_names[] = {
+	"malloc0",
+	"malloc1",
+	"malloc2",
+	"malloc4",
 };
 
 static struct spdk_scsi_port *g_initiator_port_with_pending_tasks = NULL;
 static struct spdk_scsi_port *g_initiator_port_with_pending_mgmt_tasks = NULL;
-
-const char *
-spdk_bdev_get_name(const struct spdk_bdev *bdev)
-{
-	return bdev->name;
-}
 
 static struct spdk_scsi_task *
 spdk_get_task(uint32_t *owner_task_ctr)
@@ -81,38 +48,31 @@ spdk_scsi_task_put(struct spdk_scsi_task *task)
 	free(task);
 }
 
-struct spdk_scsi_lun *scsi_lun_construct(struct spdk_bdev *bdev,
+struct spdk_scsi_lun *scsi_lun_construct(const char *bdev_name,
+		void (*resize_cb)(const struct spdk_scsi_lun *, void *),
+		void *resize_ctx,
 		void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
 		void *hotremove_ctx)
 {
 	struct spdk_scsi_lun *lun;
+	size_t i;
 
-	lun = calloc(1, sizeof(struct spdk_scsi_lun));
-	SPDK_CU_ASSERT_FATAL(lun != NULL);
+	for (i = 0; i < SPDK_COUNTOF(g_bdev_names); i++) {
+		if (strcmp(bdev_name, g_bdev_names[i]) == 0) {
+			lun = calloc(1, sizeof(struct spdk_scsi_lun));
+			SPDK_CU_ASSERT_FATAL(lun != NULL);
 
-	lun->bdev = bdev;
+			return lun;
+		}
+	}
 
-	return lun;
+	return NULL;
 }
 
 void
 scsi_lun_destruct(struct spdk_scsi_lun *lun)
 {
 	free(lun);
-}
-
-struct spdk_bdev *
-spdk_bdev_get_by_name(const char *bdev_name)
-{
-	size_t i;
-
-	for (i = 0; i < SPDK_COUNTOF(g_bdevs); i++) {
-		if (strcmp(bdev_name, g_bdevs[i].name) == 0) {
-			return &g_bdevs[i];
-		}
-	}
-
-	return NULL;
 }
 
 DEFINE_STUB_V(scsi_lun_execute_mgmt_task,
@@ -164,7 +124,7 @@ dev_destruct_null_lun(void)
 	struct spdk_scsi_dev dev = { .is_allocated = 1 };
 
 	/* pass null for the lun */
-	dev.lun[0] = NULL;
+	TAILQ_INIT(&dev.luns);
 
 	/* free the dev */
 	spdk_scsi_dev_destruct(&dev, NULL, NULL);
@@ -173,7 +133,10 @@ dev_destruct_null_lun(void)
 static void
 dev_destruct_success(void)
 {
-	struct spdk_scsi_dev dev = { .is_allocated = 1 };
+	struct spdk_scsi_dev dev = {
+		.is_allocated = 1,
+		.luns = TAILQ_HEAD_INITIALIZER(dev.luns),
+	};
 	int rc;
 
 	/* dev with a single lun */
@@ -556,11 +519,11 @@ static void
 dev_add_lun_bdev_not_found(void)
 {
 	int rc;
-	struct spdk_scsi_dev dev = {0};
+	struct spdk_scsi_dev dev = { .luns = TAILQ_HEAD_INITIALIZER(dev.luns), };
 
-	rc = spdk_scsi_dev_add_lun(&dev, "malloc2", 0, NULL, NULL);
+	rc = spdk_scsi_dev_add_lun(&dev, "malloc3", 0, NULL, NULL);
 
-	SPDK_CU_ASSERT_FATAL(dev.lun[0] == NULL);
+	SPDK_CU_ASSERT_FATAL(TAILQ_EMPTY(&dev.luns));
 	CU_ASSERT_NOT_EQUAL(rc, 0);
 }
 
@@ -569,23 +532,29 @@ dev_add_lun_no_free_lun_id(void)
 {
 	int rc;
 	int i;
-	struct spdk_scsi_dev dev = {0};
-	struct spdk_scsi_lun lun;
+	struct spdk_scsi_dev dev = { .luns = TAILQ_HEAD_INITIALIZER(dev.luns), };
+	struct spdk_scsi_lun *lun;
+
+	lun = calloc(SPDK_SCSI_DEV_MAX_LUN, sizeof(*lun));
+	SPDK_CU_ASSERT_FATAL(lun != NULL);
 
 	for (i = 0; i < SPDK_SCSI_DEV_MAX_LUN; i++) {
-		dev.lun[i] = &lun;
+		lun[i].id = i;
+		TAILQ_INSERT_TAIL(&dev.luns, &lun[i], tailq);
 	}
 
 	rc = spdk_scsi_dev_add_lun(&dev, "malloc0", -1, NULL, NULL);
 
 	CU_ASSERT_NOT_EQUAL(rc, 0);
+
+	free(lun);
 }
 
 static void
 dev_add_lun_success1(void)
 {
 	int rc;
-	struct spdk_scsi_dev dev = {0};
+	struct spdk_scsi_dev dev = { .luns = TAILQ_HEAD_INITIALIZER(dev.luns), };
 
 	rc = spdk_scsi_dev_add_lun(&dev, "malloc0", -1, NULL, NULL);
 
@@ -598,7 +567,7 @@ static void
 dev_add_lun_success2(void)
 {
 	int rc;
-	struct spdk_scsi_dev dev = {0};
+	struct spdk_scsi_dev dev = { .luns = TAILQ_HEAD_INITIALIZER(dev.luns), };
 
 	rc = spdk_scsi_dev_add_lun(&dev, "malloc0", 0, NULL, NULL);
 
@@ -610,8 +579,8 @@ dev_add_lun_success2(void)
 static void
 dev_check_pending_tasks(void)
 {
-	struct spdk_scsi_dev dev = {};
-	struct spdk_scsi_lun lun = {};
+	struct spdk_scsi_dev dev = { .luns = TAILQ_HEAD_INITIALIZER(dev.luns), };
+	struct spdk_scsi_lun lun = { .id = SPDK_SCSI_DEV_MAX_LUN - 1, };
 	struct spdk_scsi_port initiator_port = {};
 
 	g_initiator_port_with_pending_tasks = NULL;
@@ -619,7 +588,7 @@ dev_check_pending_tasks(void)
 
 	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, NULL) == false);
 
-	dev.lun[SPDK_SCSI_DEV_MAX_LUN - 1] = &lun;
+	TAILQ_INSERT_TAIL(&dev.luns, &lun, tailq);
 
 	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, NULL) == true);
 	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, &initiator_port) == false);
@@ -634,13 +603,186 @@ dev_check_pending_tasks(void)
 	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, &initiator_port) == true);
 }
 
+static void
+dev_iterate_luns(void)
+{
+	struct spdk_scsi_dev *dev;
+	struct spdk_scsi_lun *lun;
+	const char *bdev_name_list[3] = {"malloc0", "malloc2", "malloc4"};
+	int lun_id_list[3] = {0, 2, 4};
+
+	dev = spdk_scsi_dev_construct("Name", bdev_name_list, lun_id_list, 3,
+				      SPDK_SPC_PROTOCOL_IDENTIFIER_ISCSI, NULL, NULL);
+
+	/* Successfully constructs and returns a dev */
+	CU_ASSERT_TRUE(dev != NULL);
+
+	lun = spdk_scsi_dev_get_first_lun(dev);
+	CU_ASSERT(lun != NULL);
+	CU_ASSERT(lun->id == 0);
+	lun = spdk_scsi_dev_get_next_lun(lun);
+	CU_ASSERT(lun != NULL);
+	CU_ASSERT(lun->id == 2);
+	lun = spdk_scsi_dev_get_next_lun(lun);
+	CU_ASSERT(lun != NULL);
+	CU_ASSERT(lun->id == 4);
+	lun = spdk_scsi_dev_get_next_lun(lun);
+	CU_ASSERT(lun == NULL);
+
+	/* free the dev */
+	spdk_scsi_dev_destruct(dev, NULL, NULL);
+}
+
+static void
+dev_find_free_lun(void)
+{
+	struct spdk_scsi_dev dev = { .luns = TAILQ_HEAD_INITIALIZER(dev.luns), };
+	struct spdk_scsi_lun *lun, *prev_lun = NULL;
+	int i, rc;
+
+	lun = calloc(SPDK_SCSI_DEV_MAX_LUN, sizeof(*lun));
+	SPDK_CU_ASSERT_FATAL(lun != NULL);
+
+	for (i = 0; i < SPDK_SCSI_DEV_MAX_LUN; i++) {
+		lun[i].id = i;
+	}
+
+	/* LUN ID 0, 1, 15, 16, 17, SPDK_SCSI_DEV_MAX_LUN - 2, and SPDK_SCSI_DEV_MAX_LUN - 1
+	 * are free first. LUNs are required to be sorted by LUN ID.
+	 */
+	for (i = 2; i < 15; i++) {
+		TAILQ_INSERT_TAIL(&dev.luns, &lun[i], tailq);
+	}
+
+	for (i = 18; i < SPDK_SCSI_DEV_MAX_LUN - 2; i++) {
+		TAILQ_INSERT_TAIL(&dev.luns, &lun[i], tailq);
+	}
+
+	rc = scsi_dev_find_free_lun(&dev, -1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == NULL);
+
+	rc = scsi_dev_find_free_lun(&dev, 0, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == NULL);
+
+	rc = scsi_dev_find_free_lun(&dev, 1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == NULL);
+
+	rc = scsi_dev_find_free_lun(&dev, 2, &prev_lun);
+	CU_ASSERT(rc == -EEXIST);
+
+	TAILQ_INSERT_HEAD(&dev.luns, &lun[0], tailq);
+
+	rc = scsi_dev_find_free_lun(&dev, 0, &prev_lun);
+	CU_ASSERT(rc == -EEXIST);
+
+	rc = scsi_dev_find_free_lun(&dev, -1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[0]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, 1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[0]);
+	prev_lun = NULL;
+
+	TAILQ_INSERT_AFTER(&dev.luns, &lun[0], &lun[1], tailq);
+
+	rc = scsi_dev_find_free_lun(&dev, 1, &prev_lun);
+	CU_ASSERT(rc == -EEXIST);
+
+	rc = scsi_dev_find_free_lun(&dev, -1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[14]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, 15, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[14]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, 16, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[14]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, 17, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[14]);
+	prev_lun = NULL;
+
+	TAILQ_INSERT_AFTER(&dev.luns, &lun[14], &lun[15], tailq);
+	TAILQ_INSERT_AFTER(&dev.luns, &lun[15], &lun[16], tailq);
+	TAILQ_INSERT_AFTER(&dev.luns, &lun[16], &lun[17], tailq);
+
+	rc = scsi_dev_find_free_lun(&dev, 15, &prev_lun);
+	CU_ASSERT(rc == -EEXIST);
+
+	rc = scsi_dev_find_free_lun(&dev, 16, &prev_lun);
+	CU_ASSERT(rc == -EEXIST);
+
+	rc = scsi_dev_find_free_lun(&dev, 17, &prev_lun);
+	CU_ASSERT(rc == -EEXIST);
+
+	rc = scsi_dev_find_free_lun(&dev, -1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[SPDK_SCSI_DEV_MAX_LUN - 3]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, SPDK_SCSI_DEV_MAX_LUN - 2, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[SPDK_SCSI_DEV_MAX_LUN - 3]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, SPDK_SCSI_DEV_MAX_LUN - 1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[SPDK_SCSI_DEV_MAX_LUN - 3]);
+	prev_lun = NULL;
+
+	TAILQ_INSERT_AFTER(&dev.luns, &lun[SPDK_SCSI_DEV_MAX_LUN - 3],
+			   &lun[SPDK_SCSI_DEV_MAX_LUN - 1], tailq);
+
+	rc = scsi_dev_find_free_lun(&dev, -1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[SPDK_SCSI_DEV_MAX_LUN - 3]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, SPDK_SCSI_DEV_MAX_LUN - 2, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[SPDK_SCSI_DEV_MAX_LUN - 3]);
+	prev_lun = NULL;
+
+	TAILQ_INSERT_AFTER(&dev.luns, &lun[SPDK_SCSI_DEV_MAX_LUN - 3],
+			   &lun[SPDK_SCSI_DEV_MAX_LUN - 2], tailq);
+
+	rc = scsi_dev_find_free_lun(&dev, -1, &prev_lun);
+	CU_ASSERT(rc == -ENOSPC);
+
+	/* LUN ID 20 and 21 were freed. */
+	TAILQ_REMOVE(&dev.luns, &lun[20], tailq);
+	TAILQ_REMOVE(&dev.luns, &lun[21], tailq);
+
+	rc = scsi_dev_find_free_lun(&dev, -1, &prev_lun);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(prev_lun == &lun[19]);
+	prev_lun = NULL;
+
+	rc = scsi_dev_find_free_lun(&dev, 21, &prev_lun);
+	CU_ASSERT(rc  == 0);
+	CU_ASSERT(prev_lun == &lun[19]);
+	prev_lun = NULL;
+
+	free(lun);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("dev_suite", NULL, NULL);
@@ -672,10 +814,10 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, dev_add_lun_success1);
 	CU_ADD_TEST(suite, dev_add_lun_success2);
 	CU_ADD_TEST(suite, dev_check_pending_tasks);
+	CU_ADD_TEST(suite, dev_iterate_luns);
+	CU_ADD_TEST(suite, dev_find_free_lun);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	return num_failures;

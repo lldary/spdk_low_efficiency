@@ -1,34 +1,7 @@
-/*
- *   BSD LICENSE
- *
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation.
  *   Copyright (c) 2018-2019 Broadcom.  All Rights Reserved.
  *   The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef __NVMF_FC_H__
@@ -41,6 +14,7 @@
 #include "spdk/nvmf_fc_spec.h"
 #include "spdk/thread.h"
 #include "nvmf_internal.h"
+#include <rte_hash.h>
 
 #define SPDK_NVMF_FC_TR_ADDR_LEN 64
 #define NVMF_FC_INVALID_CONN_ID UINT64_MAX
@@ -53,6 +27,11 @@
  * FC HWQP pointer
  */
 typedef void *spdk_nvmf_fc_lld_hwqp_t;
+
+/*
+ * FC LLD port.
+ */
+typedef void *spdk_nvmf_fc_lld_fc_port_t;
 
 /*
  * FC HW port states.
@@ -98,6 +77,7 @@ enum spdk_nvmf_fc_request_state {
 	SPDK_NVMF_FC_REQ_ABORTED,
 	SPDK_NVMF_FC_REQ_BDEV_ABORTED,
 	SPDK_NVMF_FC_REQ_PENDING,
+	SPDK_NVMF_FC_REQ_FUSED_WAITING,
 	SPDK_NVMF_FC_REQ_MAX_STATE,
 };
 
@@ -114,7 +94,7 @@ struct spdk_nvmf_fc_buffer_desc {
 };
 
 /*
- * ABTS hadling context
+ * ABTS handling context
  */
 struct spdk_nvmf_fc_abts_ctx {
 	bool handled;
@@ -175,6 +155,13 @@ struct spdk_nvmf_fc_srsr_bufs {
 	uint16_t rpi;
 };
 
+struct spdk_nvmf_fc_qpair_remove_ctx {
+	struct spdk_nvmf_qpair *qpair;
+	spdk_nvmf_transport_qpair_fini_cb cb_fn;
+	void *cb_ctx;
+	struct spdk_thread *qpair_thread;
+};
+
 /*
  * Struct representing a nport
  */
@@ -200,6 +187,7 @@ struct spdk_nvmf_fc_nport {
 	TAILQ_ENTRY(spdk_nvmf_fc_nport) link; /* list of nports on a hw port. */
 };
 
+typedef void (*spdk_nvmf_fc_caller_cb)(void *hwqp, int32_t status, void *args);
 /*
  * NVMF FC Connection
  */
@@ -207,6 +195,8 @@ struct spdk_nvmf_fc_conn {
 	struct spdk_nvmf_qpair qpair;
 	struct spdk_nvme_transport_id trid;
 
+	uint32_t s_id;
+	uint32_t d_id;
 	uint64_t conn_id;
 	struct spdk_nvmf_fc_hwqp *hwqp;
 	uint16_t esrp_ratio;
@@ -225,6 +215,8 @@ struct spdk_nvmf_fc_conn {
 	/* number of read/write requests that are outstanding */
 	uint16_t cur_fc_rw_depth;
 
+	TAILQ_HEAD(, spdk_nvmf_fc_request) fused_waiting_queue;
+
 	struct spdk_nvmf_fc_association *fc_assoc;
 
 	uint16_t rpi;
@@ -232,14 +224,37 @@ struct spdk_nvmf_fc_conn {
 	/* for association's connection list */
 	TAILQ_ENTRY(spdk_nvmf_fc_conn) assoc_link;
 
-	/* for assocations's available connection list */
+	/* for associations's available connection list */
 	TAILQ_ENTRY(spdk_nvmf_fc_conn) assoc_avail_link;
 
-	/* for hwqp's connection list */
-	TAILQ_ENTRY(spdk_nvmf_fc_conn) link;
+	/* for hwqp's rport connection list link  */
+	TAILQ_ENTRY(spdk_nvmf_fc_conn) rport_link;
+
+	/* Per connection fc_req pool */
+	STAILQ_HEAD(, spdk_nvmf_fc_pooled_request) pool_queue;
+
+	/* Memory for the fc_req pool objects */
+	struct spdk_nvmf_fc_pooled_request *pool_memory;
+
+	/* Pool size */
+	uint32_t pool_size;
+
+	/* Current free elem in pool */
+	uint32_t pool_free_elems;
+
+	TAILQ_HEAD(, spdk_nvmf_fc_request) in_use_reqs;
+
+	enum spdk_nvmf_fc_object_state conn_state;
 
 	/* New QP create context. */
 	struct nvmf_fc_ls_op_ctx *create_opd;
+
+	/* Delete conn callback list */
+	void *ls_del_op_ctx;
+
+	bool qpair_fini_done;
+	spdk_nvmf_fc_caller_cb qpair_fini_done_cb;
+	void *qpair_fini_done_cb_args;
 };
 
 /*
@@ -268,24 +283,23 @@ struct spdk_nvmf_fc_poll_group {
 };
 
 /*
- *  HWQP poller structure passed from Master thread
+ *  HWQP poller structure passed from main thread
  */
 struct spdk_nvmf_fc_hwqp {
 	enum spdk_fc_hwqp_state state;  /* queue state (for poller) */
+	bool is_ls_queue;
 	uint32_t lcore_id;   /* core hwqp is running on (for tracing purposes only) */
 	struct spdk_thread *thread;  /* thread hwqp is running on */
 	uint32_t hwqp_id;    /* A unique id (per physical port) for a hwqp */
-	uint32_t rq_size;    /* receive queue size */
 	spdk_nvmf_fc_lld_hwqp_t queues;    /* vendor HW queue set */
 	struct spdk_nvmf_fc_port *fc_port; /* HW port structure for these queues */
 	struct spdk_nvmf_fc_poll_group *fgroup;
 
 	/* qpair (fc_connection) list */
-	TAILQ_HEAD(, spdk_nvmf_fc_conn) connection_list;
 	uint32_t num_conns; /* number of connections to queue */
+	struct rte_hash *connection_list_hash;
+	struct rte_hash *rport_list_hash;
 
-	struct spdk_nvmf_fc_request *fc_reqs_buf;
-	TAILQ_HEAD(, spdk_nvmf_fc_request) free_reqs;
 	TAILQ_HEAD(, spdk_nvmf_fc_request) in_use_reqs;
 
 	struct spdk_nvmf_fc_errors counters;
@@ -306,6 +320,7 @@ struct spdk_nvmf_fc_hwqp {
  */
 struct spdk_nvmf_fc_port {
 	uint8_t port_hdl;
+	spdk_nvmf_fc_lld_fc_port_t lld_fc_port;
 	enum spdk_fc_port_state hw_port_status;
 	uint16_t fcp_rq_id;
 	struct spdk_nvmf_fc_hwqp ls_queue;
@@ -328,29 +343,36 @@ struct spdk_nvmf_fc_port {
  */
 struct spdk_nvmf_fc_request {
 	struct spdk_nvmf_request req;
+	union nvmf_h2c_msg cmd;
 	struct spdk_nvmf_fc_ersp_iu ersp;
 	uint32_t poller_lcore; /* for tracing purposes only */
 	struct spdk_thread *poller_thread;
-	uint16_t buf_index;
 	struct spdk_nvmf_fc_xchg *xchg;
 	uint16_t oxid;
 	uint16_t rpi;
 	struct spdk_nvmf_fc_conn *fc_conn;
 	struct spdk_nvmf_fc_hwqp *hwqp;
 	int state;
-	uint32_t transfered_len;
+	uint32_t transferred_len;
 	bool is_aborted;
 	uint32_t magic;
 	uint32_t s_id;
 	uint32_t d_id;
+	uint32_t csn;
+	uint32_t app_id;
+	uint8_t csctl;
 	TAILQ_ENTRY(spdk_nvmf_fc_request) link;
-	STAILQ_ENTRY(spdk_nvmf_fc_request) pending_link;
+	TAILQ_ENTRY(spdk_nvmf_fc_request) conn_link;
+	TAILQ_ENTRY(spdk_nvmf_fc_request) fused_link;
 	TAILQ_HEAD(, spdk_nvmf_fc_caller_ctx) abort_cbs;
 };
 
 SPDK_STATIC_ASSERT(!offsetof(struct spdk_nvmf_fc_request, req),
 		   "FC request and NVMF request address don't match.");
 
+struct spdk_nvmf_fc_pooled_request {
+	STAILQ_ENTRY(spdk_nvmf_fc_pooled_request) pool_link;
+};
 
 /*
  * NVMF FC Association
@@ -361,6 +383,7 @@ struct spdk_nvmf_fc_association {
 	struct spdk_nvmf_fc_nport *tgtport;
 	struct spdk_nvmf_fc_remote_port_info *rport;
 	struct spdk_nvmf_subsystem *subsystem;
+	struct spdk_nvmf_transport *nvmf_transport;
 	enum spdk_nvmf_fc_object_state assoc_state;
 
 	char host_id[FCNVME_ASSOC_HOSTID_LEN];
@@ -485,6 +508,20 @@ struct spdk_nvmf_fc_poller_api_queue_sync_done_args {
 	uint64_t tag;
 };
 
+typedef void (*spdk_nvmf_fc_remove_hwqp_cb)(void *ctx, int err);
+
+struct spdk_nvmf_fc_poller_api_remove_hwqp_args {
+	struct spdk_nvmf_fc_hwqp *hwqp;
+	spdk_nvmf_fc_remove_hwqp_cb cb_fn;
+	void *cb_ctx;
+	struct spdk_nvmf_fc_poller_api_cb_info cb_info;
+};
+
+struct spdk_nvmf_fc_hwqp_rport {
+	uint16_t rpi;
+	TAILQ_HEAD(, spdk_nvmf_fc_conn) conn_list;
+};
+
 /*
  * NVMF LS request structure
  */
@@ -523,6 +560,7 @@ SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fc_rq_buf_ls_request) ==
 
 /* Poller API structures (arguments and callback data */
 typedef void (*spdk_nvmf_fc_del_assoc_cb)(void *arg, uint32_t err);
+typedef void (*spdk_nvmf_fc_del_conn_cb)(void *arg);
 
 struct spdk_nvmf_fc_ls_add_conn_api_data {
 	struct spdk_nvmf_fc_poller_api_add_connection_args args;
@@ -537,6 +575,8 @@ struct spdk_nvmf_fc_ls_del_conn_api_data {
 	struct spdk_nvmf_fc_ls_rqst *ls_rqst;
 	struct spdk_nvmf_fc_association *assoc;
 	bool aq_conn; /* true if deleting AQ connection */
+	spdk_nvmf_fc_del_conn_cb del_conn_cb;
+	void *del_conn_cb_data;
 };
 
 /* used by LS disconnect association cmd handling */
@@ -574,11 +614,12 @@ struct spdk_nvmf_fc_poller_api_queue_sync_args {
 };
 
 /**
- * Following defines and structures are used to pass messages between master thread
+ * Following defines and structures are used to pass messages between main thread
  * and FCT driver.
  */
 enum spdk_fc_event {
 	SPDK_FC_HW_PORT_INIT,
+	SPDK_FC_HW_PORT_FREE,
 	SPDK_FC_HW_PORT_ONLINE,
 	SPDK_FC_HW_PORT_OFFLINE,
 	SPDK_FC_HW_PORT_RESET,
@@ -587,7 +628,6 @@ enum spdk_fc_event {
 	SPDK_FC_IT_ADD,    /* PRLI */
 	SPDK_FC_IT_DELETE, /* PRLI */
 	SPDK_FC_ABTS_RECV,
-	SPDK_FC_LINK_BREAK,
 	SPDK_FC_HW_PORT_DUMP,
 	SPDK_FC_UNRECOVERABLE_ERR,
 	SPDK_FC_EVENT_MAX,
@@ -606,6 +646,7 @@ struct spdk_nvmf_fc_dump_assoc_id_args {
  * Arguments for HW port init event.
  */
 struct spdk_nvmf_fc_hw_port_init_args {
+	spdk_nvmf_fc_lld_fc_port_t     lld_fc_port;
 	uint32_t                       ls_queue_size;
 	spdk_nvmf_fc_lld_hwqp_t        ls_queue;
 	uint32_t                       io_queue_size;
@@ -616,14 +657,6 @@ struct spdk_nvmf_fc_hw_port_init_args {
 	uint8_t                        port_handle;
 	uint8_t                        nvme_aq_index;  /* io_queue used for nvme admin queue */
 	uint16_t                       fcp_rq_id; /* Base rq ID of SCSI queue */
-};
-
-/**
- * Arguments for HW port link break event.
- */
-struct spdk_nvmf_hw_port_link_break_args {
-	uint8_t port_handle;
-	void   *cb_ctx;
 };
 
 /**
@@ -678,7 +711,7 @@ struct spdk_nvmf_fc_hw_i_t_add_args {
 	uint32_t                     rpi;
 	uint32_t                     s_id;
 	uint32_t                     initiator_prli_info;
-	uint32_t                     target_prli_info; /* populated by the SPDK master */
+	uint32_t                     target_prli_info; /* populated by the SPDK main */
 	struct spdk_nvmf_fc_wwn  fc_nodename;
 	struct spdk_nvmf_fc_wwn  fc_portname;
 	void                        *cb_ctx;
@@ -708,13 +741,6 @@ struct spdk_nvmf_fc_abts_args {
 };
 
 /**
- * Arguments for link break event.
- */
-struct spdk_nvmf_fc_link_break_args {
-	uint8_t port_handle;
-};
-
-/**
  * Arguments for port reset event.
  */
 struct spdk_nvmf_fc_hw_port_reset_args {
@@ -731,6 +757,11 @@ struct spdk_nvmf_fc_hw_port_reset_args {
 struct spdk_nvmf_fc_unrecoverable_error_event_args {
 };
 
+struct spdk_nvmf_fc_hw_port_free_args {
+	uint8_t port_handle;
+	void    *cb_ctx;
+};
+
 /**
  * Callback function to the FCT driver.
  */
@@ -738,8 +769,14 @@ typedef void (*spdk_nvmf_fc_callback)(uint8_t port_handle,
 				      enum spdk_fc_event event_type,
 				      void *arg, int err);
 
+struct spdk_nvmf_fc_remove_hwqp_cb_args {
+	uint16_t pending_remove_hwqp;
+	spdk_nvmf_fc_callback cb_fn;
+	void *cb_args;
+};
+
 /**
- * Enqueue an FCT event to master thread
+ * Enqueue an FCT event to main thread
  *
  * \param event_type Type of the event.
  * \param args Pointer to the argument structure.
@@ -747,10 +784,9 @@ typedef void (*spdk_nvmf_fc_callback)(uint8_t port_handle,
  *
  * \return 0 on success, non-zero on failure.
  */
-int
-nvmf_fc_master_enqueue_event(enum spdk_fc_event event_type,
-			     void *args,
-			     spdk_nvmf_fc_callback cb_func);
+int nvmf_fc_main_enqueue_event(enum spdk_fc_event event_type,
+			       void *args,
+			       spdk_nvmf_fc_callback cb_func);
 
 /*
  * dump info
@@ -785,7 +821,6 @@ nvmf_fc_dump_buf_print(struct spdk_nvmf_fc_queue_dump_info *dump_info, char *fmt
 /*
  * NVMF FC caller callback definitions
  */
-typedef void (*spdk_nvmf_fc_caller_cb)(void *hwqp, int32_t status, void *args);
 
 struct spdk_nvmf_fc_caller_ctx {
 	void *ctx;
@@ -862,14 +897,10 @@ void nvmf_fc_ls_add_conn_failure(
 	struct spdk_nvmf_fc_conn *fc_conn,
 	bool aq_conn);
 
-void nvmf_fc_init_hwqp(struct spdk_nvmf_fc_port *fc_port, struct spdk_nvmf_fc_hwqp *hwqp);
-
-void nvmf_fc_init_poller_queues(struct spdk_nvmf_fc_hwqp *hwqp);
+int nvmf_fc_init_hwqp(struct spdk_nvmf_fc_port *fc_port, struct spdk_nvmf_fc_hwqp *hwqp);
 
 struct spdk_nvmf_fc_conn *nvmf_fc_hwqp_find_fc_conn(struct spdk_nvmf_fc_hwqp *hwqp,
 		uint64_t conn_id);
-
-void nvmf_fc_hwqp_reinit_poller_queues(struct spdk_nvmf_fc_hwqp *hwqp, void *queues_curr);
 
 struct spdk_nvmf_fc_port *nvmf_fc_port_lookup(uint8_t port_hdl);
 
@@ -913,14 +944,21 @@ int nvmf_fc_delete_association(struct spdk_nvmf_fc_nport *tgtport,
 			       spdk_nvmf_fc_del_assoc_cb del_assoc_cb,
 			       void *cb_data);
 
+int nvmf_fc_delete_connection(struct spdk_nvmf_fc_conn *fc_conn, bool send_abts,
+			      bool backend_initiated, spdk_nvmf_fc_del_conn_cb cb_fn,
+			      void *cb_data);
+
 bool nvmf_ctrlr_is_on_nport(uint8_t port_hdl, uint16_t nport_hdl,
 			    struct spdk_nvmf_ctrlr *ctrlr);
 
-void nvmf_fc_assign_queue_to_master_thread(struct spdk_nvmf_fc_hwqp *hwqp);
+void nvmf_fc_assign_queue_to_main_thread(struct spdk_nvmf_fc_hwqp *hwqp);
+
+bool nvmf_fc_poll_group_valid(struct spdk_nvmf_fc_poll_group *fgroup);
 
 void nvmf_fc_poll_group_add_hwqp(struct spdk_nvmf_fc_hwqp *hwqp);
 
-void nvmf_fc_poll_group_remove_hwqp(struct spdk_nvmf_fc_hwqp *hwqp);
+void nvmf_fc_poll_group_remove_hwqp(struct spdk_nvmf_fc_hwqp *hwqp,
+				    spdk_nvmf_fc_remove_hwqp_cb cb_fn, void *cb_ctx);
 
 int nvmf_fc_hwqp_set_online(struct spdk_nvmf_fc_hwqp *hwqp);
 
@@ -936,7 +974,7 @@ void nvmf_fc_request_abort(struct spdk_nvmf_fc_request *fc_req, bool send_abts,
 
 struct spdk_nvmf_tgt *nvmf_fc_get_tgt(void);
 
-struct spdk_thread *nvmf_fc_get_master_thread(void);
+struct spdk_thread *nvmf_fc_get_main_thread(void);
 
 /*
  * These functions are called by low level FC driver
@@ -959,8 +997,14 @@ nvmf_fc_advance_conn_sqhead(struct spdk_nvmf_qpair *qpair)
 }
 
 static inline bool
-nvmf_fc_use_send_frame(struct spdk_nvmf_request *req)
+nvmf_fc_use_send_frame(struct spdk_nvmf_fc_request *fc_req)
 {
+	struct spdk_nvmf_request *req = &fc_req->req;
+
+	if (fc_req->app_id) {
+		return false;
+	}
+
 	/* For now use for only keepalives. */
 	if (req->qpair->qid == 0 &&
 	    (req->cmd->nvme_cmd.opc == SPDK_NVME_OPC_KEEP_ALIVE)) {
@@ -995,5 +1039,9 @@ bool nvmf_fc_send_ersp_required(struct spdk_nvmf_fc_request *fc_req,
 				uint32_t rsp_cnt, uint32_t xfer_len);
 
 int nvmf_fc_handle_rsp(struct spdk_nvmf_fc_request *req);
+
+int nvmf_fc_create_conn_reqpool(struct spdk_nvmf_fc_conn *fc_conn);
+
+void nvmf_fc_free_conn_reqpool(struct spdk_nvmf_fc_conn *fc_conn);
 
 #endif

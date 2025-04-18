@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -16,6 +19,7 @@ vms=()
 used_vms=""
 x=""
 readonly=""
+packed=false
 
 function usage() {
 	[[ -n $2 ]] && (
@@ -37,12 +41,13 @@ function usage() {
 	echo "                          All VMs will run the same fio job when FIO executes."
 	echo "                          (no unique jobs for specific VMs)"
 	echo "    --dry-run             Don't perform any tests, run only and wait for enter to terminate"
-	echo "    --no-shutdown         Don't shutdown at the end but leave envirionment working"
+	echo "    --no-shutdown         Don't shutdown at the end but leave environment working"
 	echo "    --vm=NUM[,OS][,DISKS] VM configuration. This parameter might be used more than once:"
 	echo "                          NUM - VM number (mandatory)"
 	echo "                          OS - VM os disk path (optional)"
 	echo "                          DISKS - VM os test disks/devices path (virtio - optional, kernel_vhost - mandatory)"
 	echo "    --readonly            Use readonly for fio"
+	echo "    --packed              Virtqueue format is packed"
 	exit 0
 }
 
@@ -60,6 +65,7 @@ while getopts 'xh-:' optchar; do
 				test-type=*) test_type="${OPTARG#*=}" ;;
 				vm=*) vms+=("${OPTARG#*=}") ;;
 				readonly) readonly="--readonly" ;;
+				packed) packed=true ;;
 				*) usage $0 "Invalid argument '$OPTARG'" ;;
 			esac
 			;;
@@ -88,7 +94,7 @@ if [[ $test_type =~ "spdk_vhost" ]]; then
 	notice ""
 	notice "running SPDK"
 	notice ""
-	vhost_run 0
+	vhost_run -n 0
 	rpc_py="$rootdir/scripts/rpc.py -s $(get_vhost_dir 0)/rpc.sock"
 	$rpc_py bdev_split_create Nvme0n1 4
 	$rpc_py bdev_malloc_create -b Malloc0 128 4096
@@ -116,7 +122,7 @@ rpc_py="$rootdir/scripts/rpc.py -s $(get_vhost_dir 0)/rpc.sock"
 
 for vm_conf in "${vms[@]}"; do
 	IFS=',' read -ra conf <<< "$vm_conf"
-	if [[ x"${conf[0]}" == x"" ]] || ! assert_number ${conf[0]}; then
+	if [[ -z ${conf[0]} ]] || ! assert_number ${conf[0]}; then
 		fail "invalid VM configuration syntax $vm_conf"
 	fi
 
@@ -165,6 +171,10 @@ for vm_conf in "${vms[@]}"; do
 	[[ x"${conf[1]}" != x"" ]] && setup_cmd+=" --os=${conf[1]}"
 	[[ x"${conf[2]}" != x"" ]] && setup_cmd+=" --disks=${conf[2]}"
 
+	if [[ "$test_type" == "spdk_vhost_blk" ]] && $packed; then
+		setup_cmd+=" --packed"
+	fi
+
 	$setup_cmd
 done
 
@@ -204,7 +214,7 @@ notice "Testing..."
 
 notice "Running fio jobs ..."
 
-# Check if all VM have disk in tha same location
+# Check if all VM have disk in the same location
 DISK=""
 
 fio_disks=""
@@ -227,7 +237,7 @@ for vm_num in $used_vms; do
 done
 
 if $dry_run; then
-	read -r -p "Enter to kill evething" xx
+	read -r -p "Enter to kill everything" xx
 	sleep 3
 	at_app_exit
 	exit 0

@@ -1,38 +1,10 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE AiRE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk/env.h"
 #include "spdk_internal/mock.h"
 
@@ -90,10 +62,9 @@ static uint64_t g_start_lba;
 static uint64_t g_unexpected_start_lba;
 static uint64_t g_bdev_blocklen;
 static uint64_t g_unexpected_bdev_blocklen;
-static bool g_append_with_md;
 static int g_unexpected_iovcnt;
 static void *g_md_buf;
-static void *g_unexpetced_md_buf;
+static void *g_unexpected_md_buf;
 static void *g_buf;
 static void *g_unexpected_buf;
 
@@ -111,10 +82,9 @@ test_setup(void)
 	g_unexpected_start_lba = 0;
 	g_bdev_blocklen = 4096;
 	g_unexpected_bdev_blocklen = 0;
-	g_append_with_md = false;
 	g_unexpected_iovcnt = 1000;
 	g_md_buf = (void *)0xEFDCFEDE;
-	g_unexpetced_md_buf = (void *)0xFECDEFDC;
+	g_unexpected_md_buf = (void *)0xFECDEFDC;
 	g_buf = (void *)0xFEEDBEEF;
 	g_unexpected_buf = (void *)0xDEADBEEF;
 
@@ -139,7 +109,7 @@ start_operation(void)
 		g_zone_op->bdev.iovs[0].iov_base = g_unexpected_buf;
 		g_zone_op->bdev.iovs[0].iov_len = g_unexpected_num_blocks * g_unexpected_bdev_blocklen;
 		g_zone_op->bdev.iovcnt = g_unexpected_iovcnt;
-		g_zone_op->bdev.md_buf = g_unexpetced_md_buf;
+		g_zone_op->bdev.md_buf = g_unexpected_md_buf;
 		g_zone_op->bdev.num_blocks = g_unexpected_num_blocks;
 		g_zone_op->bdev.offset_blocks = g_unexpected_zone_id;
 		g_zone_op->bdev.start_lba = g_unexpected_start_lba;
@@ -206,8 +176,8 @@ bdev_channel_get_io(struct spdk_bdev_channel *channel)
 }
 
 int
-spdk_bdev_open(struct spdk_bdev *bdev, bool write, spdk_bdev_remove_cb_t remove_cb,
-	       void *remove_ctx, struct spdk_bdev_desc **_desc)
+spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
+		   void *event_ctx, struct spdk_bdev_desc **_desc)
 {
 	*_desc = (void *)0x1;
 	return 0;
@@ -255,6 +225,44 @@ test_get_zone_size(void)
 }
 
 static void
+test_get_num_zones(void)
+{
+	struct spdk_bdev bdev = {};
+	uint64_t get_num_zones;
+
+	bdev.blockcnt = 1024 * 1024 * 1024;
+	bdev.zone_size = 1024 * 4096;
+
+	get_num_zones = spdk_bdev_get_num_zones(&bdev);
+	CU_ASSERT(get_num_zones == 256);
+}
+
+static void
+test_get_zone_id(void)
+{
+	struct spdk_bdev bdev = {};
+	uint64_t get_zone_id;
+
+	bdev.blockcnt = 1024 * 1024 * 1024;
+	bdev.zone_size = 1024 * 4096;
+
+	get_zone_id = spdk_bdev_get_zone_id(&bdev, 0x800032);
+	CU_ASSERT(get_zone_id == 0x800000);
+}
+
+static void
+test_get_max_zone_append_size(void)
+{
+	struct spdk_bdev bdev = {};
+	uint32_t get_max_zone_append_size;
+
+	bdev.max_zone_append_size = 32;
+
+	get_max_zone_append_size = spdk_bdev_get_max_zone_append_size(&bdev);
+	CU_ASSERT(get_max_zone_append_size == 32);
+}
+
+static void
 test_get_max_open_zones(void)
 {
 	struct spdk_bdev bdev = {};
@@ -264,6 +272,18 @@ test_get_max_open_zones(void)
 
 	get_max_open_zones = spdk_bdev_get_max_open_zones(&bdev);
 	CU_ASSERT(get_max_open_zones == 8192);
+}
+
+static void
+test_get_max_active_zones(void)
+{
+	struct spdk_bdev bdev = {};
+	uint32_t get_max_active_zones;
+
+	bdev.max_active_zones = 9216;
+
+	get_max_active_zones = spdk_bdev_get_max_active_zones(&bdev);
+	CU_ASSERT(get_max_active_zones == 9216);
 }
 
 static void
@@ -294,7 +314,11 @@ static void
 test_zone_get_operation(void)
 {
 	test_get_zone_size();
+	test_get_num_zones();
+	test_get_zone_id();
+	test_get_max_zone_append_size();
 	test_get_max_open_zones();
+	test_get_max_active_zones();
 	test_get_optimal_open_zones();
 }
 
@@ -305,7 +329,7 @@ test_zone_get_operation(void)
     int rc; \
     memset(&bdev, 0, sizeof(bdev)); \
     bdev.name = "bdev_zone_ut"; \
-    rc = spdk_bdev_open(&bdev, true, NULL, NULL, &desc); \
+    rc = spdk_bdev_open_ext(bdev.name, true, NULL, NULL, &desc); \
     CU_ASSERT(rc == 0); \
     SPDK_CU_ASSERT_FATAL(desc != NULL); \
     ch = spdk_bdev_get_io_channel(desc); \
@@ -359,7 +383,6 @@ test_bdev_zone_append(void)
 	DECLARE_VIRTUAL_BDEV_START();
 
 	g_io_type = SPDK_BDEV_IO_TYPE_ZONE_APPEND;
-	g_append_with_md = false;
 
 	start_operation();
 
@@ -384,7 +407,6 @@ test_bdev_zone_append_with_md(void)
 	DECLARE_VIRTUAL_BDEV_START();
 
 	g_io_type = SPDK_BDEV_IO_TYPE_ZONE_APPEND;
-	g_append_with_md = true;
 
 	start_operation();
 
@@ -404,13 +426,60 @@ test_bdev_zone_append_with_md(void)
 	stop_operation();
 }
 
+static void
+test_bdev_zone_appendv(void)
+{
+	DECLARE_VIRTUAL_BDEV_START();
+
+	g_io_type = SPDK_BDEV_IO_TYPE_ZONE_APPEND;
+
+	start_operation();
+
+	rc = spdk_bdev_zone_appendv(desc, ch, g_zone_op->bdev.iovs, g_unexpected_iovcnt, g_start_lba,
+				    g_num_blocks, NULL, NULL);
+
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(g_bdev_io->internal.desc == desc);
+	CU_ASSERT(g_bdev_io->type == SPDK_BDEV_IO_TYPE_ZONE_APPEND);
+	CU_ASSERT(g_bdev_io->u.bdev.iovs == g_zone_op->bdev.iovs);
+	CU_ASSERT(g_bdev_io->u.bdev.iovcnt == g_unexpected_iovcnt);
+	CU_ASSERT(g_bdev_io->u.bdev.md_buf == NULL);
+	CU_ASSERT(g_bdev_io->u.bdev.num_blocks == g_num_blocks);
+	CU_ASSERT(g_bdev_io->u.bdev.offset_blocks == g_expected_zone_id);
+
+	stop_operation();
+}
+
+static void
+test_bdev_zone_appendv_with_md(void)
+{
+	DECLARE_VIRTUAL_BDEV_START();
+
+	g_io_type = SPDK_BDEV_IO_TYPE_ZONE_APPEND;
+
+	start_operation();
+
+	rc = spdk_bdev_zone_appendv_with_md(desc, ch, g_zone_op->bdev.iovs, g_unexpected_iovcnt, g_md_buf,
+					    g_start_lba, g_num_blocks, NULL, NULL);
+
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(g_bdev_io->internal.desc == desc);
+	CU_ASSERT(g_bdev_io->type == SPDK_BDEV_IO_TYPE_ZONE_APPEND);
+	CU_ASSERT(g_bdev_io->u.bdev.iovs == g_zone_op->bdev.iovs);
+	CU_ASSERT(g_bdev_io->u.bdev.iovcnt == g_unexpected_iovcnt);
+	CU_ASSERT(g_bdev_io->u.bdev.md_buf == g_md_buf);
+	CU_ASSERT(g_bdev_io->u.bdev.num_blocks == g_num_blocks);
+	CU_ASSERT(g_bdev_io->u.bdev.offset_blocks == g_expected_zone_id);
+
+	stop_operation();
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite suite = NULL;
 	unsigned int num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("zone", test_setup, test_cleanup);
@@ -419,11 +488,11 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_bdev_zone_management);
 	CU_ADD_TEST(suite, test_bdev_zone_append);
 	CU_ADD_TEST(suite, test_bdev_zone_append_with_md);
+	CU_ADD_TEST(suite, test_bdev_zone_appendv);
+	CU_ADD_TEST(suite, test_bdev_zone_appendv_with_md);
 	CU_ADD_TEST(suite, test_bdev_io_get_append_location);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

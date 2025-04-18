@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -15,10 +18,6 @@ declare -A vms_ctrlrs_disks
 
 # By default use Guest fio
 fio_bin=""
-MGMT_TARGET_IP=""
-MGMT_INITIATOR_IP=""
-RDMA_TARGET_IP=""
-RDMA_INITIATOR_IP=""
 function usage() {
 	[[ -n $2 ]] && (
 		echo "$2"
@@ -29,10 +28,6 @@ function usage() {
 	echo
 	echo "    --os ARGS             VM configuration. This parameter might be used more than once:"
 	echo "    --fio-bin=FIO         Use specific fio binary (will be uploaded to VM)"
-	echo "    --mgmt-tgt-ip=IP      IP address of target."
-	echo "    --mgmt-init-ip=IP     IP address of initiator."
-	echo "    --rdma-tgt-ip=IP      IP address of targets rdma capable NIC."
-	echo "    --rdma-init-ip=IP     IP address of initiators rdma capable NIC."
 	echo "-x                        set -x for script debug"
 }
 
@@ -44,10 +39,6 @@ for param in "$@"; do
 			;;
 		--os=*) os_image="${param#*=}" ;;
 		--fio-bin=*) fio_bin="${param}" ;;
-		--mgmt-tgt-ip=*) MGMT_TARGET_IP="${param#*=}" ;;
-		--mgmt-init-ip=*) MGMT_INITIATOR_IP="${param#*=}" ;;
-		--rdma-tgt-ip=*) RDMA_TARGET_IP="${param#*=}" ;;
-		--rdma-init-ip=*) RDMA_INITIATOR_IP="${param#*=}" ;;
 		-x) set -x ;;
 		-v) SPDK_VHOST_VERBOSE=true ;;
 		*)
@@ -97,7 +88,6 @@ function vm_migrate() {
 	timing_enter vm_migrate
 	notice "Migrating VM $1 to VM "$(basename $target_vm_dir)
 	echo -e \
-		"migrate_set_speed 1g\n" \
 		"migrate tcp:$target_ip:$target_vm_migration_port\n" \
 		"info migrate\n" \
 		"quit" | vm_monitor_send $1 "$from_vm_dir/migration_result"
@@ -113,8 +103,8 @@ function vm_migrate() {
 	# If you need this check then perform it on your own.
 	if [[ "$target_ip" == "127.0.0.1" ]]; then
 		if ! vm_os_booted $target_vm; then
-			fail "VM$target_vm is not running"
 			cat $target_vm $target_vm_dir/cont_result
+			fail "VM$target_vm is not running"
 		fi
 	fi
 

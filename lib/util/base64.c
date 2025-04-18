@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) Intel Corporation. All rights reserved.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation. All rights reserved.
+ *   Copyright(c) ARM Limited. 2021 All rights reserved.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -36,8 +9,13 @@
 #include "spdk/base64.h"
 
 #ifdef __aarch64__
+#ifdef __ARM_FEATURE_SVE
+#include "base64_sve.c"
+#else
 #include "base64_neon.c"
 #endif
+#endif
+
 
 #define BASE64_ENC_BITMASK 0x3FUL
 #define BASE64_PADDING_CHAR '='
@@ -47,7 +25,7 @@ static const char base64_enc_table[] =
 	"abcdefghijklmnopqrstuvwxyz"
 	"0123456789+/";
 
-static const char base64_urfsafe_enc_table[] =
+static const char base64_urlsafe_enc_table[] =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	"abcdefghijklmnopqrstuvwxyz"
 	"0123456789-_";
@@ -102,8 +80,13 @@ base64_encode(char *dst, const char *enc_table, const void *src, size_t src_len)
 	}
 
 #ifdef __aarch64__
+#ifdef __ARM_FEATURE_SVE
+	base64_encode_sve(&dst, enc_table, &src, &src_len);
+#else
 	base64_encode_neon64(&dst, enc_table, &src, &src_len);
 #endif
+#endif
+
 
 	while (src_len >= 4) {
 		raw_u32 = from_be32(src);
@@ -114,7 +97,7 @@ base64_encode(char *dst, const char *enc_table, const void *src, size_t src_len)
 		*dst++ = enc_table[(raw_u32 >> 8) & BASE64_ENC_BITMASK];
 
 		src_len -= 3;
-		src += 3;
+		src = (uint8_t *)src + 3;
 	}
 
 	if (src_len == 0) {
@@ -145,10 +128,10 @@ spdk_base64_encode(char *dst, const void *src, size_t src_len)
 int
 spdk_base64_urlsafe_encode(char *dst, const void *src, size_t src_len)
 {
-	return base64_encode(dst, base64_urfsafe_enc_table, src, src_len);
+	return base64_encode(dst, base64_urlsafe_enc_table, src, src_len);
 }
 
-#ifdef __aarch64__
+#if defined(__aarch64__) && !defined(__ARM_FEATURE_SVE)
 static int
 base64_decode(void *dst, size_t *_dst_len, const uint8_t *dec_table,
 	      const uint8_t *dec_table_opt, const char *src)
@@ -199,12 +182,17 @@ base64_decode(void *dst, size_t *_dst_len, const uint8_t *dec_table, const char 
 	src_in = (const uint8_t *) src;
 
 #ifdef __aarch64__
+#ifdef __ARM_FEATURE_SVE
+	base64_decode_sve(&dst, dec_table, &src_in, &src_strlen);
+#else
 	base64_decode_neon64(&dst, dec_table_opt, &src_in, &src_strlen);
+#endif
 
 	if (src_strlen == 0) {
 		return 0;
 	}
 #endif
+
 
 	/* space of dst can be used by to_be32 */
 	while (src_strlen > 4) {
@@ -219,7 +207,7 @@ base64_decode(void *dst, size_t *_dst_len, const uint8_t *dec_table, const char 
 
 		to_be32(dst, tmp[3] << 8 | tmp[2] << 14 | tmp[1] << 20 | tmp[0] << 26);
 
-		dst += 3;
+		dst = (uint8_t *)dst + 3;
 		src_strlen -= 4;
 	}
 
@@ -243,7 +231,7 @@ base64_decode(void *dst, size_t *_dst_len, const uint8_t *dec_table, const char 
 int
 spdk_base64_decode(void *dst, size_t *dst_len, const char *src)
 {
-#ifdef __aarch64__
+#if defined(__aarch64__) && !defined(__ARM_FEATURE_SVE)
 	return base64_decode(dst, dst_len, base64_dec_table, base64_dec_table_neon64, src);
 #else
 	return base64_decode(dst, dst_len, base64_dec_table, src);
@@ -253,7 +241,7 @@ spdk_base64_decode(void *dst, size_t *dst_len, const char *src)
 int
 spdk_base64_urlsafe_decode(void *dst, size_t *dst_len, const char *src)
 {
-#ifdef __aarch64__
+#if defined(__aarch64__) && !defined(__ARM_FEATURE_SVE)
 	return base64_decode(dst, dst_len, base64_urlsafe_dec_table, base64_urlsafe_dec_table_neon64,
 			     src);
 #else

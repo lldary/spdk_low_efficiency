@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -41,8 +14,6 @@
 #include "spdk/string.h"
 #include "spdk/rpc.h"
 #include "spdk/util.h"
-
-#include "spdk_internal/log.h"
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
@@ -63,7 +34,6 @@ rpc_blobfs_set_cache_size(struct spdk_jsonrpc_request *request,
 			  const struct spdk_json_val *params)
 {
 	struct rpc_blobfs_set_cache_size req;
-	struct spdk_json_write_ctx *w;
 	int rc;
 
 	if (spdk_json_decode_object(params, rpc_blobfs_set_cache_size_decoders,
@@ -85,9 +55,11 @@ rpc_blobfs_set_cache_size(struct spdk_jsonrpc_request *request,
 
 	rc = spdk_fs_set_cache_size(req.size_in_mb);
 
-	w = spdk_jsonrpc_begin_result(request);
-	spdk_json_write_bool(w, rc == 0);
-	spdk_jsonrpc_end_result(request, w);
+	if (rc == 0) {
+		spdk_jsonrpc_send_bool_response(request, true);
+	} else {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+	}
 }
 
 SPDK_RPC_REGISTER("blobfs_set_cache_size", rpc_blobfs_set_cache_size,
@@ -114,7 +86,6 @@ static void
 _rpc_blobfs_detect_done(void *cb_arg, int fserrno)
 {
 	struct rpc_blobfs_detect *req = cb_arg;
-	struct spdk_json_write_ctx *w;
 	bool existed = true;
 
 	if (fserrno == -EILSEQ) {
@@ -123,13 +94,11 @@ _rpc_blobfs_detect_done(void *cb_arg, int fserrno)
 	} else if (fserrno != 0) {
 		spdk_jsonrpc_send_error_response(req->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 spdk_strerror(-fserrno));
-
+		free_rpc_blobfs_detect(req);
 		return;
 	}
 
-	w = spdk_jsonrpc_begin_result(req->request);
-	spdk_json_write_bool(w, existed);
-	spdk_jsonrpc_end_result(req->request, w);
+	spdk_jsonrpc_send_bool_response(req->request, existed);
 
 	free_rpc_blobfs_detect(req);
 }
@@ -201,7 +170,7 @@ rpc_decode_cluster_sz(const struct spdk_json_val *val, void *out)
 		return -EINVAL;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_BLOBFS_BDEV_RPC, "cluster_sz of blobfs: %ld\n", *cluster_sz);
+	SPDK_DEBUGLOG(blobfs_bdev_rpc, "cluster_sz of blobfs: %" PRId64 "\n", *cluster_sz);
 	return 0;
 }
 
@@ -214,7 +183,6 @@ static void
 _rpc_blobfs_create_done(void *cb_arg, int fserrno)
 {
 	struct rpc_blobfs_create *req = cb_arg;
-	struct spdk_json_write_ctx *w;
 
 	if (fserrno != 0) {
 		spdk_jsonrpc_send_error_response(req->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -223,9 +191,7 @@ _rpc_blobfs_create_done(void *cb_arg, int fserrno)
 		return;
 	}
 
-	w = spdk_jsonrpc_begin_result(req->request);
-	spdk_json_write_bool(w, true);
-	spdk_jsonrpc_end_result(req->request, w);
+	spdk_jsonrpc_send_bool_response(req->request, true);
 
 	free_rpc_blobfs_create(req);
 }
@@ -261,7 +227,7 @@ rpc_blobfs_create(struct spdk_jsonrpc_request *request,
 
 SPDK_RPC_REGISTER("blobfs_create", rpc_blobfs_create, SPDK_RPC_RUNTIME)
 
-SPDK_LOG_REGISTER_COMPONENT("blobfs_bdev_rpc", SPDK_LOG_BLOBFS_BDEV_RPC)
+SPDK_LOG_REGISTER_COMPONENT(blobfs_bdev_rpc)
 #ifdef SPDK_CONFIG_FUSE
 
 struct rpc_blobfs_mount {
@@ -288,7 +254,6 @@ static void
 _rpc_blobfs_mount_done(void *cb_arg, int fserrno)
 {
 	struct rpc_blobfs_mount *req = cb_arg;
-	struct spdk_json_write_ctx *w;
 
 	if (fserrno == -EILSEQ) {
 		/* There is no blobfs existing on bdev */
@@ -303,9 +268,7 @@ _rpc_blobfs_mount_done(void *cb_arg, int fserrno)
 		return;
 	}
 
-	w = spdk_jsonrpc_begin_result(req->request);
-	spdk_json_write_bool(w, true);
-	spdk_jsonrpc_end_result(req->request, w);
+	spdk_jsonrpc_send_bool_response(req->request, true);
 
 	free_rpc_blobfs_mount(req);
 }

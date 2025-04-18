@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/string.h"
@@ -39,7 +11,7 @@
 #include <linux/nbd.h>
 
 #include "nbd_internal.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
 struct rpc_nbd_start_disk {
 	char *bdev_name;
@@ -64,7 +36,7 @@ static const struct spdk_json_object_decoder rpc_nbd_start_disk_decoders[] = {
 };
 
 /* Return 0 to indicate the nbd_device might be available,
- * or non-zero to indicate the nbd_device is invalid or in using.
+ * or non-zero to indicate the nbd_device is invalid or in use.
  */
 static int
 check_available_nbd_disk(char *nbd_device)
@@ -84,11 +56,11 @@ check_available_nbd_disk(char *nbd_device)
 	/* make sure nbd_device is not registered inside SPDK */
 	nbd = nbd_disk_find_by_nbd_path(nbd_device);
 	if (nbd) {
-		/* nbd_device is in using */
+		/* nbd_device is in use */
 		return -EBUSY;
 	}
 
-	/* A valid pid file in /sys/block indicates the device is in using */
+	/* A valid pid file in /sys/block indicates the device is in use */
 	snprintf(nbd_block_path, 256, "/sys/block/nbd%u/pid", nbd_idx);
 
 	rc = open(nbd_block_path, O_RDONLY);
@@ -104,7 +76,7 @@ check_available_nbd_disk(char *nbd_device)
 
 	close(rc);
 
-	/* nbd_device is in using */
+	/* nbd_device is in use */
 	return -EBUSY;
 }
 
@@ -153,11 +125,12 @@ rpc_start_nbd_done(void *cb_arg, struct spdk_nbd_disk *nbd, int rc)
 			return;
 		}
 
-		SPDK_INFOLOG(SPDK_LOG_NBD, "There is no available nbd device.\n");
+		SPDK_INFOLOG(nbd, "There is no available nbd device.\n");
 	}
 
 	if (rc) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+		free_rpc_nbd_start_disk(req);
 		return;
 	}
 
@@ -199,13 +172,13 @@ rpc_nbd_start_disk(struct spdk_jsonrpc_request *request,
 		req->nbd_idx_specified = true;
 		rc = check_available_nbd_disk(req->nbd_device);
 		if (rc == -EBUSY) {
-			SPDK_DEBUGLOG(SPDK_LOG_NBD, "NBD device %s is in using.\n", req->nbd_device);
+			SPDK_DEBUGLOG(nbd, "NBD device %s is in use.\n", req->nbd_device);
 			spdk_jsonrpc_send_error_response(request, -EBUSY, spdk_strerror(-rc));
 			goto invalid;
 		}
 
 		if (rc != 0) {
-			SPDK_DEBUGLOG(SPDK_LOG_NBD, "Illegal nbd_device %s.\n", req->nbd_device);
+			SPDK_DEBUGLOG(nbd, "Illegal nbd_device %s.\n", req->nbd_device);
 			spdk_jsonrpc_send_error_response_fmt(request, -ENODEV,
 							     "illegal nbd device %s", req->nbd_device);
 			goto invalid;
@@ -214,7 +187,7 @@ rpc_nbd_start_disk(struct spdk_jsonrpc_request *request,
 		req->nbd_idx = 0;
 		req->nbd_device = find_available_nbd_disk(req->nbd_idx, &req->nbd_idx);
 		if (req->nbd_device == NULL) {
-			SPDK_INFOLOG(SPDK_LOG_NBD, "There is no available nbd device.\n");
+			SPDK_INFOLOG(nbd, "There is no available nbd device.\n");
 			spdk_jsonrpc_send_error_response(request, -ENODEV,
 							 "nbd device not found");
 			goto invalid;
@@ -232,7 +205,6 @@ invalid:
 }
 
 SPDK_RPC_REGISTER("nbd_start_disk", rpc_nbd_start_disk, SPDK_RPC_RUNTIME)
-SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nbd_start_disk, start_nbd_disk)
 
 struct rpc_nbd_stop_disk {
 	char *nbd_device;
@@ -257,15 +229,12 @@ static void *
 nbd_disconnect_thread(void *arg)
 {
 	struct nbd_disconnect_arg *thd_arg = arg;
-	struct spdk_json_write_ctx *w;
 
 	spdk_unaffinitize_thread();
 
 	nbd_disconnect(thd_arg->nbd);
 
-	w = spdk_jsonrpc_begin_result(thd_arg->request);
-	spdk_json_write_bool(w, true);
-	spdk_jsonrpc_end_result(thd_arg->request, w);
+	spdk_jsonrpc_send_bool_response(thd_arg->request, true);
 
 	free(thd_arg);
 	pthread_exit(NULL);
@@ -339,7 +308,6 @@ out:
 }
 
 SPDK_RPC_REGISTER("nbd_stop_disk", rpc_nbd_stop_disk, SPDK_RPC_RUNTIME)
-SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nbd_stop_disk, stop_nbd_disk)
 
 static void
 rpc_dump_nbd_info(struct spdk_json_write_ctx *w,
@@ -419,4 +387,3 @@ invalid:
 	free_rpc_nbd_get_disks(&req);
 }
 SPDK_RPC_REGISTER("nbd_get_disks", rpc_nbd_get_disks, SPDK_RPC_RUNTIME)
-SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nbd_get_disks, get_nbd_disks)

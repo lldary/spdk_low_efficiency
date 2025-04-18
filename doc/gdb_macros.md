@@ -1,6 +1,6 @@
 # GDB Macros User Guide {#gdb_macros}
 
-# Introduction
+## Introduction
 
 When debugging an spdk application using gdb we may need to view data structures
 in lists, e.g. information about bdevs or threads.
@@ -125,7 +125,55 @@ nqn "nqn.2016-06.io.spdk.umgmt:cnode1", '\000' <repeats 191 times>
 ID 1
 ~~~
 
-# Loading The gdb Macros
+Printing SPDK spinlocks:
+
+In this example, the spinlock has been initialized and locked but has never been unlocked.
+After it is unlocked the first time the last unlocked stack will be present and the
+`Locked by spdk_thread` line will say `not locked`.
+
+~~~{.sh}
+Breakpoint 2, spdk_spin_unlock (sspin=0x655110 <g_bdev_mgr+80>) at thread.c:2915
+2915            struct spdk_thread *thread = spdk_get_thread();
+(gdb) print *sspin
+$2 = struct spdk_spinlock:
+  Locked by spdk_thread: 0x658080
+  Initialized at:
+     0x43e677 <spdk_spin_init+213> thread.c:2878
+     0x404feb <_bdev_init+16> /build/spdk/spdk-review-public/lib/bdev/bdev.c:116
+     0x44483d <__libc_csu_init+77>
+     0x7ffff62c9d18 <__libc_start_main+120>
+     0x40268e <_start+46>
+  Last locked at:
+     0x43e936 <spdk_spin_lock+436> thread.c:2909
+     0x40ca9c <bdev_name_add+129> /build/spdk/spdk-review-public/lib/bdev/bdev.c:3855
+     0x411a3c <bdev_register+641> /build/spdk/spdk-review-public/lib/bdev/bdev.c:6660
+     0x412e1e <spdk_bdev_register+24> /build/spdk/spdk-review-public/lib/bdev/bdev.c:7171
+     0x417895 <num_blocks_test+119> bdev_ut.c:878
+     0x7ffff7bc38cb <run_single_test.constprop+379>
+     0x7ffff7bc3b61 <run_single_suite.constprop+433>
+     0x7ffff7bc3f76 <CU_run_all_tests+118>
+     0x43351f <main+1439> bdev_ut.c:6295
+     0x7ffff62c9d85 <__libc_start_main+229>
+     0x40268e <_start+46>
+  Last unlocked at:
+~~~
+
+Print a single spinlock stack:
+
+~~~{.sh}
+(gdb) print sspin->internal.lock_stack
+$1 = struct sspin_stack:
+ 0x40c6a1 <spdk_spin_lock+436> /build/spdk/spdk-review-public/lib/thread/thread.c:2909
+ 0x413f48 <spdk_spin+552> thread_ut.c:1831
+ 0x7ffff7bc38cb <run_single_test.constprop+379>
+ 0x7ffff7bc3b61 <run_single_suite.constprop+433>
+ 0x7ffff7bc3f76 <CU_run_all_tests+118>
+ 0x4148fa <main+547> thread_ut.c:1948
+ 0x7ffff62c9d85 <__libc_start_main+229>
+ 0x40248e <_start+46>
+~~~
+
+## Loading The gdb Macros
 
 Copy the gdb macros to the host where you are about to debug.
 It is best to copy the file either to somewhere within the PYTHONPATH, or to add
@@ -146,7 +194,7 @@ the PYTHONPATH, so I had to manually add the directory to the path.
 (gdb) spdk_load_macros
 ~~~
 
-# Using the gdb Data Directory
+## Using the gdb Data Directory
 
 On most systems, the data directory is /usr/share/gdb. The python script should
 be copied into the python/gdb/function (or python/gdb/command) directory under
@@ -155,12 +203,12 @@ the data directory, e.g. /usr/share/gdb/python/gdb/function.
 If the python script is in there, then the only thing you need to do when
 starting gdb is type "spdk_load_macros".
 
-# Using .gdbinit To Load The Macros
+## Using .gdbinit To Load The Macros
 
 .gdbinit can also be used in order to run automatically run the manual steps
 above prior to starting gdb.
 
-Exmaple .gdbinit:
+Example .gdbinit:
 
 ~~~{.sh}
 source /opt/km/install/tools/gdb_macros/gdb_macros.py
@@ -168,14 +216,14 @@ source /opt/km/install/tools/gdb_macros/gdb_macros.py
 
 When starting gdb you still have to call spdk_load_macros.
 
-# Why Do We Need to Explicitly Call spdk_load_macros
+## Why Do We Need to Explicitly Call spdk_load_macros
 
 The reason is that the macros need to use globals provided by spdk in order to
 iterate the spdk lists and build iterable representations of the list objects.
 This will result in errors if these are not available which is very possible if
 gdb is used for reasons other than debugging spdk core dumps.
 
-In the example bellow, I attempted to load the macros when the globals are not
+In the example below, I attempted to load the macros when the globals are not
 available causing gdb to fail loading the gdb_macros:
 
 ~~~{.sh}
@@ -196,7 +244,7 @@ Error occurred in Python command: No symbol table is loaded.  Use the "file"
 command.
 ~~~
 
-# Macros available
+## Macros available
 
 - spdk_load_macros: load the macros (use --reload in order to reload them)
 - spdk_print_bdevs: information about bdevs
@@ -205,7 +253,7 @@ command.
 - spdk_print_nvmf_subsystems: information about nvmf subsystems
 - spdk_print_threads: information about threads
 
-# Adding New Macros
+## Adding New Macros
 
 The list iteration macros are usually built from 3 layers:
 

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
 
 import argparse
 import base64
 import errno
 import json
+import os
 import socket
 import ssl
 import sys
@@ -12,6 +17,10 @@ try:
 except ImportError:
     from http.server import HTTPServer
     from http.server import BaseHTTPRequestHandler
+
+sys.path.append(os.path.dirname(__file__) + '/../python')
+
+from spdk.rpc.client import print_json  # noqa
 
 rpc_sock = None
 
@@ -22,12 +31,6 @@ parser.add_argument('user', help='User name used for authentication')
 parser.add_argument('password', help='Password used for authentication')
 parser.add_argument('-s', dest='sock', help='RPC domain socket path', default='/var/tmp/spdk.sock')
 parser.add_argument('-c', dest='cert', help='SSL certificate')
-
-
-def print_usage_and_exit(status):
-    print('Usage: rpc_http_proxy.py <server IP> <server port> <user name>' +
-          ' <password> <SPDK RPC socket (optional, default: /var/tmp/spdk.sock)>')
-    sys.exit(status)
 
 
 def rpc_call(req):
@@ -45,6 +48,8 @@ def rpc_call(req):
     closed = False
     response = None
 
+    print_json(req.decode('ascii'))
+
     while not closed:
         newdata = sock.recv(1024)
         if (newdata == b''):
@@ -60,6 +65,8 @@ def rpc_call(req):
 
     if not response and len(buf) > 0:
         raise
+
+    print_json(buf)
 
     return buf
 
@@ -88,7 +95,25 @@ class ServerHandler(BaseHTTPRequestHandler):
         if self.headers['Authorization'] != 'Basic ' + self.key:
             self.do_AUTHHEAD()
         else:
-            data_string = self.rfile.read(int(self.headers['Content-Length']))
+            if "Content-Length" in self.headers:
+                data_string = self.rfile.read(int(self.headers['Content-Length']))
+            elif "chunked" in self.headers.get("Transfer-Encoding", ""):
+                data_string = b''
+                while True:
+                    line = self.rfile.readline().strip()
+                    chunk_length = int(line, 16)
+
+                    if chunk_length != 0:
+                        chunk = self.rfile.read(chunk_length)
+                        data_string += chunk
+
+                    # Each chunk is followed by an additional empty newline
+                    # that we have to consume.
+                    self.rfile.readline()
+
+                    # Finally, a chunk size of 0 is an end indication
+                    if chunk_length == 0:
+                        break
 
             try:
                 response = rpc_call(data_string)

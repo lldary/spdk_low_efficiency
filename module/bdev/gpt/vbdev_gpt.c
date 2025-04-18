@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /*
@@ -36,9 +8,9 @@
  * each partition.
  */
 
+#define REGISTER_GUID_DEPRECATION
 #include "gpt.h"
 
-#include "spdk/conf.h"
 #include "spdk/endian.h"
 #include "spdk/env.h"
 #include "spdk/thread.h"
@@ -47,7 +19,7 @@
 #include "spdk/util.h"
 
 #include "spdk/bdev_module.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
 static int vbdev_gpt_init(void);
 static void vbdev_gpt_examine(struct spdk_bdev *bdev);
@@ -90,8 +62,6 @@ struct gpt_io {
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 };
 
-static bool g_gpt_disabled;
-
 static void
 gpt_base_free(void *ctx)
 {
@@ -113,11 +83,14 @@ gpt_base_bdev_hotremove_cb(void *_part_base)
 static int vbdev_gpt_destruct(void *ctx);
 static void vbdev_gpt_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io);
 static int vbdev_gpt_dump_info_json(void *ctx, struct spdk_json_write_ctx *w);
+static int vbdev_gpt_get_memory_domains(void *ctx, struct spdk_memory_domain **domains,
+					int array_size);
 
 static struct spdk_bdev_fn_table vbdev_gpt_fn_table = {
 	.destruct		= vbdev_gpt_destruct,
 	.submit_request		= vbdev_gpt_submit_request,
 	.dump_info_json		= vbdev_gpt_dump_info_json,
+	.get_memory_domains	= vbdev_gpt_get_memory_domains,
 };
 
 static struct gpt_base *
@@ -125,6 +98,7 @@ gpt_base_bdev_init(struct spdk_bdev *bdev)
 {
 	struct gpt_base *gpt_base;
 	struct spdk_gpt *gpt;
+	int rc;
 
 	gpt_base = calloc(1, sizeof(*gpt_base));
 	if (!gpt_base) {
@@ -133,12 +107,12 @@ gpt_base_bdev_init(struct spdk_bdev *bdev)
 	}
 
 	TAILQ_INIT(&gpt_base->parts);
-	gpt_base->part_base = spdk_bdev_part_base_construct(bdev,
-			      gpt_base_bdev_hotremove_cb,
-			      &gpt_if, &vbdev_gpt_fn_table,
-			      &gpt_base->parts, gpt_base_free, gpt_base,
-			      sizeof(struct gpt_channel), NULL, NULL);
-	if (!gpt_base->part_base) {
+	rc = spdk_bdev_part_base_construct_ext(spdk_bdev_get_name(bdev),
+					       gpt_base_bdev_hotremove_cb,
+					       &gpt_if, &vbdev_gpt_fn_table,
+					       &gpt_base->parts, gpt_base_free, gpt_base,
+					       sizeof(struct gpt_channel), NULL, NULL, &gpt_base->part_base);
+	if (rc != 0) {
 		free(gpt_base);
 		SPDK_ERRLOG("cannot construct gpt_base");
 		return NULL;
@@ -171,8 +145,7 @@ vbdev_gpt_destruct(void *ctx)
 	return spdk_bdev_part_free(&gpt_disk->part);
 }
 
-static void
-_vbdev_gpt_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io);
+static void _vbdev_gpt_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io);
 
 static void
 vbdev_gpt_resubmit_request(void *arg)
@@ -221,7 +194,7 @@ _vbdev_gpt_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev
 	rc = spdk_bdev_part_submit_request(&ch->part_ch, bdev_io);
 	if (rc) {
 		if (rc == -ENOMEM) {
-			SPDK_DEBUGLOG(SPDK_LOG_VBDEV_GPT, "gpt: no memory, queue io\n");
+			SPDK_DEBUGLOG(vbdev_gpt, "gpt: no memory, queue io\n");
 			io->ch = _ch;
 			io->bdev_io = bdev_io;
 			vbdev_gpt_queue_io(io);
@@ -244,6 +217,29 @@ vbdev_gpt_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 		_vbdev_gpt_submit_request(_ch, bdev_io);
 		break;
 	}
+}
+
+static void
+gpt_guid_to_uuid(const struct spdk_gpt_guid *guid, struct spdk_uuid *uuid)
+{
+#pragma pack(push, 1)
+	struct tmp_uuid {
+		uint32_t b0;
+		uint16_t b4;
+		uint16_t b6;
+		uint16_t b8;
+		uint16_t b10;
+		uint32_t b12;
+	} *ret = (struct tmp_uuid *)uuid;
+#pragma pack(pop)
+	SPDK_STATIC_ASSERT(sizeof(*ret) == sizeof(*uuid), "wrong size");
+
+	ret->b0 = from_be32(&guid->raw[0]);
+	ret->b4 = from_be16(&guid->raw[4]);
+	ret->b6 = from_be16(&guid->raw[6]);
+	ret->b8 = from_le16(&guid->raw[8]);
+	ret->b10 = from_le16(&guid->raw[10]);
+	ret->b12 = from_le32(&guid->raw[12]);
 }
 
 static void
@@ -303,6 +299,22 @@ vbdev_gpt_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 }
 
 static int
+vbdev_gpt_get_memory_domains(void *ctx, struct spdk_memory_domain **domains, int array_size)
+{
+	struct gpt_disk *gpt_disk = SPDK_CONTAINEROF(ctx, struct gpt_disk, part);
+	struct spdk_bdev_part_base *part_base = spdk_bdev_part_get_base(&gpt_disk->part);
+	struct spdk_bdev *part_base_bdev = spdk_bdev_part_base_get_bdev(part_base);
+
+	if (part_base_bdev->dif_check_flags & SPDK_DIF_FLAGS_REFTAG_CHECK) {
+		/* bdev_part remaps reftag and touches metadata buffer, that means it can't support memory domains
+		 * if dif is enabled */
+		return 0;
+	}
+
+	return spdk_bdev_get_memory_domains(part_base_bdev, domains, array_size);
+}
+
+static int
 vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 {
 	uint32_t num_partition_entries;
@@ -325,12 +337,27 @@ vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 		p = &gpt->partitions[i];
 		uint64_t lba_start = from_le64(&p->starting_lba);
 		uint64_t lba_end = from_le64(&p->ending_lba);
+		uint64_t partition_size = lba_end - lba_start + 1;
+		struct spdk_bdev_part_construct_opts opts;
 
-		if (!SPDK_GPT_GUID_EQUAL(&gpt->partitions[i].part_type_guid,
-					 &SPDK_GPT_PART_TYPE_GUID) ||
-		    lba_start == 0) {
+		if (lba_start == 0) {
 			continue;
 		}
+
+		if (SPDK_GPT_GUID_EQUAL(&gpt->partitions[i].part_type_guid,
+					&SPDK_GPT_PART_TYPE_GUID_OLD)) {
+			/* GitHub issue #2801 - we continue to report these partitions with
+			 * off-by-one sizing error to ensure we don't break layouts based
+			 * on that smaller size. */
+			partition_size -= 1;
+		} else if (!SPDK_GPT_GUID_EQUAL(&gpt->partitions[i].part_type_guid,
+						&SPDK_GPT_PART_TYPE_GUID)) {
+			/* Partition type isn't TYPE_GUID or TYPE_GUID_OLD, so this isn't
+			 * an SPDK partition.  Continue to the next partition.
+			 */
+			continue;
+		}
+
 		if (lba_start < head_lba_start || lba_end > head_lba_end) {
 			continue;
 		}
@@ -350,8 +377,10 @@ vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 			return -1;
 		}
 
-		rc = spdk_bdev_part_construct(&d->part, gpt_base->part_base, name,
-					      lba_start, lba_end - lba_start, "GPT Disk");
+		spdk_bdev_part_construct_opts_init(&opts, sizeof(opts));
+		gpt_guid_to_uuid(&p->unique_partition_guid, &opts.uuid);
+		rc = spdk_bdev_part_construct_ext(&d->part, gpt_base->part_base, name, lba_start,
+						  partition_size, "GPT Disk", &opts);
 		free(name);
 		if (rc) {
 			SPDK_ERRLOG("could not construct bdev part\n");
@@ -367,7 +396,7 @@ vbdev_gpt_create_bdevs(struct gpt_base *gpt_base)
 }
 
 static void
-gpt_read_secondary_table_complete(struct spdk_bdev_io *bdev_io, bool status, void *arg)
+gpt_read_secondary_table_complete(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 {
 	struct gpt_base *gpt_base = (struct gpt_base *)arg;
 	struct spdk_bdev *bdev = spdk_bdev_part_base_get_bdev(gpt_base->part_base);
@@ -377,15 +406,14 @@ gpt_read_secondary_table_complete(struct spdk_bdev_io *bdev_io, bool status, voi
 	spdk_put_io_channel(gpt_base->ch);
 	gpt_base->ch = NULL;
 
-	if (status != SPDK_BDEV_IO_STATUS_SUCCESS) {
-		SPDK_ERRLOG("Gpt: bdev=%s io error status=%d\n",
-			    spdk_bdev_get_name(bdev), status);
+	if (!success) {
+		SPDK_ERRLOG("Gpt: bdev=%s io error\n", spdk_bdev_get_name(bdev));
 		goto end;
 	}
 
 	rc = gpt_parse_partition_table(&gpt_base->gpt);
 	if (rc) {
-		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_GPT, "Failed to parse secondary partition table\n");
+		SPDK_DEBUGLOG(vbdev_gpt, "Failed to parse secondary partition table\n");
 		goto end;
 	}
 
@@ -394,7 +422,7 @@ gpt_read_secondary_table_complete(struct spdk_bdev_io *bdev_io, bool status, voi
 
 	num_partitions = vbdev_gpt_create_bdevs(gpt_base);
 	if (num_partitions < 0) {
-		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_GPT, "Failed to split dev=%s by gpt table\n",
+		SPDK_DEBUGLOG(vbdev_gpt, "Failed to split dev=%s by gpt table\n",
 			      spdk_bdev_get_name(bdev));
 	}
 
@@ -427,7 +455,7 @@ vbdev_gpt_read_secondary_table(struct gpt_base *gpt_base)
 }
 
 static void
-gpt_bdev_complete(struct spdk_bdev_io *bdev_io, bool status, void *arg)
+gpt_bdev_complete(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 {
 	struct gpt_base *gpt_base = (struct gpt_base *)arg;
 	struct spdk_bdev *bdev = spdk_bdev_part_base_get_bdev(gpt_base->part_base);
@@ -435,21 +463,20 @@ gpt_bdev_complete(struct spdk_bdev_io *bdev_io, bool status, void *arg)
 
 	spdk_bdev_free_io(bdev_io);
 
-	if (status != SPDK_BDEV_IO_STATUS_SUCCESS) {
-		SPDK_ERRLOG("Gpt: bdev=%s io error status=%d\n",
-			    spdk_bdev_get_name(bdev), status);
+	if (!success) {
+		SPDK_ERRLOG("Gpt: bdev=%s io error\n", spdk_bdev_get_name(bdev));
 		goto end;
 	}
 
 	rc = gpt_parse_mbr(&gpt_base->gpt);
 	if (rc) {
-		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_GPT, "Failed to parse mbr\n");
+		SPDK_DEBUGLOG(vbdev_gpt, "Failed to parse mbr\n");
 		goto end;
 	}
 
 	rc = gpt_parse_partition_table(&gpt_base->gpt);
 	if (rc) {
-		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_GPT, "Failed to parse primary partition table\n");
+		SPDK_DEBUGLOG(vbdev_gpt, "Failed to parse primary partition table\n");
 		rc = vbdev_gpt_read_secondary_table(gpt_base);
 		if (rc) {
 			SPDK_ERRLOG("Failed to read secondary table\n");
@@ -460,7 +487,7 @@ gpt_bdev_complete(struct spdk_bdev_io *bdev_io, bool status, void *arg)
 
 	num_partitions = vbdev_gpt_create_bdevs(gpt_base);
 	if (num_partitions < 0) {
-		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_GPT, "Failed to split dev=%s by gpt table\n",
+		SPDK_DEBUGLOG(vbdev_gpt, "Failed to split dev=%s by gpt table\n",
 			      spdk_bdev_get_name(bdev));
 	}
 
@@ -519,13 +546,6 @@ vbdev_gpt_read_gpt(struct spdk_bdev *bdev)
 static int
 vbdev_gpt_init(void)
 {
-	struct spdk_conf_section *sp = spdk_conf_find_section(NULL, "Gpt");
-
-	if (sp && spdk_conf_section_get_boolval(sp, "Disable", false)) {
-		/* Disable Gpt probe */
-		g_gpt_disabled = true;
-	}
-
 	return 0;
 }
 
@@ -543,14 +563,15 @@ vbdev_gpt_examine(struct spdk_bdev *bdev)
 	/* A bdev with fewer than 2 blocks cannot have a GPT. Block 0 has
 	 * the MBR and block 1 has the GPT header.
 	 */
-	if (g_gpt_disabled || spdk_bdev_get_num_blocks(bdev) < 2) {
+	if (spdk_bdev_get_num_blocks(bdev) < 2) {
 		spdk_bdev_module_examine_done(&gpt_if);
 		return;
 	}
 
 	if (spdk_bdev_get_block_size(bdev) % 512 != 0) {
-		SPDK_ERRLOG("GPT module does not support block size %" PRIu32 " for bdev %s\n",
-			    spdk_bdev_get_block_size(bdev), spdk_bdev_get_name(bdev));
+		SPDK_DEBUGLOG(vbdev_gpt,
+			      "GPT module does not support block size %" PRIu32 " for bdev %s\n",
+			      spdk_bdev_get_block_size(bdev), spdk_bdev_get_name(bdev));
 		spdk_bdev_module_examine_done(&gpt_if);
 		return;
 	}
@@ -562,4 +583,4 @@ vbdev_gpt_examine(struct spdk_bdev *bdev)
 	}
 }
 
-SPDK_LOG_REGISTER_COMPONENT("vbdev_gpt", SPDK_LOG_VBDEV_GPT)
+SPDK_LOG_REGISTER_COMPONENT(vbdev_gpt)

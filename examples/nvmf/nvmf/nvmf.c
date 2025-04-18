@@ -1,64 +1,36 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
+
 #include "spdk/env.h"
 #include "spdk/event.h"
+#include "spdk/init.h"
 #include "spdk/string.h"
 #include "spdk/thread.h"
 #include "spdk/bdev.h"
 #include "spdk/rpc.h"
 #include "spdk/nvmf.h"
 #include "spdk/likely.h"
+#include "spdk/util.h"
 
 #include "spdk_internal/event.h"
 
 #define NVMF_DEFAULT_SUBSYSTEMS		32
-#define ACCEPT_TIMEOUT_US		10000 /* 10ms */
+#define NVMF_GETOPT_STRING "g:i:m:n:p:r:s:u:h"
 
 static const char *g_rpc_addr = SPDK_DEFAULT_RPC_ADDR;
-static uint32_t g_acceptor_poll_rate = ACCEPT_TIMEOUT_US;
 
 enum nvmf_target_state {
 	NVMF_INIT_SUBSYSTEM = 0,
 	NVMF_INIT_TARGET,
 	NVMF_INIT_POLL_GROUPS,
 	NVMF_INIT_START_SUBSYSTEMS,
-	NVMF_INIT_START_ACCEPTOR,
 	NVMF_RUNNING,
 	NVMF_FINI_STOP_SUBSYSTEMS,
 	NVMF_FINI_POLL_GROUPS,
-	NVMF_FINI_STOP_ACCEPTOR,
 	NVMF_FINI_TARGET,
 	NVMF_FINI_SUBSYSTEM,
 };
@@ -92,14 +64,14 @@ TAILQ_HEAD(, nvmf_reactor) g_reactors = TAILQ_HEAD_INITIALIZER(g_reactors);
 TAILQ_HEAD(, nvmf_target_poll_group) g_poll_groups = TAILQ_HEAD_INITIALIZER(g_poll_groups);
 static uint32_t g_num_poll_groups = 0;
 
-static struct nvmf_reactor *g_master_reactor = NULL;
+static struct nvmf_reactor *g_main_reactor = NULL;
 static struct nvmf_reactor *g_next_reactor = NULL;
 static struct spdk_thread *g_init_thread = NULL;
 static struct spdk_thread *g_fini_thread = NULL;
 static struct nvmf_target g_nvmf_tgt = {
 	.max_subsystems = NVMF_DEFAULT_SUBSYSTEMS,
 };
-static struct spdk_poller *g_acceptor_poller = NULL;
+
 static struct nvmf_target_poll_group *g_next_pg = NULL;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool g_reactors_exit = false;
@@ -122,19 +94,25 @@ usage(char *program_name)
 	printf("\t[-i shared memory ID (optional)]\n");
 	printf("\t[-m core mask for DPDK]\n");
 	printf("\t[-n max subsystems for target(default: 32)]\n");
-	printf("\t[-p acceptor poller rate in us for target(default: 10000us)]\n");
 	printf("\t[-r RPC listen address (default /var/tmp/spdk.sock)]\n");
 	printf("\t[-s memory size in MB for DPDK (default: 0MB)]\n");
 	printf("\t[-u disable PCI access]\n");
+	printf("\t[--no-huge SPDK is run without hugepages]\n");
 }
+
+static const struct option g_nvmf_cmdline_opts[] = {
+#define NVMF_NO_HUGE        257
+	{"no-huge",			no_argument,	NULL, NVMF_NO_HUGE},
+	{0, 0, 0, 0}
+};
 
 static int
 parse_args(int argc, char **argv, struct spdk_env_opts *opts)
 {
-	int op;
+	int op, opt_index;
 	long int value;
 
-	while ((op = getopt(argc, argv, "g:i:m:n:p:r:s:u:h")) != -1) {
+	while ((op = getopt_long(argc, argv, NVMF_GETOPT_STRING, g_nvmf_cmdline_opts, &opt_index)) != -1) {
 		switch (op) {
 		case 'g':
 			value = spdk_strtol(optarg, 10);
@@ -162,14 +140,6 @@ parse_args(int argc, char **argv, struct spdk_env_opts *opts)
 				return -EINVAL;
 			}
 			break;
-		case 'p':
-			value = spdk_strtol(optarg, 10);
-			if (value < 0) {
-				fprintf(stderr, "converting a string to integer failed\n");
-				return -EINVAL;
-			}
-			g_acceptor_poll_rate = value;
-			break;
 		case 'r':
 			g_rpc_addr = optarg;
 			break;
@@ -185,6 +155,11 @@ parse_args(int argc, char **argv, struct spdk_env_opts *opts)
 			opts->no_pci = true;
 			break;
 		case 'h':
+			usage(argv[0]);
+			exit(EXIT_SUCCESS);
+		case NVMF_NO_HUGE:
+			opts->no_huge = true;
+			break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -208,8 +183,7 @@ nvmf_reactor_run(void *arg)
 
 			spdk_thread_poll(thread, 0, 0);
 
-			if (spdk_unlikely(spdk_thread_is_exited(thread) &&
-					  spdk_thread_is_idle(thread))) {
+			if (spdk_unlikely(spdk_thread_is_exited(thread))) {
 				spdk_thread_destroy(thread);
 			} else if (spdk_unlikely(lw_thread->resched)) {
 				lw_thread->resched = false;
@@ -220,7 +194,7 @@ nvmf_reactor_run(void *arg)
 		}
 	} while (!g_reactors_exit);
 
-	/* free all the lightweight threads */
+	/* free all the lightweight threads */ /* 退出时清理未完成的所有工作 */
 	while (spdk_ring_dequeue(nvmf_reactor->threads, (void **)&lw_thread, 1)) {
 		thread = spdk_thread_get_from_ctx(lw_thread);
 		spdk_set_thread(thread);
@@ -334,7 +308,7 @@ nvmf_init_threads(void)
 	char thread_name[32];
 	struct nvmf_reactor *nvmf_reactor;
 	struct spdk_cpuset cpumask;
-	uint32_t master_core = spdk_env_get_current_core();
+	uint32_t main_core = spdk_env_get_current_core();
 
 	/* Whenever SPDK creates a new lightweight thread it will call
 	 * nvmf_schedule_spdk_thread asking for the application to begin
@@ -343,7 +317,7 @@ nvmf_init_threads(void)
 	 * framework. The size of the extra memory allocated is the second parameter.
 	 */
 	spdk_thread_lib_init_ext(nvmf_reactor_thread_op, nvmf_reactor_thread_op_supported,
-				 sizeof(struct nvmf_lw_thread));
+				 sizeof(struct nvmf_lw_thread), SPDK_DEFAULT_MSG_MEMPOOL_SIZE);
 
 	/* Spawn one system thread per CPU core. The system thread is called a reactor.
 	 * SPDK will spawn lightweight threads that must be mapped to reactors in
@@ -363,7 +337,7 @@ nvmf_init_threads(void)
 
 		nvmf_reactor->core = i;
 
-		nvmf_reactor->threads = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 1024, SPDK_ENV_SOCKET_ID_ANY);
+		nvmf_reactor->threads = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 1024, SPDK_ENV_NUMA_ID_ANY);
 		if (!nvmf_reactor->threads) {
 			fprintf(stderr, "failed to alloc ring\n");
 			free(nvmf_reactor);
@@ -373,9 +347,9 @@ nvmf_init_threads(void)
 
 		TAILQ_INSERT_TAIL(&g_reactors, nvmf_reactor, link);
 
-		if (i == master_core) {
-			g_master_reactor = nvmf_reactor;
-			g_next_reactor = g_master_reactor;
+		if (i == main_core) {
+			g_main_reactor = nvmf_reactor;
+			g_next_reactor = g_main_reactor;
 		} else {
 			rc = spdk_env_thread_launch_pinned(i,
 							   nvmf_reactor_run,
@@ -389,15 +363,15 @@ nvmf_init_threads(void)
 
 	/* Spawn a lightweight thread only on the current core to manage this application. */
 	spdk_cpuset_zero(&cpumask);
-	spdk_cpuset_set_cpu(&cpumask, master_core, true);
-	snprintf(thread_name, sizeof(thread_name), "nvmf_master_thread");
+	spdk_cpuset_set_cpu(&cpumask, main_core, true);
+	snprintf(thread_name, sizeof(thread_name), "nvmf_main_thread");
 	g_init_thread = spdk_thread_create(thread_name, &cpumask);
 	if (!g_init_thread) {
 		fprintf(stderr, "failed to create spdk thread\n");
 		return -1;
 	}
 
-	fprintf(stdout, "nvmf threads initlize successfully\n");
+	fprintf(stdout, "nvmf threads initialize successfully\n");
 	return 0;
 
 err_exit:
@@ -442,8 +416,9 @@ static void
 nvmf_create_nvmf_tgt(void)
 {
 	struct spdk_nvmf_subsystem *subsystem;
-	struct spdk_nvmf_target_opts tgt_opts;
+	struct spdk_nvmf_target_opts tgt_opts = {};
 
+	tgt_opts.size = SPDK_SIZEOF(&tgt_opts, discovery_filter);
 	tgt_opts.max_subsystems = g_nvmf_tgt.max_subsystems;
 	snprintf(tgt_opts.name, sizeof(tgt_opts.name), "%s", "nvmf_example");
 	/* Construct the default NVMe-oF target
@@ -466,13 +441,13 @@ nvmf_create_nvmf_tgt(void)
 	 *	3,The ability to discover controllers that are statically configured.
 	 */
 	subsystem = spdk_nvmf_subsystem_create(g_nvmf_tgt.tgt, SPDK_NVMF_DISCOVERY_NQN,
-					       SPDK_NVMF_SUBTYPE_DISCOVERY, 0);
+					       SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT, 0); // 创建发现子系统
 	if (subsystem == NULL) {
 		fprintf(stderr, "failed to create discovery nvmf library subsystem\n");
 		goto error;
 	}
 
-	/* Allow any host to access the discovery subsystem */
+	/* Allow any host to access the discovery subsystem 设置访问权限 */
 	spdk_nvmf_subsystem_set_allow_any_host(subsystem, true);
 
 	fprintf(stdout, "created a nvmf target service\n");
@@ -488,11 +463,17 @@ static void
 nvmf_tgt_subsystem_stop_next(struct spdk_nvmf_subsystem *subsystem,
 			     void *cb_arg, int status)
 {
+	int rc;
+
 	subsystem = spdk_nvmf_subsystem_get_next(subsystem);
 	if (subsystem) {
-		spdk_nvmf_subsystem_stop(subsystem,
-					 nvmf_tgt_subsystem_stop_next,
-					 cb_arg);
+		rc = spdk_nvmf_subsystem_stop(subsystem,
+					      nvmf_tgt_subsystem_stop_next,
+					      cb_arg);
+		if (rc) {
+			nvmf_tgt_subsystem_stop_next(subsystem, cb_arg, 0);
+			fprintf(stderr, "Unable to stop NVMe-oF subsystem. Trying others.\n");
+		}
 		return;
 	}
 
@@ -506,41 +487,43 @@ static void
 nvmf_tgt_stop_subsystems(struct nvmf_target *nvmf_tgt)
 {
 	struct spdk_nvmf_subsystem *subsystem;
+	int rc;
 
 	subsystem = spdk_nvmf_subsystem_get_first(nvmf_tgt->tgt);
 	if (spdk_likely(subsystem)) {
-		spdk_nvmf_subsystem_stop(subsystem,
-					 nvmf_tgt_subsystem_stop_next,
-					 NULL);
+		rc = spdk_nvmf_subsystem_stop(subsystem,
+					      nvmf_tgt_subsystem_stop_next,
+					      NULL);
+		if (rc) {
+			nvmf_tgt_subsystem_stop_next(subsystem, NULL, 0);
+			fprintf(stderr, "Unable to stop NVMe-oF subsystem. Trying others.\n");
+		}
 	} else {
 		g_target_state = NVMF_FINI_POLL_GROUPS;
 	}
-}
-
-static int
-nvmf_tgt_acceptor_poll(void *arg)
-{
-	struct nvmf_target *nvmf_tgt = arg;
-
-	spdk_nvmf_tgt_accept(nvmf_tgt->tgt);
-
-	return -1;
 }
 
 static void
 nvmf_tgt_subsystem_start_next(struct spdk_nvmf_subsystem *subsystem,
 			      void *cb_arg, int status)
 {
+	int rc;
+
 	subsystem = spdk_nvmf_subsystem_get_next(subsystem);
 	if (subsystem) {
-		spdk_nvmf_subsystem_start(subsystem, nvmf_tgt_subsystem_start_next,
-					  cb_arg);
+		rc = spdk_nvmf_subsystem_start(subsystem, nvmf_tgt_subsystem_start_next,
+					       cb_arg);
+		if (rc) {
+			g_target_state = NVMF_FINI_STOP_SUBSYSTEMS;
+			fprintf(stderr, "Unable to start NVMe-oF subsystem. shutting down app.\n");
+			nvmf_target_advance_state();
+		}
 		return;
 	}
 
 	fprintf(stdout, "all subsystems of target started\n");
 
-	g_target_state = NVMF_INIT_START_ACCEPTOR;
+	g_target_state = NVMF_RUNNING;
 	nvmf_target_advance_state();
 }
 
@@ -548,6 +531,7 @@ static void
 nvmf_tgt_start_subsystems(struct nvmf_target *nvmf_tgt)
 {
 	struct spdk_nvmf_subsystem *subsystem;
+	int rc;
 
 	/* Subsystem is the NVM subsystem which is a combine of namespaces
 	 * except the discovery subsystem which is used for discovery service.
@@ -560,11 +544,15 @@ nvmf_tgt_start_subsystems(struct nvmf_target *nvmf_tgt)
 		 * Start subsystem means make it from inactive to active that means
 		 * subsystem start to work or it can be accessed.
 		 */
-		spdk_nvmf_subsystem_start(subsystem,
-					  nvmf_tgt_subsystem_start_next,
-					  NULL);
+		rc = spdk_nvmf_subsystem_start(subsystem,
+					       nvmf_tgt_subsystem_start_next,
+					       NULL);
+		if (rc) {
+			fprintf(stderr, "Unable to start NVMe-oF subsystem. shutting down app.\n");
+			g_target_state = NVMF_FINI_STOP_SUBSYSTEMS;
+		}
 	} else {
-		g_target_state = NVMF_INIT_START_ACCEPTOR;
+		g_target_state = NVMF_RUNNING;
 	}
 }
 
@@ -630,7 +618,7 @@ nvmf_poll_groups_create(void)
 	SPDK_ENV_FOREACH_CORE(i) {
 		spdk_cpuset_zero(&tmp_cpumask);
 		spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
-		snprintf(thread_name, sizeof(thread_name), "nvmf_tgt_poll_group_%u", i);
+		snprintf(thread_name, sizeof(thread_name), "nvmf_tgt_poll_group_%03u", i);
 
 		thread = spdk_thread_create(thread_name, &tmp_cpumask);
 		assert(thread != NULL);
@@ -647,7 +635,7 @@ _nvmf_tgt_destroy_poll_groups_done(void *ctx)
 	if (--g_num_poll_groups == 0) {
 		fprintf(stdout, "destroy targets's poll groups done\n");
 
-		g_target_state = NVMF_FINI_STOP_ACCEPTOR;
+		g_target_state = NVMF_FINI_TARGET;
 		nvmf_target_advance_state();
 	}
 }
@@ -698,7 +686,13 @@ static void
 nvmf_subsystem_init_done(int rc, void *cb_arg)
 {
 	fprintf(stdout, "bdev subsystem init successfully\n");
-	spdk_rpc_initialize(g_rpc_addr);
+
+	rc = spdk_rpc_initialize(g_rpc_addr, NULL); // 初始化rpc服务，与外部通信
+	if (rc) {
+		spdk_app_stop(rc);
+		return;
+	}
+
 	spdk_rpc_set_state(SPDK_RPC_RUNTIME);
 
 	g_target_state = NVMF_INIT_TARGET;
@@ -731,7 +725,7 @@ migrate_poll_groups_by_rr(void *ctx)
 		spdk_thread_send_msg(pg->thread, migrate_poll_group_by_rr, NULL);
 	}
 
-	return 1;
+	return SPDK_POLLER_BUSY;
 }
 
 static void
@@ -744,7 +738,7 @@ nvmf_target_advance_state(void)
 
 		switch (g_target_state) {
 		case NVMF_INIT_SUBSYSTEM:
-			/* initlize the bdev layer */
+			/* initialize the bdev layer */
 			spdk_subsystem_init(nvmf_subsystem_init_done, NULL);
 			return;
 		case NVMF_INIT_TARGET:
@@ -755,12 +749,6 @@ nvmf_target_advance_state(void)
 			break;
 		case NVMF_INIT_START_SUBSYSTEMS:
 			nvmf_tgt_start_subsystems(&g_nvmf_tgt);
-			break;
-		case NVMF_INIT_START_ACCEPTOR:
-			g_acceptor_poller = SPDK_POLLER_REGISTER(nvmf_tgt_acceptor_poll, &g_nvmf_tgt,
-					    g_acceptor_poll_rate);
-			fprintf(stdout, "Acceptor running\n");
-			g_target_state = NVMF_RUNNING;
 			break;
 		case NVMF_RUNNING:
 			fprintf(stdout, "nvmf target is running\n");
@@ -775,10 +763,6 @@ nvmf_target_advance_state(void)
 			break;
 		case NVMF_FINI_POLL_GROUPS:
 			nvmf_poll_groups_destroy();
-			break;
-		case NVMF_FINI_STOP_ACCEPTOR:
-			spdk_poller_unregister(&g_acceptor_poller);
-			g_target_state = NVMF_FINI_TARGET;
 			break;
 		case NVMF_FINI_TARGET:
 			nvmf_destroy_nvmf_tgt();
@@ -864,11 +848,13 @@ nvmf_setup_signal_handlers(void)
 	return 0;
 }
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
 	int rc;
 	struct spdk_env_opts opts;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "nvmf-example";
 
@@ -886,7 +872,7 @@ int main(int argc, char **argv)
 	rc = nvmf_init_threads();
 	assert(rc == 0);
 
-	/* Send a message to the thread assigned to the master reactor
+	/* Send a message to the thread assigned to the main reactor
 	 * that continues initialization. This is how we bootstrap the
 	 * program so that all code from here on is running on an SPDK thread.
 	 */
@@ -897,9 +883,12 @@ int main(int argc, char **argv)
 
 	spdk_thread_send_msg(g_init_thread, nvmf_target_app_start, NULL);
 
-	nvmf_reactor_run(g_master_reactor);
+	nvmf_reactor_run(g_main_reactor);
 
 	spdk_env_thread_wait_all();
 	nvmf_destroy_threads();
+
+	spdk_env_fini();
+
 	return rc;
 }

@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -46,8 +18,6 @@
 
 struct spdk_iscsi_globals g_iscsi;
 
-const char *config_file;
-
 DEFINE_STUB(spdk_scsi_dev_get_id,
 	    int,
 	    (const struct spdk_scsi_dev *dev),
@@ -63,10 +33,6 @@ DEFINE_STUB(spdk_scsi_lun_get_id,
 	    (const struct spdk_scsi_lun *lun),
 	    0);
 
-DEFINE_STUB_V(spdk_iscsi_op_abort_task_set,
-	      (struct spdk_iscsi_task *task,
-	       uint8_t function));
-
 DEFINE_STUB(spdk_sock_is_ipv6, bool, (struct spdk_sock *sock), false);
 
 DEFINE_STUB(spdk_sock_is_ipv4, bool, (struct spdk_sock *sock), false);
@@ -77,14 +43,31 @@ DEFINE_STUB(iscsi_portal_grp_find_by_tag,
 DEFINE_STUB(iscsi_init_grp_find_by_tag, struct spdk_iscsi_init_grp *,
 	    (int tag), NULL);
 
+DEFINE_STUB_V(iscsi_op_abort_task_set,
+	      (struct spdk_iscsi_task *task, uint8_t function));
+
+DEFINE_STUB(iscsi_parse_redirect_addr,
+	    int,
+	    (struct sockaddr_storage *sa, const char *host, const char *port),
+	    0);
+
+DEFINE_STUB(iscsi_portal_grp_find_portal_by_addr,
+	    struct spdk_iscsi_portal *,
+	    (struct spdk_iscsi_portal_grp *pg, const char *host, const char *port),
+	    NULL);
+
 struct spdk_scsi_lun *
 spdk_scsi_dev_get_lun(struct spdk_scsi_dev *dev, int lun_id)
 {
-	if (lun_id < 0 || lun_id >= SPDK_SCSI_DEV_MAX_LUN) {
-		return NULL;
+	struct spdk_scsi_lun *lun;
+
+	TAILQ_FOREACH(lun, &dev->luns, tailq) {
+		if (lun->id == lun_id) {
+			break;
+		}
 	}
 
-	return dev->lun[lun_id];
+	return lun;
 }
 
 int
@@ -98,6 +81,16 @@ spdk_scsi_dev_add_lun(struct spdk_scsi_dev *dev, const char *bdev_name, int lun_
 		return 0;
 	}
 }
+
+DEFINE_STUB(spdk_scsi_dev_get_first_lun,
+	    struct spdk_scsi_lun *,
+	    (struct spdk_scsi_dev *dev),
+	    NULL);
+
+DEFINE_STUB(spdk_scsi_dev_get_next_lun,
+	    struct spdk_scsi_lun *,
+	    (struct spdk_scsi_lun *prev_lun),
+	    NULL);
 
 static void
 add_lun_test_cases(void)
@@ -145,35 +138,6 @@ add_lun_test_cases(void)
 
 	rc = iscsi_tgt_node_add_lun(&tgtnode, bdev_name, lun_id);
 	CU_ASSERT(rc == 0);
-}
-
-static void
-config_file_fail_cases(void)
-{
-	struct spdk_conf *config;
-	struct spdk_conf_section *sp;
-	char section_name[64];
-	int section_index;
-	int rc;
-
-	config = spdk_conf_allocate();
-
-	rc = spdk_conf_read(config, config_file);
-	CU_ASSERT(rc == 0);
-
-	section_index = 0;
-	while (true) {
-		snprintf(section_name, sizeof(section_name), "Failure%d", section_index);
-		sp = spdk_conf_find_section(config, section_name);
-		if (sp == NULL) {
-			break;
-		}
-		rc = iscsi_parse_tgt_node(sp);
-		CU_ASSERT(rc < 0);
-		section_index++;
-	}
-
-	spdk_conf_free(config);
 }
 
 static void
@@ -797,20 +761,11 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (argc < 2) {
-		fprintf(stderr, "usage: %s <config file>\n", argv[0]);
-		exit(1);
-	}
-
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
-
-	config_file = argv[1];
 
 	suite = CU_add_suite("iscsi_target_node_suite", NULL, NULL);
 
 	CU_ADD_TEST(suite, add_lun_test_cases);
-	CU_ADD_TEST(suite, config_file_fail_cases);
 	CU_ADD_TEST(suite, allow_any_allowed);
 	CU_ADD_TEST(suite, allow_ipv6_allowed);
 	CU_ADD_TEST(suite, allow_ipv6_denied);
@@ -824,9 +779,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, allow_iscsi_name_multi_maps_case);
 	CU_ADD_TEST(suite, chap_param_test_cases);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

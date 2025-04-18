@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -102,14 +74,14 @@ virtio_init_queue(struct virtio_dev *dev, uint16_t vtpci_queue_idx)
 	struct virtqueue *vq;
 	int rc;
 
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "setting up queue: %"PRIu16"\n", vtpci_queue_idx);
+	SPDK_DEBUGLOG(virtio_dev, "setting up queue: %"PRIu16"\n", vtpci_queue_idx);
 
 	/*
 	 * Read the virtqueue size from the Queue Size field
 	 * Always power of 2 and if 0 virtqueue does not exist
 	 */
 	vq_size = virtio_dev_backend_ops(dev)->get_queue_size(dev, vtpci_queue_idx);
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "vq_size: %u\n", vq_size);
+	SPDK_DEBUGLOG(virtio_dev, "vq_size: %u\n", vq_size);
 	if (vq_size == 0) {
 		SPDK_ERRLOG("virtqueue %"PRIu16" does not exist\n", vtpci_queue_idx);
 		return -EINVAL;
@@ -139,7 +111,7 @@ virtio_init_queue(struct virtio_dev *dev, uint16_t vtpci_queue_idx)
 	 */
 	size = vring_size(vq_size, VIRTIO_PCI_VRING_ALIGN);
 	vq->vq_ring_size = SPDK_ALIGN_CEIL(size, VIRTIO_PCI_VRING_ALIGN);
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "vring_size: %u, rounded_vring_size: %u\n",
+	SPDK_DEBUGLOG(virtio_dev, "vring_size: %u, rounded_vring_size: %u\n",
 		      size, vq->vq_ring_size);
 
 	vq->owner_thread = NULL;
@@ -152,9 +124,9 @@ virtio_init_queue(struct virtio_dev *dev, uint16_t vtpci_queue_idx)
 		return rc;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "vq->vq_ring_mem:      0x%" PRIx64 "\n",
+	SPDK_DEBUGLOG(virtio_dev, "vq->vq_ring_mem:      0x%" PRIx64 "\n",
 		      vq->vq_ring_mem);
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "vq->vq_ring_virt_mem: 0x%" PRIx64 "\n",
+	SPDK_DEBUGLOG(virtio_dev, "vq->vq_ring_virt_mem: 0x%" PRIx64 "\n",
 		      (uint64_t)(uintptr_t)vq->vq_ring_virt_mem);
 
 	virtio_init_vring(vq);
@@ -189,26 +161,24 @@ virtio_free_queues(struct virtio_dev *dev)
 }
 
 static int
-virtio_alloc_queues(struct virtio_dev *dev, uint16_t request_vq_num, uint16_t fixed_vq_num)
+virtio_alloc_queues(struct virtio_dev *dev, uint16_t max_queues, uint16_t fixed_vq_num)
 {
-	uint16_t nr_vq;
 	uint16_t i;
 	int ret;
 
-	nr_vq = request_vq_num + fixed_vq_num;
-	if (nr_vq == 0) {
+	if (max_queues == 0) {
 		/* perfectly fine to have a device with no virtqueues. */
 		return 0;
 	}
 
 	assert(dev->vqs == NULL);
-	dev->vqs = calloc(1, sizeof(struct virtqueue *) * nr_vq);
+	dev->vqs = calloc(1, sizeof(struct virtqueue *) * max_queues);
 	if (!dev->vqs) {
-		SPDK_ERRLOG("failed to allocate %"PRIu16" vqs\n", nr_vq);
+		SPDK_ERRLOG("failed to allocate %"PRIu16" vqs\n", max_queues);
 		return -ENOMEM;
 	}
 
-	for (i = 0; i < nr_vq; i++) {
+	for (i = 0; i < max_queues; i++) {
 		ret = virtio_init_queue(dev, i);
 		if (ret < 0) {
 			virtio_free_queues(dev);
@@ -216,7 +186,7 @@ virtio_alloc_queues(struct virtio_dev *dev, uint16_t request_vq_num, uint16_t fi
 		}
 	}
 
-	dev->max_queues = nr_vq;
+	dev->max_queues = max_queues;
 	dev->fixed_queues_num = fixed_vq_num;
 	return 0;
 }
@@ -231,8 +201,8 @@ virtio_negotiate_features(struct virtio_dev *dev, uint64_t req_features)
 	uint64_t host_features = virtio_dev_backend_ops(dev)->get_features(dev);
 	int rc;
 
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "guest features = %" PRIx64 "\n", req_features);
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "device features = %" PRIx64 "\n", host_features);
+	SPDK_DEBUGLOG(virtio_dev, "guest features = %" PRIx64 "\n", req_features);
+	SPDK_DEBUGLOG(virtio_dev, "device features = %" PRIx64 "\n", host_features);
 
 	rc = virtio_dev_backend_ops(dev)->set_features(dev, req_features & host_features);
 	if (rc != 0) {
@@ -240,7 +210,7 @@ virtio_negotiate_features(struct virtio_dev *dev, uint64_t req_features)
 		return rc;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "negotiated features = %" PRIx64 "\n",
+	SPDK_DEBUGLOG(virtio_dev, "negotiated features = %" PRIx64 "\n",
 		      dev->negotiated_features);
 
 	virtio_dev_set_status(dev, VIRTIO_CONFIG_S_FEATURES_OK);
@@ -425,7 +395,8 @@ virtqueue_req_start(struct virtqueue *vq, void *cookie, int iovcnt)
 {
 	struct vq_desc_extra *dxp;
 
-	if (iovcnt > vq->vq_free_cnt) {
+	/* Reserve enough entries to handle iov split */
+	if (2 * iovcnt > vq->vq_free_cnt) {
 		return iovcnt > vq->vq_nentries ? -EINVAL : -ENOMEM;
 	}
 
@@ -473,7 +444,7 @@ virtqueue_req_flush(struct virtqueue *vq)
 	}
 
 	virtio_dev_backend_ops(vq->vdev)->notify_queue(vq->vdev, vq);
-	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "Notified backend after xmit\n");
+	SPDK_DEBUGLOG(virtio_dev, "Notified backend after xmit\n");
 }
 
 void
@@ -500,6 +471,9 @@ virtqueue_req_add_iovs(struct virtqueue *vq, struct iovec *iovs, uint16_t iovcnt
 	struct vring_desc *desc;
 	struct vq_desc_extra *dxp;
 	uint16_t i, prev_head, new_head;
+	uint64_t processed_length, iovec_length, current_length;
+	void *current_base;
+	uint16_t used_desc_count = 0;
 
 	assert(vq->req_start != VQ_RING_DESC_CHAIN_END);
 	assert(iovcnt <= vq->vq_free_cnt);
@@ -511,30 +485,41 @@ virtqueue_req_add_iovs(struct virtqueue *vq, struct iovec *iovs, uint16_t iovcnt
 	prev_head = vq->req_end;
 	new_head = vq->vq_desc_head_idx;
 	for (i = 0; i < iovcnt; ++i) {
-		desc = &vq->vq_ring.desc[new_head];
+		processed_length = 0;
+		iovec_length = iovs[i].iov_len;
+		current_base = iovs[i].iov_base;
 
-		if (!vq->vdev->is_hw) {
-			desc->addr  = (uintptr_t)iovs[i].iov_base;
-		} else {
-			desc->addr = spdk_vtophys(iovs[i].iov_base, NULL);
+		while (processed_length < iovec_length) {
+			desc = &vq->vq_ring.desc[new_head];
+			current_length = iovec_length - processed_length;
+
+			if (!vq->vdev->is_hw) {
+				desc->addr  = (uintptr_t)current_base;
+			} else {
+				desc->addr = spdk_vtophys(current_base, &current_length);
+			}
+
+			desc->len = current_length;
+			/* always set NEXT flag. unset it on the last descriptor
+			 * in the request-ending function.
+			 */
+			desc->flags = desc_type | VRING_DESC_F_NEXT;
+
+			prev_head = new_head;
+			new_head = desc->next;
+			used_desc_count++;
+
+			processed_length += current_length;
+			current_base += current_length;
 		}
-
-		desc->len = iovs[i].iov_len;
-		/* always set NEXT flag. unset it on the last descriptor
-		 * in the request-ending function.
-		 */
-		desc->flags = desc_type | VRING_DESC_F_NEXT;
-
-		prev_head = new_head;
-		new_head = desc->next;
 	}
 
 	dxp = &vq->vq_descx[vq->req_start];
-	dxp->ndescs += iovcnt;
+	dxp->ndescs += used_desc_count;
 
 	vq->req_end = prev_head;
 	vq->vq_desc_head_idx = new_head;
-	vq->vq_free_cnt = (uint16_t)(vq->vq_free_cnt - iovcnt);
+	vq->vq_free_cnt = (uint16_t)(vq->vq_free_cnt - used_desc_count);
 	if (vq->vq_desc_head_idx == VQ_RING_DESC_CHAIN_END) {
 		assert(vq->vq_free_cnt == 0);
 		vq->vq_desc_tail_idx = VQ_RING_DESC_CHAIN_END;
@@ -714,4 +699,4 @@ virtio_dev_dump_json_info(struct virtio_dev *hw, struct spdk_json_write_ctx *w)
 	spdk_json_write_object_end(w);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("virtio_dev", SPDK_LOG_VIRTIO_DEV)
+SPDK_LOG_REGISTER_COMPONENT(virtio_dev)

@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #ifndef SPDK_VBDEV_LVOL_H
@@ -36,6 +9,7 @@
 
 #include "spdk/lvol.h"
 #include "spdk/bdev_module.h"
+#include "spdk/blob_bdev.h"
 
 #include "spdk_internal/lvolstore.h"
 
@@ -43,12 +17,20 @@ struct lvol_store_bdev {
 	struct spdk_lvol_store	*lvs;
 	struct spdk_bdev	*bdev;
 	struct spdk_lvs_req	*req;
+	bool			removal_in_progress;
 
 	TAILQ_ENTRY(lvol_store_bdev)	lvol_stores;
 };
 
-int vbdev_lvs_create(struct spdk_bdev *base_bdev, const char *name, uint32_t cluster_sz,
-		     enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
+struct lvol_bdev {
+	struct spdk_bdev	bdev;
+	struct spdk_lvol	*lvol;
+	struct lvol_store_bdev	*lvs_bdev;
+};
+
+int vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_sz,
+		     enum lvs_clear_method clear_method, uint32_t num_md_pages_per_cluster_ratio,
+		     spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
 void vbdev_lvs_destruct(struct spdk_lvol_store *lvs, spdk_lvs_op_complete cb_fn, void *cb_arg);
 void vbdev_lvs_unload(struct spdk_lvol_store *lvs, spdk_lvs_op_complete cb_fn, void *cb_arg);
 
@@ -62,6 +44,9 @@ void vbdev_lvol_create_snapshot(struct spdk_lvol *lvol, const char *snapshot_nam
 
 void vbdev_lvol_create_clone(struct spdk_lvol *lvol, const char *clone_name,
 			     spdk_lvol_op_with_handle_complete cb_fn, void *cb_arg);
+void vbdev_lvol_create_bdev_clone(const char *esnap_uuid,
+				  struct spdk_lvol_store *lvs, const char *clone_name,
+				  spdk_lvol_op_with_handle_complete cb_fn, void *cb_arg);
 
 /**
  * \brief Change size of lvol
@@ -126,5 +111,36 @@ struct spdk_lvol_store *vbdev_get_lvol_store_by_name(const char *name);
 struct lvol_store_bdev *vbdev_get_lvs_bdev_by_lvs(struct spdk_lvol_store *lvs);
 
 struct spdk_lvol *vbdev_lvol_get_from_bdev(struct spdk_bdev *bdev);
+
+int vbdev_lvol_esnap_dev_create(void *bs_ctx, void *blob_ctx, struct spdk_blob *blob,
+				const void *esnap_id, uint32_t id_len,
+				struct spdk_bs_dev **_bs_dev);
+
+/**
+ * \brief Make a shallow copy of lvol over a bdev
+ *
+ * \param lvol Handle to lvol
+ * \param bdev_name Name of the bdev to copy on
+ * \param status_cb_fn Called repeatedly during operation with status updates
+ * \param status_cb_arg Argument passed to function status_cb_fn.
+ * \param cb_fn Completion callback
+ * \param cb_arg Completion callback custom arguments
+ *
+ * \return 0 if operation starts correctly, negative errno on failure.
+ */
+int vbdev_lvol_shallow_copy(struct spdk_lvol *lvol, const char *bdev_name,
+			    spdk_blob_shallow_copy_status status_cb_fn, void *status_cb_arg,
+			    spdk_lvol_op_complete cb_fn, void *cb_arg);
+
+/**
+ * \brief Set an external snapshot as the parent of a lvol.
+ *
+ * \param lvol Handle to lvol
+ * \param esnap_name Name of the bdev that acts as external snapshot
+ * \param cb_fn Completion callback
+ * \param cb_arg Completion callback custom arguments
+ */
+void vbdev_lvol_set_external_parent(struct spdk_lvol *lvol, const char *esnap_name,
+				    spdk_lvol_op_complete cb_fn, void *cb_arg);
 
 #endif /* SPDK_VBDEV_LVOL_H */

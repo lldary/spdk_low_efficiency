@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2015 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -57,7 +29,7 @@ struct ioat_device {
 	TAILQ_ENTRY(ioat_device) tailq;
 };
 
-static TAILQ_HEAD(, ioat_device) g_devices;
+static TAILQ_HEAD(, ioat_device) g_devices = TAILQ_HEAD_INITIALIZER(g_devices);
 static struct ioat_device *g_next_device;
 
 static struct user_config g_user_config;
@@ -123,7 +95,8 @@ ioat_exit(void)
 		free(dev);
 	}
 }
-static void prepare_ioat_task(struct thread_entry *thread_entry, struct ioat_task *ioat_task)
+static void
+prepare_ioat_task(struct thread_entry *thread_entry, struct ioat_task *ioat_task)
 {
 	int len;
 	uintptr_t src_offset;
@@ -227,8 +200,6 @@ attach_cb(void *cb_ctx, struct spdk_pci_device *pci_dev, struct spdk_ioat_chan *
 static int
 ioat_init(void)
 {
-	TAILQ_INIT(&g_devices);
-
 	if (spdk_ioat_probe(NULL, probe_cb, attach_cb) != 0) {
 		fprintf(stderr, "ioat_probe() failed\n");
 		return 1;
@@ -307,7 +278,9 @@ submit_xfers(struct thread_entry *thread_entry, uint64_t queue_depth)
 	while (queue_depth-- > 0) {
 		struct ioat_task *ioat_task = NULL;
 		ioat_task = spdk_mempool_get(thread_entry->task_pool);
+		assert(ioat_task != NULL);
 		ioat_task->buffer = spdk_mempool_get(thread_entry->data_pool);
+		assert(ioat_task->buffer != NULL);
 
 		ioat_task->type = IOAT_COPY_TYPE;
 		if (spdk_ioat_get_dma_capabilities(thread_entry->chan) & SPDK_IOAT_ENGINE_FILL_SUPPORTED) {
@@ -337,11 +310,11 @@ work_fn(void *arg)
 	snprintf(task_pool_name, sizeof(task_pool_name), "task_pool_%u", t->lcore_id);
 	t->data_pool = spdk_mempool_create(buf_pool_name, g_user_config.queue_depth, SRC_BUFFER_SIZE,
 					   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-					   SPDK_ENV_SOCKET_ID_ANY);
+					   SPDK_ENV_NUMA_ID_ANY);
 	t->task_pool = spdk_mempool_create(task_pool_name, g_user_config.queue_depth,
 					   sizeof(struct ioat_task),
 					   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-					   SPDK_ENV_SOCKET_ID_ANY);
+					   SPDK_ENV_NUMA_ID_ANY);
 	if (!t->data_pool || !t->task_pool) {
 		fprintf(stderr, "Could not allocate buffer pool.\n");
 		t->init_failed = true;
@@ -384,6 +357,7 @@ init(void)
 {
 	struct spdk_env_opts opts;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "verify";
 	opts.core_mask = g_user_config.core_mask;
@@ -428,7 +402,8 @@ dump_result(struct thread_entry *threads, uint32_t num_threads)
 		total_failed += t->xfer_failed;
 		total_failed += t->fill_failed;
 		if (total_completed || total_failed)
-			printf("lcore = %d, copy success = %ld, copy failed = %ld, fill success = %ld, fill failed = %ld\n",
+			printf("lcore = %d, copy success = %" PRIu64 ", copy failed = %" PRIu64 ", fill success = %" PRIu64
+			       ", fill failed = %" PRIu64 "\n",
 			       t->lcore_id, t->xfer_completed, t->xfer_failed, t->fill_completed, t->fill_failed);
 	}
 	return total_failed ? 1 : 0;
@@ -517,5 +492,6 @@ cleanup:
 	ioat_exit();
 	free(threads);
 
+	spdk_env_fini();
 	return rc;
 }

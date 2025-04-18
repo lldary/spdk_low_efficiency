@@ -1,34 +1,7 @@
-/*
- *   BSD LICENSE
- *
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   Copyright (c) 2018-2019 Broadcom.  All Rights Reserved.
  *   The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef __NVMF_FC_SPEC_H__
@@ -36,6 +9,10 @@
 
 #include "spdk/env.h"
 #include "spdk/nvme.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * FC-NVMe Spec. Definitions
@@ -55,6 +32,13 @@
 
 /* END_SEQ | LAST_SEQ | Exchange Responder | SEQ init */
 #define FCNVME_F_CTL_RSP                       0x990000
+#define FCNVME_F_CTL_PRIORITY_ENABLE           0x020000
+
+#define FCNVME_D_FCTL_DEVICE_HDR_16_MASK       0x1
+#define FCNVME_D_FCTL_NETWORK_HDR_MASK         0x20
+#define FCNVME_D_FCTL_NETWORK_HDR_SIZE         16
+#define FCNVME_D_FCTL_ESP_HDR_MASK             0x40
+#define FCNVME_D_FCTL_ESP_HDR_SIZE             8
 
 #define FCNVME_TYPE_BLS                        0x0
 #define FCNVME_TYPE_FC_EXCHANGE                0x08
@@ -196,6 +180,16 @@ struct spdk_nvmf_fc_xfer_rdy_iu {
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fc_xfer_rdy_iu) == 12, "size_mismatch");
 
 /*
+ * FC VM header
+ */
+struct spdk_nvmf_fc_vm_header {
+	FCNVME_BE32 dst_vmid;
+	FCNVME_BE32 src_vmid;
+	FCNVME_BE32 rsvd0;
+	FCNVME_BE32 rsvd1;
+};
+
+/*
  * FC NVME Frame Header
  */
 struct spdk_nvmf_fc_frame_hdr {
@@ -256,7 +250,7 @@ struct spdk_nvmf_fc_lsdesc_conn_id {
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fc_lsdesc_conn_id) == 16, "size_mismatch");
 
 /*
- * LS decriptor association id
+ * LS descriptor association id
  */
 struct spdk_nvmf_fc_lsdesc_assoc_id {
 	FCNVME_BE32 desc_tag;
@@ -285,7 +279,7 @@ struct spdk_nvmf_fc_lsdesc_cr_assoc_cmd {
 SPDK_STATIC_ASSERT(sizeof(struct spdk_nvmf_fc_lsdesc_cr_assoc_cmd) == 1016, "size_mismatch");
 
 /*
- * LS Create Association reqeust payload
+ * LS Create Association request payload
  */
 struct spdk_nvmf_fc_ls_cr_assoc_rqst {
 	struct spdk_nvmf_fc_ls_rqst_w0 w0;
@@ -407,5 +401,9 @@ struct spdk_nvmf_fc_wwn {
 		uint8_t octets[sizeof(uint64_t)];
 	} u;
 };
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

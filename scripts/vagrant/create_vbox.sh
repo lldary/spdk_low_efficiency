@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
 # create_vbox.sh
 #
 # Creates a virtual box with vagrant in the $PWD.
@@ -17,12 +20,11 @@ SPDK_DIR="$(cd "${DIR}/../../" && pwd)"
 # The command line help
 display_help() {
 	echo
-	echo " Usage: ${0##*/} [-b nvme-backing-file] [-n <num-cpus>] [-s <ram-size>] [-x <http-proxy>] [-hvrldcu] <distro>"
+	echo " Usage: ${0##*/} [-b nvme-backing-file] [-n <num-cpus>] [-s <ram-size>] [-x <http-proxy>] [-hvrldcufaoH] <distro>"
 	echo
-	echo "  distro = <centos7 | centos8| ubuntu1604 | ubuntu1804 | fedora30 |"
-	echo "            fedora31 | fedora32 | freebsd11 | freebsd12 | arch | clearlinux>"
+	echo "  distro = <centos7 | ubuntu2004 | ubuntu2204 | fedora37 | fedora38 | freebsd12 | freebsd13 | arch | clearlinux | rocky8 | rocky9>"
 	echo
-	echo "  -s <ram-size> in kb             Default: ${SPDK_VAGRANT_VMRAM}"
+	echo "  -s <ram-size> in MB             Default: ${SPDK_VAGRANT_VMRAM}"
 	echo "  -n <num-cpus> 1 to 4            Default: ${SPDK_VAGRANT_VMCPU}"
 	echo "  -x <http-proxy>                 Default: \"${SPDK_VAGRANT_HTTP_PROXY}\""
 	echo "  -p <provider>                   \"libvirt\" or \"virtualbox\". Default: ${SPDK_VAGRANT_PROVIDER}"
@@ -30,31 +32,64 @@ display_help() {
 	echo "                                  If no -b option is specified then this option defaults to emulating single"
 	echo "                                  NVMe with 1 namespace and assumes path: /var/lib/libvirt/images/nvme_disk.img"
 	echo "                                  -b option can be used multiple times for attaching multiple files to the VM"
-	echo "                                  Parameters for -b option: <path>,<type>,<namespaces>,<cmb>"
-	echo "                                  Available types: nvme, ocssd."
+	echo "                                  Parameters for -b option: <path>,<type>,<ns_path1[:ns_path1:...]>,<cmb>,<pmr_file[:pmr_size]>,<zns>,<ms>,<fdp>"
+	echo "                                  Available types: nvme"
+	echo "                                  Default pmr size: 16M"
+	echo "                                  Default cmb: false"
+	echo "                                  Default zns: false"
+	echo "                                  Default ms: none (set to 'true' to enable 64M)"
+	echo "                                  Default fdp: 96M:2:8[:1;2;3:1...] (fdp.runs:fdp.nrg:fdp.nruh:fdp.ruhs)"
+	echo "                                  type, ns_path, cmb, pmr, zns, ms  and fdp can be empty"
+	echo "                                  fdp.ruhs defines fdp.ruhs per ns, e.g.: 4;5;6:1 would set 4;5;6 for ns=1,"
+	echo "                                  and 1 for ns=2."
 	echo "  -c                              Create all above disk, default 0"
 	echo "  -H                              Use hugepages for allocating VM memory. Only for libvirt provider. Default: false."
 	echo "  -u                              Use password authentication to the VM instead of SSH keys."
 	echo "  -l                              Use a local copy of spdk, don't try to rsync from the host."
 	echo "  -a                              Copy spdk/autorun.sh artifacts from VM to host system."
 	echo "  -d                              Deploy a test vm by provisioning all prerequisites for spdk autotest"
+	echo "  -o                              Add network interface for openstack tests"
+	echo "  -N                              Use NFSv4 backend"
 	echo "  --qemu-emulator=<path>          Path to custom QEMU binary. Only works with libvirt provider"
 	echo "  --vagrantfiles-dir=<path>       Destination directory to put Vagrantfile into."
 	echo "  --package-box                   Install all dependencies for SPDK and create a local vagrant box version."
+	echo "  --vagrantfile=<path>            Path to a custom Vagrantfile"
+	echo "  --extra-vagrantfiles=<path>     Comma separated list of files to load from within main Vagrantfile"
 	echo "  -r dry-run"
 	echo "  -h help"
 	echo "  -v verbose"
+	echo "  -f                              Force use of given distro, regardless if it's supported by the script or not."
+	echo "  --box-version                   Version of the vagrant box to select for given distro."
+	echo "  --nic-model                     NIC model supported by QEMU. 'virtio' is the default."
 	echo
 	echo " Examples:"
 	echo
-	echo "  $0 -x http://user:password@host:port fedora30"
-	echo "  $0 -s 2048 -n 2 ubuntu16"
+	echo "  $0 -x http://user:password@host:port fedora37"
+	echo "  $0 -s 2048 -n 2 ubuntu2204"
 	echo "  $0 -rv freebsd"
-	echo "  $0 fedora30"
-	echo "  $0 -b /var/lib/libvirt/images/nvme1.img,nvme,1 fedora30"
-	echo "  $0 -b /var/lib/libvirt/images/ocssd.img,ocssd fedora30"
-	echo "  $0 -b /var/lib/libvirt/images/nvme5.img,nvme,5 -b /var/lib/libvirt/images/ocssd.img,ocssd fedora30"
+	echo "  $0 fedora37"
+	echo "  $0 -b /var/lib/libvirt/images/nvme1.img,nvme,/var/lib/libvirt/images/nvme1n1.img fedora37"
+	echo "  $0 -b none fedora37"
 	echo
+}
+
+is_valid_nic_model() {
+	local models model
+
+	[[ $SPDK_VAGRANT_PROVIDER == libvirt ]] || return 0
+
+	mapfile -t models < <(
+		"${SPDK_QEMU_EMULATOR:-qemu-system-x86_64}" -nic model=? | grep -v "NIC models:"
+	)
+	models+=("virtio")
+
+	for model in "${models[@]}"; do
+		[[ $model == "$NIC_MODEL" ]] && return 0
+	done
+
+	echo "NIC model '$NIC_MODEL' is invalid. List of supported models:" >&2
+	printf '  %s\n' "${models[@]}" >&2
+	return 1
 }
 
 # Set up vagrant proxy. Assumes git-bash on Windows
@@ -72,6 +107,7 @@ SPDK_VAGRANT_VMCPU=4
 SPDK_VAGRANT_VMRAM=4096
 SPDK_VAGRANT_PROVIDER="virtualbox"
 SPDK_QEMU_EMULATOR=""
+SPDK_OPENSTACK_NETWORK=0
 OPTIND=1
 NVME_DISKS_TYPE=""
 NVME_DISKS_NAMESPACES=""
@@ -81,14 +117,24 @@ VAGRANTFILE_DIR=""
 VAGRANT_PASSWORD_AUTH=0
 VAGRANT_PACKAGE_BOX=0
 VAGRANT_HUGE_MEM=0
+VAGRANTFILE=$DIR/Vagrantfile
+FORCE_DISTRO=false
+NFS4_BACKEND=0
+VAGRANT_BOX_VERSION=""
+EXTRA_VAGRANTFILES=""
+NIC_MODEL=virtio
 
-while getopts ":b:n:s:x:p:u:vcraldHh-:" opt; do
+while getopts ":b:n:s:x:p:uvcraldoHNhf-:" opt; do
 	case "${opt}" in
 		-)
 			case "${OPTARG}" in
 				package-box) VAGRANT_PACKAGE_BOX=1 ;;
 				qemu-emulator=*) SPDK_QEMU_EMULATOR="${OPTARG#*=}" ;;
 				vagrantfiles-dir=*) VAGRANTFILE_DIR="${OPTARG#*=}" ;;
+				vagrantfile=*) [[ -n ${OPTARG#*=} ]] && VAGRANTFILE="${OPTARG#*=}" ;;
+				box-version=*) [[ -n ${OPTARG#*=} ]] && VAGRANT_BOX_VERSION="${OPTARG#*=}" ;;
+				extra-vagrantfiles=*) [[ -n ${OPTARG#*=} ]] && EXTRA_VAGRANTFILES="${OPTARG#*=}" ;;
+				nic-model=*) [[ -n ${OPTARG#*=} ]] && NIC_MODEL="${OPTARG#*=}" ;;
 				*) echo "Invalid argument '$OPTARG'" ;;
 			esac
 			;;
@@ -128,6 +174,9 @@ while getopts ":b:n:s:x:p:u:vcraldHh-:" opt; do
 		d)
 			DEPLOY_TEST_VM=1
 			;;
+		o)
+			SPDK_OPENSTACK_NETWORK=1
+			;;
 		b)
 			NVME_FILE+="${OPTARG#*=} "
 			;;
@@ -137,6 +186,12 @@ while getopts ":b:n:s:x:p:u:vcraldHh-:" opt; do
 		H)
 			VAGRANT_HUGE_MEM=1
 			;;
+		f)
+			FORCE_DISTRO=true
+			;;
+		N)
+			NFS4_BACKEND=1
+			;;
 		*)
 			echo "  Invalid argument: -$OPTARG" >&2
 			echo "  Try: \"$0 -h\"" >&2
@@ -145,76 +200,49 @@ while getopts ":b:n:s:x:p:u:vcraldHh-:" opt; do
 	esac
 done
 
+is_valid_nic_model
+
 shift "$((OPTIND - 1))" # Discard the options and sentinel --
 
 SPDK_VAGRANT_DISTRO="$*"
 
 case "${SPDK_VAGRANT_DISTRO}" in
-	centos7)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	centos8)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	ubuntu1604)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	ubuntu1804)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	fedora30)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	fedora31)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	fedora32)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	freebsd11)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	freebsd12)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	arch)
-		export SPDK_VAGRANT_DISTRO
-		;;
-	clearlinux)
-		export SPDK_VAGRANT_DISTRO
-		;;
+	centos7) ;&
+	ubuntu2[02]04) ;&
+	fedora3[7-8]) ;&
+	freebsd1[2-3]) ;&
+	rocky[89]) ;&
+	arch | clearlinux) ;;
 	*)
-		echo "  Invalid argument \"${SPDK_VAGRANT_DISTRO}\""
-		echo "  Try: \"$0 -h\"" >&2
-		exit 1
+		if [[ $FORCE_DISTRO == false ]]; then
+			echo "  Invalid argument \"${SPDK_VAGRANT_DISTRO}\"" >&2
+			echo "  Try: \"$0 -h\"" >&2
+			exit 1
+		fi
 		;;
 esac
+export SPDK_VAGRANT_DISTRO
 
-if ! echo "$SPDK_VAGRANT_DISTRO" | grep -q fedora && [ $DEPLOY_TEST_VM -eq 1 ]; then
-	echo "Warning: Test machine deployment is only available on fedora distros. Disabling it for this build"
-	DEPLOY_TEST_VM=0
-fi
 if [ -z "$NVME_FILE" ]; then
 	TMP="/var/lib/libvirt/images/nvme_disk.img"
 	NVME_DISKS_TYPE="nvme"
 else
 	TMP=""
 	for args in $NVME_FILE; do
-		while IFS=, read -r path type namespace cmb; do
+		while IFS=, read -r path type namespace cmb pmr zns ms fdp; do
 			TMP+="$path,"
 			if [ -z "$type" ]; then
 				type="nvme"
 			fi
-			if [[ -n $cmb ]]; then
-				NVME_CMB=${NVME_CMB:+$NVME_CMB,}true
-			fi
+			NVME_CMB+="$cmb,"
+			NVME_PMR+="$pmr,"
+			NVME_ZNS+="$zns,"
 			NVME_DISKS_TYPE+="$type,"
-			if [ -z "$namespace" ] && [ -n "$SPDK_QEMU_EMULATOR" ]; then
-				namespace="1"
-			fi
 			NVME_DISKS_NAMESPACES+="$namespace,"
+			NVME_MS+="$ms,"
+			NVME_FDP+="$fdp,"
 			if [ ${NVME_AUTO_CREATE} = 1 ]; then
-				$SPDK_DIR/scripts/vagrant/create_nvme_img.sh -t $type -n $path
+				$SPDK_DIR/scripts/vagrant/create_nvme_img.sh -n $path
 			fi
 		done <<< $args
 	done
@@ -233,13 +261,23 @@ if [ ${VERBOSE} = 1 ]; then
 	echo NVME_AUTO_CREATE=$NVME_AUTO_CREATE
 	echo NVME_DISKS_NAMESPACES=$NVME_DISKS_NAMESPACES
 	echo NVME_CMB=$NVME_CMB
+	echo NVME_PMR=$NVME_PMR
+	echo NVME_ZNS=$NVME_ZNS
+	echo NVME_MS=$NVME_MS
+	echo NVME_FDP=$NVME_FDP
 	echo SPDK_VAGRANT_DISTRO=$SPDK_VAGRANT_DISTRO
 	echo SPDK_VAGRANT_VMCPU=$SPDK_VAGRANT_VMCPU
 	echo SPDK_VAGRANT_VMRAM=$SPDK_VAGRANT_VMRAM
 	echo SPDK_VAGRANT_PROVIDER=$SPDK_VAGRANT_PROVIDER
 	echo SPDK_VAGRANT_HTTP_PROXY=$SPDK_VAGRANT_HTTP_PROXY
 	echo SPDK_QEMU_EMULATOR=$SPDK_QEMU_EMULATOR
+	echo SPDK_OPENSTACK_NETWORK=$SPDK_OPENSTACK_NETWORK
 	echo VAGRANT_PACKAGE_BOX=$VAGRANT_PACKAGE_BOX
+	echo VAGRANTFILE=$VAGRANTFILE
+	echo FORCE_DISTRO=$FORCE_DISTRO
+	echo VAGRANT_BOX_VERSION=$VAGRANT_BOX_VERSION
+	echo EXTRA_VAGRANTFILES=$EXTRA_VAGRANTFILES
+	echo NIC_MODEL=$NIC_MODEL
 	echo
 fi
 
@@ -247,15 +285,24 @@ export SPDK_VAGRANT_HTTP_PROXY
 export SPDK_VAGRANT_VMCPU
 export SPDK_VAGRANT_VMRAM
 export SPDK_DIR
+export SPDK_OPENSTACK_NETWORK
 export COPY_SPDK_DIR
 export COPY_SPDK_ARTIFACTS
 export DEPLOY_TEST_VM
 export NVME_CMB
+export NVME_PMR
+export NVME_ZNS
+export NVME_MS
+export NVME_FDP
 export NVME_DISKS_TYPE
 export NVME_DISKS_NAMESPACES
 export NVME_FILE
 export VAGRANT_PASSWORD_AUTH
 export VAGRANT_HUGE_MEM
+export FORCE_DISTRO
+export VAGRANT_BOX_VERSION
+export EXTRA_VAGRANTFILES
+export NIC_MODEL
 
 if [ -n "$SPDK_VAGRANT_PROVIDER" ]; then
 	provider="--provider=${SPDK_VAGRANT_PROVIDER}"
@@ -270,7 +317,7 @@ if [ -n "$SPDK_QEMU_EMULATOR" ] && [ "$SPDK_VAGRANT_PROVIDER" == "libvirt" ]; th
 fi
 
 if [ ${DRY_RUN} = 1 ]; then
-	echo "Environemnt Variables"
+	echo "Environment Variables"
 	printenv SPDK_VAGRANT_DISTRO
 	printenv SPDK_VAGRANT_VMRAM
 	printenv SPDK_VAGRANT_VMCPU
@@ -283,6 +330,11 @@ if [ ${DRY_RUN} = 1 ]; then
 	printenv NVME_FILE
 	printenv SPDK_DIR
 	printenv VAGRANT_HUGE_MEM
+	printenv VAGRANTFILE
+	printenv FORCE_DISTRO
+	printenv VAGRANT_BOX_VERSION
+	printenv EXTRA_VAGRANTFILES
+	printenv NIC_MODEL
 fi
 if [ -z "$VAGRANTFILE_DIR" ]; then
 	VAGRANTFILE_DIR="${VAGRANT_TARGET}/${SPDK_VAGRANT_DISTRO}-${SPDK_VAGRANT_PROVIDER}"
@@ -294,18 +346,18 @@ if [ -d "${VAGRANTFILE_DIR}" ]; then
 	exit 1
 fi
 
+if [[ ! -f $VAGRANTFILE ]]; then
+	echo "$VAGRANTFILE is not a regular file!"
+	exit 1
+fi
+
 if [ ${DRY_RUN} != 1 ]; then
 	mkdir -vp "${VAGRANTFILE_DIR}"
-	cp ${DIR}/Vagrantfile ${VAGRANTFILE_DIR}
+	ln -s "$VAGRANTFILE" "${VAGRANTFILE_DIR}/Vagrantfile"
 	pushd "${VAGRANTFILE_DIR}"
 	if [ -n "${http_proxy}" ]; then
 		export http_proxy
 		export https_proxy
-		if vagrant plugin list | grep -q vagrant-proxyconf; then
-			echo "vagrant-proxyconf already installed... skipping"
-		else
-			vagrant plugin install vagrant-proxyconf
-		fi
 		if echo "$SPDK_VAGRANT_DISTRO" | grep -q freebsd; then
 			cat > ~/vagrant_pkg.conf << EOF
 pkg_env: {

@@ -2,12 +2,17 @@
 *.a
 *.cmd
 *.d
+*.dll
+*.exe
 *.gcda
 *.gcno
 *.kdev4
 *.ko
+*.lib
 *.log
 *.o
+*.obj
+*.pdb
 *.pyc
 *.so
 *.so.*
@@ -26,6 +31,7 @@ CONFIG.local
 .project
 .cproject
 .settings
+.gitreview
 mk/cc.mk
 mk/config.mk
 mk/cc.flags.mk
@@ -33,3 +39,7 @@ PYTHON_COMMAND
 test_completions.txt
 timing.txt
 test/common/build_config.sh
+.coredump_path
+.run_test_name
+.spdk-isal.log
+.spdk-isal-crypto.log

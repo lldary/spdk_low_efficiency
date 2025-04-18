@@ -22,7 +22,7 @@ Quick start instructions for OSX:
 * Note: The extension pack has different licensing than main VirtualBox, please
   review them carefully as the evaluation license is for personal use only.
 
-```
+```bash
    /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
    brew doctor
    brew update
@@ -46,7 +46,8 @@ Quick start instructions for OSX:
 
 ## Linux Setup
 
-Following the generic instructions should be sufficient for most Linux distributions. For more thorough instructions on installing VirtualBox on your distribution of choice, please see the following [guide](https://www.virtualbox.org/wiki/Linux_Downloads).
+Following the generic instructions should be sufficient for most Linux distributions. For more thorough instructions on installing
+VirtualBox on your distribution of choice, please see the following [guide](https://www.virtualbox.org/wiki/Linux_Downloads).
 
  Examples on Fedora26/Fedora27/Fedora28
 
@@ -68,7 +69,7 @@ If you are behind a corporate firewall, configure the following proxy settings.
 1. Set the http_proxy and https_proxy
 2. Install the proxyconf plugin
 
-```
+```bash
   $ export http_proxy=....
   $ export https_proxy=....
   $ vagrant plugin install vagrant-proxyconf
@@ -76,7 +77,9 @@ If you are behind a corporate firewall, configure the following proxy settings.
 
 ## Download SPDK from GitHub
 
-Use git to clone a new spdk repository. GerritHub can also be used. See the instructions at [spdk.io](http://www.spdk.io/development/#gerrithub) to setup your GerritHub account. Note that this spdk repository will be rsync'd into your VM, so you can use this repository to continue development within the VM.
+Use git to clone a new spdk repository. GerritHub can also be used. See the instructions at
+[spdk.io](http://www.spdk.io/development/#gerrithub) to setup your GerritHub account. Note that this spdk
+repository will be rsync'd into your VM, so you can use this repository to continue development within the VM.
 
 ## Create a Virtual Box
 
@@ -90,7 +93,7 @@ Use the `spdk/scripts/vagrant/create_vbox.sh` script to create a VM of your choi
 - fedora28
 - freebsd11
 
-```
+```bash
 $ spdk/scripts/vagrant/create_vbox.sh -h
  Usage: create_vbox.sh [-n <num-cpus>] [-s <ram-size>] [-x <http-proxy>] [-hvrld] <distro>
 
@@ -117,9 +120,11 @@ $ spdk/scripts/vagrant/create_vbox.sh -h
   ./scripts/vagrant/create_vbox.sh fedora26
 ```
 
-It is recommended that you call the `create_vbox.sh` script from outside of the spdk repository. Call this script from a parent directory. This will allow the creation of multiple VMs in separate <distro> directories, all using the same spdk repository.  For example:
+It is recommended that you call the `create_vbox.sh` script from outside of the spdk repository.
+Call this script from a parent directory. This will allow the creation of multiple VMs in separate
+<distro> directories, all using the same spdk repository.  For example:
 
-```
+```bash
    $ spdk/scripts/vagrant/create_vbox.sh -s 2048 -n 2 fedora26
 ```
 
@@ -131,20 +136,23 @@ This script will:
 4. rsync the `~/.gitconfig` file to `/home/vagrant/` in the newly provisioned virtual box
 5. rsync a copy of the source `spdk` repository to `/home/vagrant/spdk_repo/spdk` (optional)
 6. rsync a copy of the `~/vagrant_tools` directory to `/home/vagrant/tools` (optional)
-7. execute vm_setup.sh on the guest to install all spdk dependencies (optional)
+7. execute autotest_setup.sh on the guest to install all spdk dependencies (optional)
 
-This arrangement allows the provisioning of multiple, different VMs within that same directory hierarchy using the same spdk repository. Following the creation of the vm you'll need to ssh into your virtual box and finish the VM initialization.
+This arrangement allows the provisioning of multiple, different VMs within that same directory hierarchy using the same
+spdk repository. Following the creation of the vm you'll need to ssh into your virtual box and finish the VM initialization.
 
-```
+```bash
   $ cd <distro>
   $ vagrant ssh
 ```
 
 ## Finish VM Initialization
 
-A copy of the `spdk` repository you cloned will exist in the `spdk_repo` directory of the `/home/vagrant` user account. After using `vagrant ssh` to enter your VM you must complete the initialization of your VM by running the `scripts/vagrant/update.sh` script. For example:
+A copy of the `spdk` repository you cloned will exist in the `spdk_repo` directory of the `/home/vagrant` user
+account. After using `vagrant ssh` to enter your VM you must complete the initialization of your VM by running
+the `scripts/vagrant/update.sh` script. For example:
 
-```
+```bash
    $ script -c 'sudo spdk_repo/spdk/scripts/vagrant/update.sh' update.log
 ```
 
@@ -154,7 +162,8 @@ The `update.sh` script completes initialization of the VM by automating the foll
 2. Runs the scripts/pdkdep.sh script
 3. Installs the FreeBSD source in /usr/sys (FreeBSD only)
 
-This only needs to be done once. This is also not necessary for Fedora VMs provisioned with the -d flag. The `vm_setup` script performs these operations instead.
+This only needs to be done once. This is also not necessary for Fedora VMs provisioned with the -d flag. The `vm_setup`
+script performs these operations instead.
 
 ## Post VM Initialization
 
@@ -166,14 +175,14 @@ Following VM initialization you must:
 
 ### Verify you have an emulated NVMe device
 
-```
+```bash
   $ lspci | grep "Non-Volatile"
   00:0e.0 Non-Volatile memory controller: InnoTek Systemberatung GmbH Device 4e56
 ```
 
 ### Compile SPDK
 
-```
+```bash
   $ cd spdk_repo/spdk
   $ git submodule update --init
   $ ./configure --enable-debug
@@ -182,16 +191,18 @@ Following VM initialization you must:
 
 ### Run the hello_world example script
 
-```
+```bash
   $ sudo scripts/setup.sh
-  $ sudo ./build/examples/hello_bdev
+  $ sudo scripts/gen_nvme.sh --json-with-subsystems > ./build/examples/hello_bdev.json
+  $ sudo ./build/examples/hello_bdev --json ./build/examples/hello_bdev.json -b Nvme0n1
 ```
 
 ### Running autorun.sh with vagrant
 
-After running vm_setup.sh the `run-autorun.sh` can be used to run `spdk/autorun.sh` on a Fedora vagrant machine. Note that the `spdk/scripts/vagrant/autorun-spdk.conf` should be copied to `~/autorun-spdk.conf` before starting your tests.
+After running autotest_setup.sh the `run-autorun.sh` can be used to run `spdk/autorun.sh` on a Fedora vagrant machine.
+Note that the `spdk/scripts/vagrant/autorun-spdk.conf` should be copied to `~/autorun-spdk.conf` before starting your tests.
 
-```
+```bash
    $ cp spdk/scripts/vagrant/autorun-spdk.conf ~/
    $ spdk/scripts/vagrant/run-autorun.sh -h
      Usage: scripts/vagrant/run-autorun.sh -d <path_to_spdk_tree> [-h] | [-q] | [-n]
@@ -213,7 +224,7 @@ After running vm_setup.sh the `run-autorun.sh` can be used to run `spdk/autorun.
 
 The following steps are done by the `update.sh` script. It is recommended that you capture the output of `update.sh` with a typescript. E.g.:
 
-```
+```bash
   $ script update.log sudo spdk_repo/spdk/scripts/vagrant/update.sh
 ```
 
@@ -221,7 +232,7 @@ The following steps are done by the `update.sh` script. It is recommended that y
 1. Installs the needed FreeBSD packages on the system by calling pkgdep.sh
 2. Installs the FreeBSD source in /usr/src
 
-```
+```bash
    $ sudo pkg upgrade -f
    $ sudo spdk_repo/spdk/scripts/pkgdep.sh --all
    $ sudo git clone --depth 10 -b releases/11.1.0 https://github.com/freebsd/freebsd.git /usr/src
@@ -229,7 +240,7 @@ The following steps are done by the `update.sh` script. It is recommended that y
 
 To build spdk on FreeBSD use `gmake MAKE=gmake`.  E.g.:
 
-```
+```bash
     $ cd spdk_repo/spdk
     $ git submodule update --init
     $ ./configure --enable-debug

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2020 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f "$(dirname "$0")")
 rootdir=$(readlink -f "$testdir/../../")
 source "$testdir/common.sh"
@@ -9,7 +13,7 @@ offset_magic() {
 	local magic_check
 	local offsets offset
 
-	offsets=(16 256 4096) # * bs
+	offsets=(16 64) # * bs
 
 	for offset in "${offsets[@]}"; do
 		"${DD_APP[@]}" \
@@ -34,9 +38,9 @@ offset_magic() {
 }
 
 cleanup() {
-	# Zero up to 1G on input bdev, 4G on out bdev to consider offsetting
-	clear_nvme "$bdev0" "" $((0x40000000 + ${#magic}))
-	clear_nvme "$bdev1" "" $((0x100000000 + ${#magic}))
+	# Zero up to 64M on input|output bdev
+	clear_nvme "$bdev0" "" $((0x400000 + ${#magic}))
+	clear_nvme "$bdev1" "" $((0x400000 + ${#magic}))
 	rm -f "$test_file0" "$test_file1" "$aio1"
 }
 
@@ -74,12 +78,12 @@ else
 		["block_size"]=4096
 	)
 
-	# 8G AIO file
+	# 256MB AIO file
 	"${DD_APP[@]}" \
 		--if=/dev/zero \
 		--of="$aio1" \
 		--bs="$bs" \
-		--count=8192
+		--count=256
 fi
 
 test_file0=$SPDK_TEST_STORAGE/dd.dump0
@@ -88,14 +92,14 @@ test_file1=$SPDK_TEST_STORAGE/dd.dump1
 magic="This Is Our Magic, find it"
 echo "$magic" > "$test_file0"
 
-# Make the file a bit bigger (~1GB)
+# Make the file a bit bigger (~64MB)
 run_test "dd_inflate_file" \
 	"${DD_APP[@]}" \
 	--if=/dev/zero \
 	--of="$test_file0" \
 	--oflag=append \
 	--bs="$bs" \
-	--count=1024
+	--count=64
 
 test_file0_size=$(wc -c < "$test_file0")
 

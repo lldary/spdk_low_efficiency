@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.  All rights reserved.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.  All rights reserved.
  *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 /**
@@ -44,9 +17,11 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/cpuset.h"
+#include "spdk/init.h"
 #include "spdk/queue.h"
 #include "spdk/log.h"
 #include "spdk/thread.h"
+#include "spdk/assert.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,58 +51,67 @@ struct spdk_poller;
 typedef void (*spdk_app_shutdown_cb)(void);
 
 /**
- * Signal handler fucntion.
+ * Signal handler function.
  *
  * \param signal Signal number.
  */
 typedef void (*spdk_sighandler_t)(int signal);
-
-#define SPDK_DEFAULT_RPC_ADDR "/var/tmp/spdk.sock"
 
 /**
  * \brief Event framework initialization options
  */
 struct spdk_app_opts {
 	const char *name;
-	const char *config_file;
 	const char *json_config_file;
 	bool json_config_ignore_errors;
+
+	/* Hole at bytes 17-23. */
+	uint8_t	reserved17[7];
 	const char *rpc_addr; /* Can be UNIX domain socket path or IP address + TCP port */
 	const char *reactor_mask;
 	const char *tpoint_group_mask;
 
 	int shm_id;
 
+	/* Hole at bytes 52-55. */
+	uint8_t			reserved52[4];
+
 	spdk_app_shutdown_cb	shutdown_cb;
-	spdk_sighandler_t	usr1_handler;
 
 	bool			enable_coredump;
+
+	/* Hole at bytes 65-67. */
+	uint8_t			reserved65[3];
+
 	int			mem_channel;
-	int			master_core;
+	int			main_core;
 	int			mem_size;
 	bool			no_pci;
 	bool			hugepage_single_segments;
 	bool			unlink_hugepage;
+	bool			no_huge;
+
+	/* Hole at bytes 84-87. */
+	uint8_t			reserved84[4];
+
 	const char		*hugedir;
 	enum spdk_log_level	print_level;
-	size_t			num_pci_addr;
-	struct spdk_pci_addr	*pci_blacklist;
-	struct spdk_pci_addr	*pci_whitelist;
-	const char		*iova_mode;
 
-	/* DEPRECATED. No longer has any effect.
-	 *
-	 * The maximum latency allowed when passing an event
-	 * from one core to another. A value of 0
-	 * means all cores continually poll. This is
-	 * specified in microseconds.
-	 */
-	uint64_t		max_delay_us;
+	/* Hole at bytes 100-103. */
+	uint8_t			reserved100[4];
+
+	size_t			num_pci_addr;
+	struct spdk_pci_addr	*pci_blocked;
+	struct spdk_pci_addr	*pci_allowed;
+	const char		*iova_mode;
 
 	/* Wait for the associated RPC before initializing subsystems
 	 * when this flag is enabled.
 	 */
 	bool			delay_subsystem_init;
+
+	/* Hole at bytes 137-143. */
+	uint8_t			reserved137[7];
 
 	/* Number of trace entries allocated for each core */
 	uint64_t		num_entries;
@@ -138,17 +122,92 @@ struct spdk_app_opts {
 	/**
 	 * for passing user-provided log call
 	 */
-	logfunc         *log;
+	spdk_log_cb		*log;
 
 	uint64_t		base_virtaddr;
-};
+
+	/**
+	 * The size of spdk_app_opts according to the caller of this library is used for ABI
+	 * compatibility. The library uses this field to know how many fields in this
+	 * structure are valid. And the library will populate any remaining fields with default values.
+	 *
+	 * New fields should usually be added at the end of this structure. The only exception is
+	 * if using bytes from a reserved byte array after opts_size. In that case it is OK to use
+	 * some of those bytes, as long as the default value is specified as 0.
+	 */
+	size_t opts_size;
+
+	/**
+	 * Disable default signal handlers.
+	 * If set to `true`, the shutdown process is not started implicitly by
+	 * process signals, hence the application is responsible for calling
+	 * spdk_app_start_shutdown().
+	 *
+	 * Default is `false`.
+	 */
+	bool disable_signal_handlers;
+
+	bool interrupt_mode;
+
+	bool enforce_numa;
+
+	/* Hole at bytes 187-191. */
+	uint8_t reserved187[5];
+
+	/**
+	 * The allocated size for the message pool used by the threading library.
+	 *
+	 * Default is `SPDK_DEFAULT_MSG_MEMPOOL_SIZE`.
+	 */
+	size_t msg_mempool_size;
+
+	/*
+	 *  If non-NULL, a string array of allowed RPC methods.
+	 */
+	const char **rpc_allowlist;
+
+	/**
+	 * Used to pass vf_token to vfio_pci driver through DPDK.
+	 * The vf_token is an UUID that shared between SR-IOV PF and VF.
+	 */
+	const char		*vf_token;
+
+	/**
+	 * Used to store lcore to CPU mappig to pass it to DPDK
+	 */
+	const char *lcore_map; /* lcore mapping */
+
+	/**
+	 * Log level for JSON RPC.
+	 */
+	enum spdk_log_level rpc_log_level;
+
+	/**
+	 * If non-NULL, a pointer to JSON RPC log file.
+	 */
+	FILE *rpc_log_file;
+
+	/**
+	 * Raw JSON configuration data and its size.
+	 * Cannot be used simultaneously with json_config_file option.
+	 */
+	void *json_data;
+	size_t json_data_size;
+
+	/**
+	 * If set, disable CPU claiming.
+	 */
+	bool disable_cpumask_locks;
+} __attribute__((packed));
+SPDK_STATIC_ASSERT(sizeof(struct spdk_app_opts) == 253, "Incorrect size");
 
 /**
  * Initialize the default value of opts
  *
  * \param opts Data structure where SPDK will initialize the default options.
+ * \param opts_size Must be set to sizeof(struct spdk_app_opts).
  */
-void spdk_app_opts_init(struct spdk_app_opts *opts);
+void spdk_app_opts_init(struct spdk_app_opts *opts, size_t opts_size);
 
 /**
  * Start the framework.
@@ -168,17 +227,18 @@ void spdk_app_opts_init(struct spdk_app_opts *opts);
  * allows start_fn to be finally called.
  *
  * This call will block until spdk_app_stop() is called. If an error
- * condition occurs during the intialization code within spdk_app_start(),
+ * condition occurs during the initialization code within spdk_app_start(),
  * this function will immediately return before invoking start_fn.
  *
- * \param opts Initialization options used for this application.
+ * \param opts_user Initialization options used for this application. It should not be
+ *             NULL. And the opts_size value inside the opts structure should not be zero.
  * \param start_fn Entry point that will execute on an internally created thread
  *                 once the framework has been started.
  * \param ctx Argument passed to function start_fn.
  *
  * \return 0 on success or non-zero on failure.
  */
-int spdk_app_start(struct spdk_app_opts *opts, spdk_msg_fn start_fn,
+int spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 		   void *ctx);
 
 /**
@@ -208,16 +268,6 @@ void spdk_app_start_shutdown(void);
 void spdk_app_stop(int rc);
 
 /**
- * Generate a configuration file that corresponds to the current running state.
- *
- * \param config_str Values obtained from the generated configuration file.
- * \param name Prefix for name of temporary configuration file to save the current config.
- *
- * \return 0 on success, -1 on failure.
- */
-int spdk_app_get_running_config(char **config_str, char *name);
-
-/**
  * Return the shared memory id for this application.
  *
  * \return shared memory id.
@@ -239,9 +289,9 @@ int spdk_app_parse_core_mask(const char *mask, struct spdk_cpuset *cpumask);
  *
  * \return the bitmask of the active CPU cores.
  */
-struct spdk_cpuset *spdk_app_get_core_mask(void);
+const struct spdk_cpuset *spdk_app_get_core_mask(void);
 
-#define SPDK_APP_GETOPT_STRING "c:de:ghi:m:n:p:r:s:uvB:L:RW:"
+#define SPDK_APP_GETOPT_STRING "c:de:ghi:m:n:p:r:s:uvA:B:L:RW:"
 
 enum spdk_app_parse_args_rvals {
 	SPDK_APP_PARSE_ARGS_HELP = 0,
@@ -257,17 +307,19 @@ typedef enum spdk_app_parse_args_rvals spdk_app_parse_args_rvals_t;
  * \param argv Array of command line arguments.
  * \param opts Default options for the application.
  * \param getopt_str String representing the app-specific command line parameters.
- * Characters in this string must not conflict with characters in SPDK_APP_GETOPT_STRING.
- * \param app_long_opts Array of full-name parameters. Can be NULL.
+ *        Characters in this string must not conflict with characters in SPDK_APP_GETOPT_STRING.
+ *        This argument is optional.
+ * \param app_long_opts Array of full-name parameters. This argument is optional.
  * \param parse Function pointer to call if an argument in getopt_str is found.
+ *        This argument is optional but only if getopt_str is not provided.
  * \param usage Function pointer to print usage messages for app-specific command
- *		line parameters.
+ *        line parameters. This argument is optional.
  *\return SPDK_APP_PARSE_ARGS_FAIL on failure, SPDK_APP_PARSE_ARGS_SUCCESS on
  *        success, SPDK_APP_PARSE_ARGS_HELP if '-h' passed as an option.
  */
 spdk_app_parse_args_rvals_t spdk_app_parse_args(int argc, char **argv,
 		struct spdk_app_opts *opts, const char *getopt_str,
-		struct option *app_long_opts, int (*parse)(int ch, char *arg),
+		const struct option *app_long_opts, int (*parse)(int ch, char *arg),
 		void (*usage)(void));
 
 /**

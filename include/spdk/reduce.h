@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 /** \file
@@ -40,7 +13,20 @@
 
 #include "spdk/uuid.h"
 
-#define REDUCE_MAX_IOVECS	17
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define REDUCE_MAX_IOVECS	33
+
+/**
+ * Describes the information of spdk_reduce_vol.
+ */
+struct spdk_reduce_vol_info {
+	/* Statistics on the number of allocated io units */
+	uint64_t		allocated_io_units;
+	/* TODO: Migrate other vol properties to this structure */
+};
 
 /**
  * Describes the parameters of an spdk_reduce_vol.
@@ -81,6 +67,19 @@ struct spdk_reduce_vol_params {
 	 *  of the chunk size.
 	 */
 	uint64_t		vol_size;
+
+	/**
+	 * Compression algorithm, when creating initialization, it is
+	 * specified by the user
+	 */
+	uint32_t		comp_level;
+
+	/**
+	 * Compression algorithm, when creating initialization, it is
+	 * specified by the user
+	 */
+	uint8_t                 comp_algo;
+	uint8_t                 reserved[3];
 };
 
 struct spdk_reduce_vol;
@@ -105,19 +104,30 @@ typedef void (*spdk_reduce_vol_op_with_handle_complete)(void *ctx,
 typedef void (*spdk_reduce_dev_cpl)(void *cb_arg, int reduce_errno);
 
 struct spdk_reduce_vol_cb_args {
+	uint32_t		output_size;
 	spdk_reduce_dev_cpl	cb_fn;
 	void			*cb_arg;
 };
 
+enum spdk_reduce_backing_io_type {
+	SPDK_REDUCE_BACKING_IO_WRITE,
+	SPDK_REDUCE_BACKING_IO_READ,
+	SPDK_REDUCE_BACKING_IO_UNMAP,
+};
+
+struct spdk_reduce_backing_io {
+	struct spdk_reduce_backing_dev    *dev;
+	struct iovec                      *iov;
+	uint32_t                          iovcnt;
+	uint64_t                          lba;
+	uint32_t                          lba_count;
+	struct spdk_reduce_vol_cb_args    *backing_cb_args;
+	enum spdk_reduce_backing_io_type  backing_io_type;
+	char                              user_ctx[0];
+};
+
 struct spdk_reduce_backing_dev {
-	void (*readv)(struct spdk_reduce_backing_dev *dev, struct iovec *iov, int iovcnt,
-		      uint64_t lba, uint32_t lba_count, struct spdk_reduce_vol_cb_args *args);
-
-	void (*writev)(struct spdk_reduce_backing_dev *dev, struct iovec *iov, int iovcnt,
-		       uint64_t lba, uint32_t lba_count, struct spdk_reduce_vol_cb_args *args);
-
-	void (*unmap)(struct spdk_reduce_backing_dev *dev,
-		      uint64_t lba, uint32_t lba_count, struct spdk_reduce_vol_cb_args *args);
+	void (*submit_backing_io)(struct spdk_reduce_backing_io *backing_io);
 
 	void (*compress)(struct spdk_reduce_backing_dev *dev,
 			 struct iovec *src_iov, int src_iovcnt,
@@ -131,6 +141,9 @@ struct spdk_reduce_backing_dev {
 
 	uint64_t	blockcnt;
 	uint32_t	blocklen;
+	bool		sgl_in;
+	bool		sgl_out;
+	uint32_t        user_ctx_size;
 };
 
 /**
@@ -233,6 +246,21 @@ void spdk_reduce_vol_writev(struct spdk_reduce_vol *vol,
 			    spdk_reduce_vol_op_complete cb_fn, void *cb_arg);
 
 /**
+ * Unmap extent to a libreduce compressed volume.
+ *
+ * This function will clear the mapping info by full chunk or write zero to nonfull chunk.
+ *
+ * \param vol Volume to unmap.
+ * \param offset Offset (in logical blocks) of the extent to unmap on the compressed volume
+ * \param length Length (in logical blocks) of the extent to unmap on the compressed volume
+ * \param cb_fn Callback function to signal completion of the unmap operation.
+ * \param cb_arg Argument to pass to the callback function.
+ */
+void spdk_reduce_vol_unmap(struct spdk_reduce_vol *vol,
+			   uint64_t offset, uint64_t length,
+			   spdk_reduce_vol_op_complete cb_fn, void *cb_arg);
+
+/**
  * Get the params structure for a libreduce compressed volume.
  *
  * This function will populate the given params structure for a given volume.
@@ -250,4 +278,25 @@ const struct spdk_reduce_vol_params *spdk_reduce_vol_get_params(struct spdk_redu
  * \param vol Previously loaded or initialized compressed volume.
  */
 void spdk_reduce_vol_print_info(struct spdk_reduce_vol *vol);
+
+/**
+ * Get the pm path for a libreduce compressed volume.
+ *
+ * \param vol Previously loaded or initialized compressed volume.
+ * \return pm path for the compressed volume.
+ */
+const char *spdk_reduce_vol_get_pm_path(const struct spdk_reduce_vol *vol);
+
+/**
+ * Get the information for a libreduce compressed volume.
+ *
+ * \param vol Previously loaded or initialized compressed volume.
+ * \return spdk_reduce_vol_info structure for the compressed volume.
+ */
+const struct spdk_reduce_vol_info *spdk_reduce_vol_get_info(const struct spdk_reduce_vol *vol);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* SPDK_REDUCE_H_ */

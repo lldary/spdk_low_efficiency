@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/scripts/common.sh
@@ -8,10 +11,11 @@ source $rootdir/test/common/autotest_common.sh
 SMARTCTL_CMD='smartctl -d nvme'
 rpc_py=$rootdir/scripts/rpc.py
 
+"$rootdir/scripts/setup.sh"
+
 bdf=$(get_first_nvme_bdf)
 
-PCI_WHITELIST="${bdf}" $rootdir/scripts/setup.sh reset
-sleep 1
+PCI_ALLOWED="${bdf}" $rootdir/scripts/setup.sh reset
 nvme_name=$(get_nvme_ctrlr_from_bdf ${bdf})
 if [[ -z "$nvme_name" ]]; then
 	echo "setup.sh failed bind kernel driver to ${bdf}"
@@ -60,7 +64,7 @@ if [ "$CUSE_SMART_ERRLOG" != "$KERNEL_SMART_ERRLOG" ]; then
 	exit 1
 fi
 
-# Data integity was checked before, now make sure other commads didn't fail
+# Data integrity was checked before, now make sure other commands didn't fail
 ${SMARTCTL_CMD} -i /dev/spdk/nvme0n1
 ${SMARTCTL_CMD} -c /dev/spdk/nvme0
 ${SMARTCTL_CMD} -A /dev/spdk/nvme0

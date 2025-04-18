@@ -1,82 +1,48 @@
-/*-
- *   BSD LICENSE
- *
+/*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2008-2012 Daisuke Aoyama <aoyama@peach.ne.jp>.
- *   Copyright (c) Intel Corporation.
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "scsi_internal.h"
-
-struct spdk_scsi_globals g_scsi;
+#include "spdk/util.h"
 
 int
 spdk_scsi_init(void)
 {
-	int rc;
-
-	rc = pthread_mutex_init(&g_scsi.mutex, NULL);
-	if (rc != 0) {
-		SPDK_ERRLOG("mutex_init() failed\n");
-		return -1;
-	}
-
 	return 0;
 }
 
 void
 spdk_scsi_fini(void)
 {
-	pthread_mutex_destroy(&g_scsi.mutex);
 }
 
-SPDK_TRACE_REGISTER_FN(scsi_trace, "scsi", TRACE_GROUP_SCSI)
+static void
+scsi_trace(void)
 {
-	spdk_trace_register_owner(OWNER_SCSI_DEV, 'd');
+	spdk_trace_register_owner_type(OWNER_TYPE_SCSI_DEV, 'd');
 	spdk_trace_register_object(OBJECT_SCSI_TASK, 't');
 	spdk_trace_register_description("SCSI_TASK_DONE", TRACE_SCSI_TASK_DONE,
-					OWNER_SCSI_DEV, OBJECT_SCSI_TASK, 0, 0, "");
+					OWNER_TYPE_SCSI_DEV, OBJECT_SCSI_TASK, 0,
+					SPDK_TRACE_ARG_TYPE_INT, "");
 	spdk_trace_register_description("SCSI_TASK_START", TRACE_SCSI_TASK_START,
-					OWNER_SCSI_DEV, OBJECT_SCSI_TASK, 0, 0, "");
+					OWNER_TYPE_SCSI_DEV, OBJECT_SCSI_TASK, 0,
+					SPDK_TRACE_ARG_TYPE_INT, "");
 }
+SPDK_TRACE_REGISTER_FN(scsi_trace, "scsi", TRACE_GROUP_SCSI)
 
 uint64_t
 spdk_scsi_lun_id_int_to_fmt(int lun_id)
 {
 	uint64_t fmt_lun, method;
 
-	if (SPDK_SCSI_DEV_MAX_LUN <= 0x0100) {
+	if (lun_id < 0x0100) {
 		/* below 256 */
 		method = 0x00U;
 		fmt_lun = (method & 0x03U) << 62;
 		fmt_lun |= ((uint64_t)lun_id & 0x00ffU) << 48;
-	} else if (SPDK_SCSI_DEV_MAX_LUN <= 0x4000) {
+	} else if (lun_id < 0x4000) {
 		/* below 16384 */
 		method = 0x01U;
 		fmt_lun = (method & 0x03U) << 62;
@@ -107,4 +73,66 @@ spdk_scsi_lun_id_fmt_to_int(uint64_t fmt_lun)
 	return lun_i;
 }
 
-SPDK_LOG_REGISTER_COMPONENT("scsi", SPDK_LOG_SCSI)
+struct scsi_sbc_opcode_string {
+	enum spdk_sbc_opcode opc;
+	const char *str;
+};
+
+static const struct scsi_sbc_opcode_string scsi_sbc_opcode_strings[] = {
+	{ SPDK_SBC_COMPARE_AND_WRITE, "COMPARE AND WRITE" },
+	{ SPDK_SBC_FORMAT_UNIT, "FORMAT UNIT" },
+	{ SPDK_SBC_GET_LBA_STATUS, "GET LBA STATUS" },
+	{ SPDK_SBC_ORWRITE_16, "ORWRITE 16" },
+	{ SPDK_SBC_PRE_FETCH_10, "PRE FETCH 10" },
+	{ SPDK_SBC_PRE_FETCH_16, "PRE FETCH 16" },
+	{ SPDK_SBC_READ_6, "READ 6" },
+	{ SPDK_SBC_READ_10, "READ 10" },
+	{ SPDK_SBC_READ_12, "READ 12" },
+	{ SPDK_SBC_READ_16, "READ 16" },
+	{ SPDK_SBC_READ_ATTRIBUTE, "READ ATTRIBUTE" },
+	{ SPDK_SBC_READ_BUFFER, "READ BUFFER" },
+	{ SPDK_SBC_READ_CAPACITY_10, "READ CAPACITY 10" },
+	{ SPDK_SBC_READ_DEFECT_DATA_10, "READ DEFECT DATA 10" },
+	{ SPDK_SBC_READ_DEFECT_DATA_12, "READ DEFECT DATA 12" },
+	{ SPDK_SBC_READ_LONG_10, "READ LONG 10" },
+	{ SPDK_SBC_REASSIGN_BLOCKS, "REASSIGN BLOCKS" },
+	{ SPDK_SBC_SANITIZE, "SANITIZE" },
+	{ SPDK_SBC_START_STOP_UNIT, "START STOP UNIT" },
+	{ SPDK_SBC_SYNCHRONIZE_CACHE_10, "SYNCHRONIZE CACHE 10" },
+	{ SPDK_SBC_SYNCHRONIZE_CACHE_16, "SYNCHRONIZE CACHE 16" },
+	{ SPDK_SBC_UNMAP, "UNMAP" },
+	{ SPDK_SBC_VERIFY_10, "VERIFY 10" },
+	{ SPDK_SBC_VERIFY_12, "VERIFY 12" },
+	{ SPDK_SBC_VERIFY_16, "VERIFY 16" },
+	{ SPDK_SBC_WRITE_6, "WRITE 6" },
+	{ SPDK_SBC_WRITE_10, "WRITE 10" },
+	{ SPDK_SBC_WRITE_12, "WRITE 12" },
+	{ SPDK_SBC_WRITE_16, "WRITE 16" },
+	{ SPDK_SBC_WRITE_AND_VERIFY_10, "WRITE AND VERIFY 10" },
+	{ SPDK_SBC_WRITE_AND_VERIFY_12, "WRITE AND VERIFY 12" },
+	{ SPDK_SBC_WRITE_AND_VERIFY_16, "WRITE AND VERIFY 16" },
+	{ SPDK_SBC_WRITE_LONG_10, "WRITE LONG 10" },
+	{ SPDK_SBC_WRITE_SAME_10, "WRITE SAME 10" },
+	{ SPDK_SBC_WRITE_SAME_16, "WRITE SAME 16" },
+	{ SPDK_SBC_XDREAD_10, "XDREAD 10" },
+	{ SPDK_SBC_XDWRITE_10, "XDWRITE 10" },
+	{ SPDK_SBC_XDWRITEREAD_10, "XDWRITEREAD 10" },
+	{ SPDK_SBC_XPWRITE_10, "XPWRITE 10" }
+};
+
+const char *
+spdk_scsi_sbc_opcode_string(uint8_t opcode, uint16_t sa)
+{
+	uint8_t i;
+
+	/* FIXME: sa is unsupported currently, support variable length CDBs if necessary */
+	for (i = 0; i < SPDK_COUNTOF(scsi_sbc_opcode_strings); i++) {
+		if (scsi_sbc_opcode_strings[i].opc == opcode) {
+			return scsi_sbc_opcode_strings[i].str;
+		}
+	}
+
+	return "UNKNOWN";
+}
+
+SPDK_LOG_REGISTER_COMPONENT(scsi)

@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -36,6 +8,8 @@
 #include "spdk/likely.h"
 #include "spdk/env.h"
 #include "spdk/vmd.h"
+
+int g_status;
 
 enum app_action {
 	APP_ACTION_SET,
@@ -138,14 +112,54 @@ parse_args(int argc, char **argv)
 	return 0;
 }
 
+static void
+led_device_action(void *ctx, struct spdk_pci_device *pci_device)
+{
+	enum spdk_vmd_led_state led_state;
+	char addr_buf[128];
+	int rc;
+
+	if (strcmp(spdk_pci_device_get_type(pci_device), "vmd") != 0) {
+		return;
+	}
+
+	if (!g_opts.all_devices &&
+	    spdk_pci_addr_compare(&g_opts.pci_addr, &pci_device->addr) != 0) {
+		return;
+	}
+
+	rc = spdk_pci_addr_fmt(addr_buf, sizeof(addr_buf), &pci_device->addr);
+	if (rc != 0) {
+		fprintf(stderr, "Failed to format VMD's PCI address\n");
+		g_status = 1;
+		return;
+	}
+
+	if (g_opts.action == APP_ACTION_GET) {
+		rc = spdk_vmd_get_led_state(pci_device, &led_state);
+		if (spdk_unlikely(rc != 0)) {
+			fprintf(stderr, "Failed to retrieve the state of the LED on %s\n",
+				addr_buf);
+			g_status = 1;
+			return;
+		}
+
+		printf("%s: %s\n", addr_buf, g_led_states[led_state]);
+	} else {
+		rc = spdk_vmd_set_led_state(pci_device, g_opts.led_state);
+		if (spdk_unlikely(rc != 0)) {
+			fprintf(stderr, "Failed to set LED state on %s\n", addr_buf);
+			g_status = 1;
+			return;
+		}
+	}
+}
+
 int
 main(int argc, char **argv)
 {
 	struct spdk_env_opts opts;
-	struct spdk_pci_device *pci_device;
-	enum spdk_vmd_led_state led_state;
-	char addr_buf[128];
-	int rc, status = 0;
+	int rc;
 
 	if (parse_args(argc, argv) != 0) {
 		usage();
@@ -156,6 +170,7 @@ main(int argc, char **argv)
 		return 0;
 	}
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "led";
 
@@ -167,48 +182,14 @@ main(int argc, char **argv)
 	rc = spdk_vmd_init();
 	if (rc) {
 		fprintf(stderr, "Unable to initialize VMD subsystem\n");
+		spdk_env_fini();
 		return 1;
 	}
 
-	for (pci_device = spdk_pci_get_first_device(); pci_device != NULL;
-	     pci_device = spdk_pci_get_next_device(pci_device)) {
-		if (strcmp(spdk_pci_device_get_type(pci_device), "vmd") != 0) {
-			continue;
-		}
-
-		if (!g_opts.all_devices &&
-		    spdk_pci_addr_compare(&g_opts.pci_addr, &pci_device->addr) != 0) {
-			continue;
-		}
-
-		rc = spdk_pci_addr_fmt(addr_buf, sizeof(addr_buf), &pci_device->addr);
-		if (rc != 0) {
-			fprintf(stderr, "Failed to format VMD's PCI address\n");
-			status = 1;
-			break;
-		}
-
-		if (g_opts.action == APP_ACTION_GET) {
-			rc = spdk_vmd_get_led_state(pci_device, &led_state);
-			if (spdk_unlikely(rc != 0)) {
-				fprintf(stderr, "Failed to retrieve the state of the LED on %s\n",
-					addr_buf);
-				status = 1;
-				break;
-			}
-
-			printf("%s: %s\n", addr_buf, g_led_states[led_state]);
-		} else {
-			rc = spdk_vmd_set_led_state(pci_device, g_opts.led_state);
-			if (spdk_unlikely(rc != 0)) {
-				fprintf(stderr, "Failed to set LED state on %s\n", addr_buf);
-				status = 1;
-				break;
-			}
-		}
-	}
+	spdk_pci_for_each_device(NULL, led_device_action);
 
 	spdk_vmd_fini();
 
-	return status;
+	spdk_env_fini();
+	return g_status;
 }

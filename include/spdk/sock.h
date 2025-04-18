@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation. All rights reserved.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation. All rights reserved.
  *   Copyright (c) 2020 Mellanox Technologies LTD. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /** \file
@@ -42,6 +14,8 @@
 
 #include "spdk/queue.h"
 #include "spdk/json.h"
+#include "spdk/assert.h"
+#include "spdk/thread.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,7 +36,11 @@ struct spdk_sock_group;
  */
 struct spdk_sock_request {
 	/* When the request is completed, this callback will be called.
-	 * err will be 0 on success or a negated errno value on failure. */
+	 * On success, err will be:
+	 *   - for writes: 0,
+	 *   - for reads: number of bytes read.
+	 * On failure: negative errno value.
+	 */
 	void	(*cb_fn)(void *cb_arg, int err);
 	void				*cb_arg;
 
@@ -71,7 +49,18 @@ struct spdk_sock_request {
 	 */
 	struct __sock_request_internal {
 		TAILQ_ENTRY(spdk_sock_request)	link;
+
+		/**
+		 * curr_list is only used in DEBUG mode, but we include it in
+		 * release builds too to ensure ABI compatibility between debug
+		 * and release builds.
+		 */
+		void				*curr_list;
+
 		uint32_t			offset;
+
+		/* Indicate if the whole req or part of it is sent with zerocopy */
+		bool				is_zcopy;
 	} internal;
 
 	int				iovcnt;
@@ -79,6 +68,17 @@ struct spdk_sock_request {
 };
 
 #define SPDK_SOCK_REQUEST_IOV(req, i) ((struct iovec *)(((uint8_t *)req + sizeof(struct spdk_sock_request)) + (sizeof(struct iovec) * i)))
+
+enum spdk_placement_mode {
+	PLACEMENT_NONE,
+	PLACEMENT_NAPI,
+	PLACEMENT_CPU,
+	PLACEMENT_MARK,
+};
+
+#define SPDK_TLS_VERSION_1_1 11
+#define SPDK_TLS_VERSION_1_2 12
+#define SPDK_TLS_VERSION_1_3 13
 
 /**
  * SPDK socket implementation options.
@@ -89,24 +89,106 @@ struct spdk_sock_request {
  */
 struct spdk_sock_impl_opts {
 	/**
-	 * Size of sock receive buffer. Used by posix socket module.
+	 * Minimum size of sock receive buffer. Used by posix and uring socket modules.
 	 */
 	uint32_t recv_buf_size;
 
 	/**
-	 * Size of sock send buffer. Used by posix socket module.
+	 * Minimum size of sock send buffer. Used by posix and uring socket modules.
 	 */
 	uint32_t send_buf_size;
 
 	/**
-	 * Enable or disable receive pipe. Used by posix socket module.
+	 * Enable or disable receive pipe. Used by posix and uring socket modules.
 	 */
 	bool enable_recv_pipe;
 
 	/**
+	 * **Deprecated, please use enable_zerocopy_send_server or enable_zerocopy_send_client instead**
 	 * Enable or disable use of zero copy flow on send. Used by posix socket module.
 	 */
 	bool enable_zerocopy_send;
+
+	/**
+	 * Enable or disable quick ACK. Used by posix and uring socket modules.
+	 */
+	bool enable_quickack;
+
+	/**
+	 * Enable or disable placement_id. Used by posix and uring socket modules.
+	 * Valid values in the enum spdk_placement_mode.
+	 */
+	uint32_t enable_placement_id;
+
+	/**
+	 * Enable or disable use of zero copy flow on send for server sockets. Used by posix and uring socket modules.
+	 */
+	bool enable_zerocopy_send_server;
+
+	/**
+	 * Enable or disable use of zero copy flow on send for client sockets. Used by posix and uring socket modules.
+	 */
+	bool enable_zerocopy_send_client;
+
+	/**
+	 * Set zerocopy threshold in bytes. A consecutive sequence of requests' iovecs that fall below this
+	 * threshold may be sent without zerocopy flag set.
+	 */
+	uint32_t zerocopy_threshold;
+
+	/**
+	 * TLS protocol version. Used by ssl socket module.
+	 */
+	uint32_t tls_version;
+
+	/**
+	 * Enable or disable kernel TLS. Used by ssl socket modules.
+	 */
+	bool enable_ktls;
+
+	/**
+	 * Set default PSK key. Used by ssl socket module.
+	 */
+	uint8_t *psk_key;
+
+	/**
+	 * Size of psk_key.
+	 */
+	uint32_t psk_key_size;
+
+	/**
+	 * Set default PSK identity. Used by ssl socket module.
+	 */
+	char *psk_identity;
+
+	/**
+	 * Optional callback to retrieve PSK based on client's identity.
+	 *
+	 * \param out Buffer for PSK in binary format to be filled with found key.
+	 * \param out_len Length of "out" buffer.
+	 * \param cipher Cipher suite to be set by this callback.
+	 * \param psk_identity PSK identity for which the key needs to be found.
+	 * \param get_key_ctx Context for this callback.
+	 *
+	 * \return key length on success, -1 on failure.
+	 */
+	int (*get_key)(uint8_t *out, int out_len, const char **cipher, const char *psk_identity,
+		       void *get_key_ctx);
+
+	/**
+	 * Context to be passed to get_key() callback.
+	 */
+	void *get_key_ctx;
+
+	/**
+	 * Cipher suite. Used by ssl socket module.
+	 * For connecting side, it must contain a single cipher:
+	 * example: "TLS_AES_256_GCM_SHA384"
+	 *
+	 * For listening side, it may be a colon separated list of ciphers:
+	 * example: "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256"
+	 */
+	const char *tls_cipher_suites;
 };
 
 /**
@@ -127,7 +209,46 @@ struct spdk_sock_opts {
 	 * The priority on the socket and default value is zero.
 	 */
 	int priority;
+
+	/**
+	 * Used to enable or disable zero copy on socket layer.
+	 */
+	bool zcopy;
+
+	/* Hole at bytes 13-15. */
+	uint8_t reserved13[3];
+
+	/**
+	 * Time in msec to wait ack until connection is closed forcefully.
+	 */
+	uint32_t ack_timeout;
+
+	/* Hole at bytes 20-23. */
+	uint8_t reserved[4];
+
+	/**
+	 * Socket implementation options.  If non-NULL, these will override those set by
+	 * spdk_sock_impl_set_opts().  The library copies this structure internally, so the user can
+	 * free it immediately after a spdk_sock_connect()/spdk_sock_listen() call.
+	 */
+	struct spdk_sock_impl_opts *impl_opts;
+
+	/**
+	 * Size of the impl_opts structure.
+	 */
+	size_t impl_opts_size;
+
+	/**
+	 * Source address.  If NULL, any available address will be used.  Only valid for connect().
+	 */
+	const char *src_addr;
+
+	/**
+	 * Source port.  If zero, a random ephemeral port will be used.  Only valid for connect().
+	 */
+	uint16_t src_port;
 };
+SPDK_STATIC_ASSERT(sizeof(struct spdk_sock_opts) == 56, "Incorrect size");
 
 /**
  * Initialize the default value of opts.
@@ -157,20 +278,13 @@ int spdk_sock_getaddr(struct spdk_sock *sock, char *saddr, int slen, uint16_t *s
 		      char *caddr, int clen, uint16_t *cport);
 
 /**
- * Create a socket using the specific sock implementation, connect the socket
- * to the specified address and port (of the server), and then return the socket.
- * This function is used by client.
+ * Get socket implementation name.
  *
- * \param ip IP address of the server.
- * \param port Port number of the server.
- * \param impl_name The sock_implementation to use, such as "posix". If impl_name is
- * specified, it will *only* try to connect on that impl. If it is NULL, it will try
- * all the sock implementations in order and uses the first sock implementation which
- * can connect. For example, it may try vpp first, then fall back to posix.
+ * \param sock Pointer to SPDK socket.
  *
- * \return a pointer to the connected socket on success, or NULL on failure.
+ * \return Implementation name of given socket.
  */
-struct spdk_sock *spdk_sock_connect(const char *ip, int port, char *impl_name);
+const char *spdk_sock_get_impl_name(struct spdk_sock *sock);
 
 /**
  * Create a socket using the specific sock implementation, connect the socket
@@ -182,12 +296,28 @@ struct spdk_sock *spdk_sock_connect(const char *ip, int port, char *impl_name);
  * \param impl_name The sock_implementation to use, such as "posix". If impl_name is
  * specified, it will *only* try to connect on that impl. If it is NULL, it will try
  * all the sock implementations in order and uses the first sock implementation which
- * can connect. For example, it may try vpp first, then fall back to posix.
+ * can connect.
+ *
+ * \return a pointer to the connected socket on success, or NULL on failure.
+ */
+struct spdk_sock *spdk_sock_connect(const char *ip, int port, const char *impl_name);
+
+/**
+ * Create a socket using the specific sock implementation, connect the socket
+ * to the specified address and port (of the server), and then return the socket.
+ * This function is used by client.
+ *
+ * \param ip IP address of the server.
+ * \param port Port number of the server.
+ * \param impl_name The sock_implementation to use, such as "posix". If impl_name is
+ * specified, it will *only* try to connect on that impl. If it is NULL, it will try
+ * all the sock implementations in order and uses the first sock implementation which
+ * can connect.
  * \param opts The sock option pointer provided by the user which should not be NULL pointer.
  *
  * \return a pointer to the connected socket on success, or NULL on failure.
  */
-struct spdk_sock *spdk_sock_connect_ext(const char *ip, int port, char *impl_name,
+struct spdk_sock *spdk_sock_connect_ext(const char *ip, int port, const char *impl_name,
 					struct spdk_sock_opts *opts);
 
 /**
@@ -200,11 +330,11 @@ struct spdk_sock *spdk_sock_connect_ext(const char *ip, int port, char *impl_nam
  * \param impl_name The sock_implementation to use, such as "posix". If impl_name is
  * specified, it will *only* try to listen on that impl. If it is NULL, it will try
  * all the sock implementations in order and uses the first sock implementation which
- * can listen. For example, it may try vpp first, then fall back to posix.
+ * can listen.
  *
  * \return a pointer to the listened socket on success, or NULL on failure.
  */
-struct spdk_sock *spdk_sock_listen(const char *ip, int port, char *impl_name);
+struct spdk_sock *spdk_sock_listen(const char *ip, int port, const char *impl_name);
 
 /**
  * Create a socket using the specific sock implementation, bind the socket to
@@ -216,12 +346,12 @@ struct spdk_sock *spdk_sock_listen(const char *ip, int port, char *impl_name);
  * \param impl_name The sock_implementation to use, such as "posix". If impl_name is
  * specified, it will *only* try to listen on that impl. If it is NULL, it will try
  * all the sock implementations in order and uses the first sock implementation which
- * can listen. For example, it may try vpp first, then fall back to posix.
+ * can listen.
  * \param opts The sock option pointer provided by the user, which should not be NULL pointer.
  *
  * \return a pointer to the listened socket on success, or NULL on failure.
  */
-struct spdk_sock *spdk_sock_listen_ext(const char *ip, int port, char *impl_name,
+struct spdk_sock *spdk_sock_listen_ext(const char *ip, int port, const char *impl_name,
 				       struct spdk_sock_opts *opts);
 
 /**
@@ -233,6 +363,26 @@ struct spdk_sock *spdk_sock_listen_ext(const char *ip, int port, char *impl_name
  * \return a pointer to the accepted socket on success, or NULL on failure.
  */
 struct spdk_sock *spdk_sock_accept(struct spdk_sock *sock);
+
+/**
+ * Gets the name of the network interface of the local port for the socket.
+ *
+ * \param sock socket to find the interface name for
+ *
+ * \return null-terminated string containing interface name if found, NULL
+ *	   interface name could not be found
+ */
+const char *spdk_sock_get_interface_name(struct spdk_sock *sock);
+
+
+/**
+ * Gets the NUMA node ID for the network interface of the local port for the TCP socket.
+ *
+ * \param sock TCP socket to find the NUMA socket ID for
+ *
+ * \return NUMA ID, or SPDK_ENV_NUMA_ID_ANY if the NUMA ID is unknown
+ */
+int32_t spdk_sock_get_numa_id(struct spdk_sock *sock);
 
 /**
  * Close a socket.
@@ -248,7 +398,7 @@ int spdk_sock_close(struct spdk_sock **sock);
  *
  * \param sock Socket to flush.
  *
- * \return 0 on success, -1 on failure.
+ * \return number of bytes sent on success, -1 (with errno set) on failure
  */
 int spdk_sock_flush(struct spdk_sock *sock);
 
@@ -293,6 +443,31 @@ void spdk_sock_writev_async(struct spdk_sock *sock, struct spdk_sock_request *re
  * \return the length of the received message on success, -1 on failure.
  */
 ssize_t spdk_sock_readv(struct spdk_sock *sock, struct iovec *iov, int iovcnt);
+
+/**
+ * Receive the next portion of the stream from the socket.
+ *
+ * A buffer provided to this socket's group's pool using
+ * spdk_sock_group_provide_buf() will contain the data and be
+ * returned in *buf.
+ *
+ * Note that the amount of data in buf is determined entirely by
+ * the sock layer. You cannot request to receive only a limited
+ * amount here. You simply get whatever the next portion of the stream
+ * is, as determined by the sock module. You can place an upper limit
+ * on the size of the buffer since these buffers are originally
+ * provided to the group through spdk_sock_group_provide_buf().
+ *
+ * This code path will only work if the recvbuf is disabled. To disable
+ * the recvbuf, call spdk_sock_set_recvbuf with a size of 0.
+ *
+ * \param sock Socket to receive from.
+ * \param buf Populated with the next portion of the stream
+ * \param ctx Returned context pointer from when the buffer was provided.
+ *
+ * \return On success, the length of the buffer placed into buf, On failure, -1 with errno set.
+ */
+int spdk_sock_recv_next(struct spdk_sock *sock, void **buf, void **ctx);
 
 /**
  * Set the value used to specify the low water mark (in bytes) for this socket.
@@ -385,7 +560,7 @@ void *spdk_sock_group_get_ctx(struct spdk_sock_group *sock_group);
  * \param cb_fn Called when the operation completes.
  * \param cb_arg Argument passed to the callback function.
  *
- * \return 0 on success, -1 on failure.
+ * \return 0 on success, -1 on failure with errno set.
  */
 int spdk_sock_group_add_sock(struct spdk_sock_group *group, struct spdk_sock *sock,
 			     spdk_sock_cb cb_fn, void *cb_arg);
@@ -396,9 +571,22 @@ int spdk_sock_group_add_sock(struct spdk_sock_group *group, struct spdk_sock *so
  * \param group Socket group.
  * \param sock Socket to remove.
  *
- * \return 0 on success, -1 on failure.
+ * \return 0 on success, -1 on failure with errno set.
  */
 int spdk_sock_group_remove_sock(struct spdk_sock_group *group, struct spdk_sock *sock);
+
+/**
+ * Provides a buffer to the group to be used in its receive pool.
+ * See spdk_sock_recv_next() for more details.
+ *
+ * \param group Socket group.
+ * \param buf Pointer the buffer provided.
+ * \param len Length of the buffer.
+ * \param ctx Pointer that will be returned in spdk_sock_recv_next()
+ *
+ * \return 0 on success, -1 on failure.
+ */
+int spdk_sock_group_provide_buf(struct spdk_sock_group *group, void *buf, size_t len, void *ctx);
 
 /**
  * Poll incoming events for each registered socket.
@@ -433,10 +621,12 @@ int spdk_sock_group_close(struct spdk_sock_group **group);
  *
  * \param sock The socket
  * \param group Returns the optimal sock group. If there is no optimal sock group, returns NULL.
+ * \param hint When return is 0 and group is set to NULL, hint is used to set optimal sock group for the socket.
  *
  * \return 0 on success. Negated errno on failure.
  */
-int spdk_sock_get_optimal_sock_group(struct spdk_sock *sock, struct spdk_sock_group **group);
+int spdk_sock_get_optimal_sock_group(struct spdk_sock *sock, struct spdk_sock_group **group,
+				     struct spdk_sock_group *hint);
 
 /**
  * Get current socket implementation options.
@@ -462,11 +652,62 @@ int spdk_sock_impl_set_opts(const char *impl_name, const struct spdk_sock_impl_o
 			    size_t len);
 
 /**
+ * Set the given sock implementation to be used as the default one.
+ *
+ * Note: passing a specific sock implementation name in some sock API functions
+ * (such as @ref spdk_sock_connect, @ref spdk_sock_listen and etc) ignores the default value set by this function.
+ *
+ * \param impl_name The socket implementation to use, such as "posix".
+ * \return 0 on success, -1 on failure. errno is set to indicate the reason of failure.
+ */
+int spdk_sock_set_default_impl(const char *impl_name);
+
+/**
+ * Get the name of the current default implementation
+ *
+ * \return The name of the default implementation
+ */
+const char *spdk_sock_get_default_impl(void);;
+
+/**
  * Write socket subsystem configuration into provided JSON context.
  *
  * \param w JSON write context
  */
 void spdk_sock_write_config_json(struct spdk_json_write_ctx *w);
+
+/**
+ * Register an spdk_interrupt with specific event types on the current thread for the given socket group.
+ *
+ * The provided function will be called any time one of specified event types triggers on
+ * the associated file descriptor.
+ * Event types argument is a bit mask composed by ORing together
+ * enum spdk_interrupt_event_types values.
+ *
+ * \param group Socket group.
+ * \param events Event notification types.
+ * \param fn Called each time there are events in spdk_interrupt.
+ * \param arg Function argument for fn.
+ * \param name Human readable name for the spdk_interrupt.
+ *
+ * \return 0 on success or non-zero on failure.
+ */
+int spdk_sock_group_register_interrupt(struct spdk_sock_group *group, uint32_t events,
+				       spdk_interrupt_fn fn, void *arg, const char *name);
+
+/*
+ * \brief Register an spdk_interrupt on the current thread for the given socket group
+ * and with setting its name to the string of the spdk_interrupt function name.
+ */
+#define SPDK_SOCK_GROUP_REGISTER_INTERRUPT(sock, events, fn, arg)	\
+	spdk_sock_group_register_interrupt(sock, events, fn, arg, #fn)
+
+/**
+ * Unregister an spdk_interrupt for the given socket group from the current thread.
+ *
+ * \param group Socket group.
+ */
+void spdk_sock_group_unregister_interrupt(struct spdk_sock_group *group);
 
 #ifdef __cplusplus
 }

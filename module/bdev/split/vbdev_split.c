@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /*
@@ -39,14 +11,13 @@
 #include "vbdev_split.h"
 
 #include "spdk/rpc.h"
-#include "spdk/conf.h"
 #include "spdk/endian.h"
 #include "spdk/string.h"
 #include "spdk/thread.h"
 #include "spdk/util.h"
 
 #include "spdk/bdev_module.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
 struct spdk_vbdev_split_config {
 	char *base_bdev;
@@ -82,8 +53,7 @@ static void vbdev_split_examine(struct spdk_bdev *bdev);
 static int vbdev_split_config_json(struct spdk_json_write_ctx *w);
 static int vbdev_split_get_ctx_size(void);
 
-static void
-_vbdev_split_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io);
+static void _vbdev_split_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io);
 
 static struct spdk_bdev_module split_if = {
 	.name = "split",
@@ -157,7 +127,7 @@ _vbdev_split_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bd
 	rc = spdk_bdev_part_submit_request(&ch->part_ch, bdev_io);
 	if (rc) {
 		if (rc == -ENOMEM) {
-			SPDK_DEBUGLOG(SPDK_LOG_VBDEV_SPLIT, "split: no memory, queue io.\n");
+			SPDK_DEBUGLOG(vbdev_split, "split: no memory, queue io.\n");
 			io_ctx->ch = _ch;
 			io_ctx->bdev_io = bdev_io;
 			vbdev_split_queue_io(io_ctx);
@@ -237,24 +207,36 @@ vbdev_split_create(struct spdk_vbdev_split_config *cfg)
 
 	assert(cfg->split_count > 0);
 
-	base_bdev = spdk_bdev_get_by_name(cfg->base_bdev);
-	if (!base_bdev) {
-		return -ENODEV;
+	TAILQ_INIT(&cfg->splits);
+	rc = spdk_bdev_part_base_construct_ext(cfg->base_bdev,
+					       vbdev_split_base_bdev_hotremove_cb,
+					       &split_if, &vbdev_split_fn_table,
+					       &cfg->splits, vbdev_split_base_free, cfg,
+					       sizeof(struct vbdev_split_channel),
+					       NULL, NULL, &cfg->split_base);
+	if (rc != 0) {
+		if (rc != -ENODEV) {
+			SPDK_ERRLOG("Cannot construct bdev part base\n");
+		}
+		return rc;
 	}
+
+	base_bdev = spdk_bdev_part_base_get_bdev(cfg->split_base);
 
 	if (cfg->split_size_mb) {
 		if (((cfg->split_size_mb * mb) % base_bdev->blocklen) != 0) {
 			SPDK_ERRLOG("Split size %" PRIu64 " MB is not possible with block size "
 				    "%" PRIu32 "\n",
 				    cfg->split_size_mb, base_bdev->blocklen);
-			return -EINVAL;
+			rc = -EINVAL;
+			goto err;
 		}
 		split_size_blocks = (cfg->split_size_mb * mb) / base_bdev->blocklen;
-		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_SPLIT, "Split size %" PRIu64 " MB specified by user\n",
+		SPDK_DEBUGLOG(vbdev_split, "Split size %" PRIu64 " MB specified by user\n",
 			      cfg->split_size_mb);
 	} else {
 		split_size_blocks = base_bdev->blockcnt / cfg->split_count;
-		SPDK_DEBUGLOG(SPDK_LOG_VBDEV_SPLIT, "Split size not specified by user\n");
+		SPDK_DEBUGLOG(vbdev_split, "Split size not specified by user\n");
 	}
 
 	max_split_count = base_bdev->blockcnt / split_size_blocks;
@@ -265,20 +247,9 @@ vbdev_split_create(struct spdk_vbdev_split_config *cfg)
 		split_count = max_split_count;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_VBDEV_SPLIT, "base_bdev: %s split_count: %" PRIu64
+	SPDK_DEBUGLOG(vbdev_split, "base_bdev: %s split_count: %" PRIu64
 		      " split_size_blocks: %" PRIu64 "\n",
-		      spdk_bdev_get_name(base_bdev), split_count, split_size_blocks);
-
-	TAILQ_INIT(&cfg->splits);
-	cfg->split_base = spdk_bdev_part_base_construct(base_bdev,
-			  vbdev_split_base_bdev_hotremove_cb,
-			  &split_if, &vbdev_split_fn_table,
-			  &cfg->splits, vbdev_split_base_free, cfg,
-			  sizeof(struct vbdev_split_channel), NULL, NULL);
-	if (!cfg->split_base) {
-		SPDK_ERRLOG("Cannot construct bdev part base\n");
-		return -ENOMEM;
-	}
+		      cfg->base_bdev, split_count, split_size_blocks);
 
 	offset_blocks = 0;
 	for (i = 0; i < split_count; i++) {
@@ -317,6 +288,7 @@ vbdev_split_create(struct spdk_vbdev_split_config *cfg)
 err:
 	split_base_tailq = spdk_bdev_part_base_get_tailq(cfg->split_base);
 	spdk_bdev_part_base_hotremove(cfg->split_base, split_base_tailq);
+	spdk_bdev_part_base_free(cfg->split_base);
 	return rc;
 }
 
@@ -415,66 +387,7 @@ vbdev_split_add_config(const char *base_bdev_name, unsigned split_count, uint64_
 static int
 vbdev_split_init(void)
 {
-
-	struct spdk_conf_section *sp;
-	const char *base_bdev_name;
-	const char *split_count_str;
-	const char *split_size_str;
-	int rc, i, split_count, split_size;
-
-	sp = spdk_conf_find_section(NULL, "Split");
-	if (sp == NULL) {
-		return 0;
-	}
-
-	for (i = 0; ; i++) {
-		if (!spdk_conf_section_get_nval(sp, "Split", i)) {
-			break;
-		}
-
-		base_bdev_name = spdk_conf_section_get_nmval(sp, "Split", i, 0);
-		if (!base_bdev_name) {
-			SPDK_ERRLOG("Split configuration missing bdev name\n");
-			rc = -EINVAL;
-			goto err;
-		}
-
-		split_count_str = spdk_conf_section_get_nmval(sp, "Split", i, 1);
-		if (!split_count_str) {
-			SPDK_ERRLOG("Split configuration missing split count\n");
-			rc = -EINVAL;
-			goto err;
-		}
-
-		split_count = spdk_strtol(split_count_str, 10);
-		if (split_count < 1) {
-			SPDK_ERRLOG("Invalid Split count %d\n", split_count);
-			rc = -EINVAL;
-			goto err;
-		}
-
-		/* Optional split size in MB */
-		split_size = 0;
-		split_size_str = spdk_conf_section_get_nmval(sp, "Split", i, 2);
-		if (split_size_str) {
-			split_size = spdk_strtol(split_size_str, 10);
-			if (split_size <= 0) {
-				SPDK_ERRLOG("Invalid Split size %d\n", split_size);
-				rc = -EINVAL;
-				goto err;
-			}
-		}
-
-		rc = vbdev_split_add_config(base_bdev_name, split_count, split_size, NULL);
-		if (rc != 0) {
-			goto err;
-		}
-	}
-
 	return 0;
-err:
-	vbdev_split_clear_config();
-	return rc;
 }
 
 static void
@@ -579,4 +492,4 @@ vbdev_split_get_ctx_size(void)
 	return sizeof(struct vbdev_split_bdev_io);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("vbdev_split", SPDK_LOG_VBDEV_SPLIT)
+SPDK_LOG_REGISTER_COMPONENT(vbdev_split)

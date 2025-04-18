@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2015 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -39,7 +11,7 @@
 #include "spdk/util.h"
 #include "spdk/memory.h"
 
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
 struct ioat_driver {
 	pthread_mutex_t			lock;
@@ -257,7 +229,8 @@ ioat_prep_fill(struct spdk_ioat_chan *ioat, uint64_t dst,
 	return desc;
 }
 
-static int ioat_reset_hw(struct spdk_ioat_chan *ioat)
+static int
+ioat_reset_hw(struct spdk_ioat_chan *ioat)
 {
 	int timeout;
 	uint64_t status;
@@ -384,7 +357,7 @@ static int
 ioat_channel_start(struct spdk_ioat_chan *ioat)
 {
 	uint8_t xfercap, version;
-	uint64_t status;
+	uint64_t status = 0;
 	int i, num_descriptors;
 	uint64_t comp_update_bus_addr = 0;
 	uint64_t phys_addr;
@@ -429,7 +402,6 @@ ioat_channel_start(struct spdk_ioat_chan *ioat)
 
 	comp_update_bus_addr = spdk_vtophys((void *)ioat->comp_update, NULL);
 	if (comp_update_bus_addr == SPDK_VTOPHYS_ERROR) {
-		spdk_free((void *)ioat->comp_update);
 		return -1;
 	}
 
@@ -603,11 +575,10 @@ int
 spdk_ioat_build_copy(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_cb cb_fn,
 		     void *dst, const void *src, uint64_t nbytes)
 {
-	struct ioat_descriptor	*last_desc;
+	struct ioat_descriptor	*last_desc = NULL;
 	uint64_t	remaining, op_size;
 	uint64_t	vdst, vsrc;
-	uint64_t	vdst_page, vsrc_page;
-	uint64_t	pdst_page, psrc_page;
+	uint64_t	pdst_addr, psrc_addr, dst_len, src_len;
 	uint32_t	orig_head;
 
 	if (!ioat) {
@@ -618,30 +589,25 @@ spdk_ioat_build_copy(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_cb
 
 	vdst = (uint64_t)dst;
 	vsrc = (uint64_t)src;
-	vdst_page = vsrc_page = 0;
-	pdst_page = psrc_page = SPDK_VTOPHYS_ERROR;
 
 	remaining = nbytes;
 	while (remaining) {
-		if (_2MB_PAGE(vsrc) != vsrc_page) {
-			vsrc_page = _2MB_PAGE(vsrc);
-			psrc_page = spdk_vtophys((void *)vsrc_page, NULL);
+		src_len = dst_len = remaining;
+
+		psrc_addr = spdk_vtophys((void *)vsrc, &src_len);
+		if (psrc_addr == SPDK_VTOPHYS_ERROR) {
+			return -EINVAL;
+		}
+		pdst_addr = spdk_vtophys((void *)vdst, &dst_len);
+		if (pdst_addr == SPDK_VTOPHYS_ERROR) {
+			return -EINVAL;
 		}
 
-		if (_2MB_PAGE(vdst) != vdst_page) {
-			vdst_page = _2MB_PAGE(vdst);
-			pdst_page = spdk_vtophys((void *)vdst_page, NULL);
-		}
-		op_size = remaining;
-		op_size = spdk_min(op_size, (VALUE_2MB - _2MB_OFFSET(vsrc)));
-		op_size = spdk_min(op_size, (VALUE_2MB - _2MB_OFFSET(vdst)));
+		op_size = spdk_min(dst_len, src_len);
 		op_size = spdk_min(op_size, ioat->max_xfer_size);
 		remaining -= op_size;
 
-		last_desc = ioat_prep_copy(ioat,
-					   pdst_page + _2MB_OFFSET(vdst),
-					   psrc_page + _2MB_OFFSET(vsrc),
-					   op_size);
+		last_desc = ioat_prep_copy(ioat, pdst_addr, psrc_addr, op_size);
 
 		if (remaining == 0 || last_desc == NULL) {
 			break;
@@ -693,6 +659,7 @@ spdk_ioat_build_fill(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_cb
 	struct ioat_descriptor	*last_desc = NULL;
 	uint64_t	remaining, op_size;
 	uint64_t	vdst;
+	uint64_t	pdst_addr, dst_len;
 	uint32_t	orig_head;
 
 	if (!ioat) {
@@ -710,15 +677,16 @@ spdk_ioat_build_fill(struct spdk_ioat_chan *ioat, void *cb_arg, spdk_ioat_req_cb
 	remaining = nbytes;
 
 	while (remaining) {
-		op_size = remaining;
-		op_size = spdk_min(op_size, (VALUE_2MB - _2MB_OFFSET(vdst)));
-		op_size = spdk_min(op_size, ioat->max_xfer_size);
+		dst_len = remaining;
+		pdst_addr = spdk_vtophys((void *)vdst, &dst_len);
+		if (pdst_addr == SPDK_VTOPHYS_ERROR) {
+			return -EINVAL;
+		}
+
+		op_size = spdk_min(dst_len, ioat->max_xfer_size);
 		remaining -= op_size;
 
-		last_desc = ioat_prep_fill(ioat,
-					   spdk_vtophys((void *)vdst, NULL),
-					   fill_pattern,
-					   op_size);
+		last_desc = ioat_prep_fill(ioat, pdst_addr, fill_pattern, op_size);
 
 		if (remaining == 0 || last_desc == NULL) {
 			break;
@@ -772,4 +740,4 @@ spdk_ioat_process_events(struct spdk_ioat_chan *ioat)
 	return ioat_process_channel_events(ioat);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("ioat", SPDK_LOG_IOAT)
+SPDK_LOG_REGISTER_COMPONENT(ioat)

@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef SPDK_INTERNAL_EVENT_H
@@ -60,11 +32,14 @@ enum spdk_reactor_state {
 	SPDK_REACTOR_STATE_SHUTDOWN = 4,
 };
 
-struct spdk_lw_thread {
-	TAILQ_ENTRY(spdk_lw_thread)	link;
-	bool				resched;
-	uint64_t			tsc_start;
-};
+struct spdk_lw_thread;
+
+/**
+ * Completion callback to set reactor into interrupt mode or poll mode.
+ *
+ * \param cb_arg Argument to pass to the callback function.
+ */
+typedef void (*spdk_reactor_set_interrupt_mode_cb)(void *cb_arg1, void *cb_arg2);
 
 struct spdk_reactor {
 	/* Lightweight threads running on this reactor */
@@ -82,6 +57,7 @@ struct spdk_reactor {
 	uint64_t					tsc_last;
 
 	struct spdk_ring				*events;
+	int						events_fd;
 
 	/* The last known rusage values */
 	struct rusage					rusage;
@@ -89,15 +65,30 @@ struct spdk_reactor {
 
 	uint64_t					busy_tsc;
 	uint64_t					idle_tsc;
+
+	/* Each bit of cpuset indicates whether a reactor probably requires event notification */
+	struct spdk_cpuset				notify_cpuset;
+	/* Indicate whether this reactor currently runs in interrupt */
+	bool						in_interrupt;
+	bool						set_interrupt_mode_in_progress;
+	bool						new_in_interrupt;
+	spdk_reactor_set_interrupt_mode_cb		set_interrupt_mode_cb_fn;
+	void						*set_interrupt_mode_cb_arg;
+
+	struct spdk_fd_group				*fgrp;
+	int						resched_fd;
+	uint16_t					trace_id;
 } __attribute__((aligned(SPDK_CACHE_LINE_SIZE)));
 
-int spdk_reactors_init(void);
+int spdk_reactors_init(size_t msg_mempool_size);
 void spdk_reactors_fini(void);
 
 void spdk_reactors_start(void);
 void spdk_reactors_stop(void *arg1);
 
 struct spdk_reactor *spdk_reactor_get(uint32_t lcore);
+
+extern bool g_scheduling_in_progress;
 
 /**
  * Allocate and pass an event to each reactor, serially.
@@ -113,82 +104,21 @@ struct spdk_reactor *spdk_reactor_get(uint32_t lcore);
  */
 void spdk_for_each_reactor(spdk_event_fn fn, void *arg1, void *arg2, spdk_event_fn cpl);
 
-struct spdk_subsystem {
-	const char *name;
-	/* User must call spdk_subsystem_init_next() when they are done with their initialization. */
-	void (*init)(void);
-	void (*fini)(void);
-	void (*config)(FILE *fp);
-
-	/**
-	 * Write JSON configuration handler.
-	 *
-	 * \param w JSON write context
-	 */
-	void (*write_config_json)(struct spdk_json_write_ctx *w);
-	TAILQ_ENTRY(spdk_subsystem) tailq;
-};
-
-struct spdk_subsystem *spdk_subsystem_find(const char *name);
-struct spdk_subsystem *spdk_subsystem_get_first(void);
-struct spdk_subsystem *spdk_subsystem_get_next(struct spdk_subsystem *cur_subsystem);
-
-struct spdk_subsystem_depend {
-	const char *name;
-	const char *depends_on;
-	TAILQ_ENTRY(spdk_subsystem_depend) tailq;
-};
-
-struct spdk_subsystem_depend *spdk_subsystem_get_first_depend(void);
-struct spdk_subsystem_depend *spdk_subsystem_get_next_depend(struct spdk_subsystem_depend
-		*cur_depend);
-
-void spdk_add_subsystem(struct spdk_subsystem *subsystem);
-void spdk_add_subsystem_depend(struct spdk_subsystem_depend *depend);
-
-typedef void (*spdk_subsystem_init_fn)(int rc, void *ctx);
-void spdk_subsystem_init(spdk_subsystem_init_fn cb_fn, void *cb_arg);
-void spdk_subsystem_fini(spdk_msg_fn cb_fn, void *cb_arg);
-void spdk_subsystem_init_next(int rc);
-void spdk_subsystem_fini_next(void);
-void spdk_subsystem_config(FILE *fp);
-void spdk_app_json_config_load(const char *json_config_file, const char *rpc_addr,
-			       spdk_subsystem_init_fn cb_fn, void *cb_arg,
-			       bool stop_on_error);
-
 /**
- * Save pointed \c subsystem configuration to the JSON write context \c w. In case of
- * error \c null is written to the JSON context.
+ * Set reactor into interrupt mode or back to poll mode.
  *
- * \param w JSON write context
- * \param subsystem the subsystem to query
+ * Currently, this function is only permitted within spdk application thread.
+ * Also it requires the corresponding reactor does not have any spdk_thread.
+ *
+ * \param lcore CPU core index of specified reactor.
+ * \param new_in_interrupt Set interrupt mode for true, or poll mode for false.
+ * \param cb_fn This will be called on spdk application thread after setting interrupt mode.
+ * \param cb_arg Argument will be passed to cb_fn when called.
+ *
+ * \return 0 on success, negative errno on failure.
  */
-void spdk_subsystem_config_json(struct spdk_json_write_ctx *w, struct spdk_subsystem *subsystem);
-
-void spdk_rpc_initialize(const char *listen_addr);
-void spdk_rpc_finish(void);
-
-/**
- * \brief Register a new subsystem
- */
-#define SPDK_SUBSYSTEM_REGISTER(_name) \
-	__attribute__((constructor)) static void _name ## _register(void)	\
-	{									\
-		spdk_add_subsystem(&_name);					\
-	}
-
-/**
- * \brief Declare that a subsystem depends on another subsystem.
- */
-#define SPDK_SUBSYSTEM_DEPEND(_name, _depends_on)						\
-	static struct spdk_subsystem_depend __subsystem_ ## _name ## _depend_on ## _depends_on = { \
-	.name = #_name,										\
-	.depends_on = #_depends_on,								\
-	};											\
-	__attribute__((constructor)) static void _name ## _depend_on ## _depends_on(void)	\
-	{											\
-		spdk_add_subsystem_depend(&__subsystem_ ## _name ## _depend_on ## _depends_on); \
-	}
+int spdk_reactor_set_interrupt_mode(uint32_t lcore, bool new_in_interrupt,
+				    spdk_reactor_set_interrupt_mode_cb cb_fn, void *cb_arg);
 
 #ifdef __cplusplus
 }

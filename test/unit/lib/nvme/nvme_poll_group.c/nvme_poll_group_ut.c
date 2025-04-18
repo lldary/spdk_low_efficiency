@@ -1,40 +1,15 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2020 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2021 Mellanox Technologies LTD. All rights reserved.
  */
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "nvme/nvme_poll_group.c"
 #include "common/lib/test_env.c"
+
+SPDK_LOG_REGISTER_COMPONENT(nvme)
 
 struct spdk_nvme_transport {
 	const char				name[32];
@@ -57,11 +32,52 @@ struct spdk_nvme_transport t4 = {
 	.name = "transport4",
 };
 
+struct spdk_nvme_ctrlr c1 = {
+	.opts.enable_interrupts = 0,
+};
+
+struct spdk_nvme_ctrlr c2 = {
+	.opts.enable_interrupts = 1,
+};
+
 int64_t g_process_completions_return_value = 0;
 int g_destroy_return_value = 0;
 
 TAILQ_HEAD(nvme_transport_list, spdk_nvme_transport) g_spdk_nvme_transports =
 	TAILQ_HEAD_INITIALIZER(g_spdk_nvme_transports);
+
+DEFINE_STUB(nvme_transport_qpair_get_optimal_poll_group,
+	    struct spdk_nvme_transport_poll_group *,
+	    (const struct spdk_nvme_transport *transport,
+	     struct spdk_nvme_qpair *qpair),
+	    NULL);
+DEFINE_STUB(nvme_transport_get_trtype,
+	    enum spdk_nvme_transport_type,
+	    (const struct spdk_nvme_transport *transport),
+	    SPDK_NVME_TRANSPORT_PCIE);
+
+DEFINE_STUB(spdk_nvme_qpair_get_fd, int, (struct spdk_nvme_qpair *qpair,
+		struct spdk_event_handler_opts *opts), 0);
+DEFINE_STUB(spdk_nvme_ctrlr_get_transport_id,
+	    const struct spdk_nvme_transport_id *,
+	    (struct spdk_nvme_ctrlr *ctrlr), NULL);
+int
+nvme_transport_poll_group_get_stats(struct spdk_nvme_transport_poll_group *tgroup,
+				    struct spdk_nvme_transport_poll_group_stat **stats)
+{
+	*stats = calloc(1, sizeof(**stats));
+	SPDK_CU_ASSERT_FATAL(*stats != NULL);
+	(*stats)->trtype = nvme_transport_get_trtype(NULL);
+
+	return 0;
+}
+
+void
+nvme_transport_poll_group_free_stats(struct spdk_nvme_transport_poll_group *tgroup,
+				     struct spdk_nvme_transport_poll_group_stat *stats)
+{
+	free(stats);
+}
 
 static void
 unit_test_disconnected_qpair_cb(struct spdk_nvme_qpair *qpair, void *poll_group_ctx)
@@ -186,6 +202,12 @@ nvme_transport_poll_group_remove(struct spdk_nvme_transport_poll_group *tgroup,
 	return -ENODEV;
 }
 
+int32_t
+spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
+{
+	return g_process_completions_return_value;
+}
+
 int64_t
 nvme_transport_poll_group_process_completions(struct spdk_nvme_transport_poll_group *group,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb)
@@ -199,7 +221,7 @@ test_spdk_nvme_poll_group_create(void)
 	struct spdk_nvme_poll_group *group;
 
 	/* basic case - create a poll group with no internal transport poll groups. */
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 	CU_ASSERT(STAILQ_EMPTY(&group->tgroups));
@@ -210,13 +232,13 @@ test_spdk_nvme_poll_group_create(void)
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, &t3, link);
 
 	/* advanced case - create a poll group with three internal poll groups. */
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 	CU_ASSERT(STAILQ_EMPTY(&group->tgroups));
 	SPDK_CU_ASSERT_FATAL(spdk_nvme_poll_group_destroy(group) == 0);
 
 	/* Failing case - failed to allocate a poll group. */
 	MOCK_SET(calloc, NULL);
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 	CU_ASSERT(group == NULL);
 	MOCK_CLEAR(calloc);
 
@@ -245,17 +267,91 @@ test_spdk_nvme_poll_group_add_remove(void)
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, &t2, link);
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, &t3, link);
 
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(group != NULL);
+	CU_ASSERT(group->enable_interrupts_is_valid == false);
+	CU_ASSERT(group->enable_interrupts == false);
+	CU_ASSERT(STAILQ_EMPTY(&group->tgroups));
+
+	/* Add qpairs from different controllers. One with interrupts other without. */
+	qpair1_1.transport = &t1;
+	qpair1_1.ctrlr = &c1;
+	qpair1_1.state = NVME_QPAIR_DISCONNECTED;
+	qpair1_2.transport = &t1;
+	qpair1_2.ctrlr = &c2;
+	qpair1_2.state = NVME_QPAIR_DISCONNECTED;
+	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair1_1) == 0);
+	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair1_2) == -EINVAL);
+	CU_ASSERT(group->enable_interrupts_is_valid == true);
+	CU_ASSERT(group->enable_interrupts == false);
+	STAILQ_FOREACH(tmp_tgroup, &group->tgroups, link) {
+		if (tmp_tgroup->transport == &t1) {
+			tgroup = tmp_tgroup;
+		} else {
+			CU_ASSERT(STAILQ_EMPTY(&tmp_tgroup->connected_qpairs));
+		}
+		i++;
+	}
+	CU_ASSERT(i == 1);
+	SPDK_CU_ASSERT_FATAL(tgroup != NULL);
+	qpair = STAILQ_FIRST(&tgroup->connected_qpairs);
+	SPDK_CU_ASSERT_FATAL(qpair == &qpair1_1);
+	qpair = STAILQ_NEXT(qpair, poll_group_stailq);
+	CU_ASSERT(qpair == NULL);
+
+	/* Add second qpair from the same controller as the first. */
+	qpair1_2.ctrlr = &c1;
+	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair1_2) == 0);
+	i = 0;
+	STAILQ_FOREACH(tmp_tgroup, &group->tgroups, link) {
+		if (tmp_tgroup->transport == &t1) {
+			tgroup = tmp_tgroup;
+		} else {
+			CU_ASSERT(STAILQ_EMPTY(&tmp_tgroup->connected_qpairs));
+		}
+		i++;
+	}
+	CU_ASSERT(i == 1);
+	qpair = STAILQ_FIRST(&tgroup->connected_qpairs);
+	SPDK_CU_ASSERT_FATAL(qpair == &qpair1_1);
+	qpair = STAILQ_NEXT(qpair, poll_group_stailq);
+	SPDK_CU_ASSERT_FATAL(qpair == &qpair1_2);
+	qpair = STAILQ_NEXT(qpair, poll_group_stailq);
+	CU_ASSERT(qpair == NULL);
+
+	i = 0;
+	/* Remove both qpairs and delete the transport poll group. */
+	CU_ASSERT(spdk_nvme_poll_group_remove(group, &qpair1_1) == 0);
+	CU_ASSERT(spdk_nvme_poll_group_remove(group, &qpair1_2) == 0);
+	STAILQ_FOREACH_SAFE(tgroup, &group->tgroups, link, tmp_tgroup) {
+		CU_ASSERT(STAILQ_EMPTY(&tgroup->connected_qpairs));
+		STAILQ_REMOVE(&group->tgroups, tgroup, spdk_nvme_transport_poll_group, link);
+		free(tgroup);
+		i++;
+	}
+	CU_ASSERT(i == 1);
+	CU_ASSERT(STAILQ_EMPTY(&group->tgroups));
+	CU_ASSERT(group->enable_interrupts == false);
+	SPDK_CU_ASSERT_FATAL(spdk_nvme_poll_group_destroy(group) == 0);
+
+	group = spdk_nvme_poll_group_create(NULL, NULL);
+	SPDK_CU_ASSERT_FATAL(group != NULL);
+	CU_ASSERT(group->enable_interrupts_is_valid == false);
+	CU_ASSERT(group->enable_interrupts == false);
 	CU_ASSERT(STAILQ_EMPTY(&group->tgroups));
 
 	/* Add qpairs to a single transport. */
 	qpair1_1.transport = &t1;
+	qpair1_1.ctrlr = &c1;
 	qpair1_1.state = NVME_QPAIR_DISCONNECTED;
 	qpair1_2.transport = &t1;
+	qpair1_2.ctrlr = &c1;
 	qpair1_2.state = NVME_QPAIR_ENABLED;
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair1_1) == 0);
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair1_2) == -EINVAL);
+	CU_ASSERT(group->enable_interrupts_is_valid == true);
+	CU_ASSERT(group->enable_interrupts == false);
+	i = 0;
 	STAILQ_FOREACH(tmp_tgroup, &group->tgroups, link) {
 		if (tmp_tgroup->transport == &t1) {
 			tgroup = tmp_tgroup;
@@ -273,11 +369,15 @@ test_spdk_nvme_poll_group_add_remove(void)
 
 	/* Add qpairs to a second transport. */
 	qpair2_1.transport = &t2;
+	qpair2_1.ctrlr = &c1;
 	qpair2_2.transport = &t2;
+	qpair2_2.ctrlr = &c1;
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair2_1) == 0);
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair2_2) == 0);
 	qpair4_1.transport = &t4;
 	qpair4_2.transport = &t4;
+	qpair4_1.ctrlr = &c1;
+	qpair4_2.ctrlr = &c1;
 	/* Add qpairs for a transport that doesn't exist. */
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair4_1) == -ENODEV);
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair4_2) == -ENODEV);
@@ -373,7 +473,7 @@ test_spdk_nvme_poll_group_process_completions(void)
 	struct spdk_nvme_transport_poll_group *tgroup, *tmp_tgroup;
 	struct spdk_nvme_qpair qpair1_1 = {0};
 
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 
 	/* If we don't have any transport poll groups, we shouldn't get any completions. */
@@ -387,10 +487,11 @@ test_spdk_nvme_poll_group_process_completions(void)
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, &t3, link);
 
 	/* try it with three transport poll groups. */
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 	qpair1_1.state = NVME_QPAIR_DISCONNECTED;
 	qpair1_1.transport = &t1;
+	qpair1_1.ctrlr = &c1;
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair1_1) == 0);
 	qpair1_1.state = NVME_QPAIR_ENABLED;
 	CU_ASSERT(nvme_poll_group_connect_qpair(&qpair1_1) == 0);
@@ -418,17 +519,18 @@ test_spdk_nvme_poll_group_destroy(void)
 	int num_tgroups = 0;
 
 	/* Simple destruction of empty poll group. */
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 	SPDK_CU_ASSERT_FATAL(spdk_nvme_poll_group_destroy(group) == 0);
 
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, &t1, link);
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, &t2, link);
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, &t3, link);
-	group = spdk_nvme_poll_group_create(NULL);
+	group = spdk_nvme_poll_group_create(NULL, NULL);
 	SPDK_CU_ASSERT_FATAL(group != NULL);
 
 	qpair1_1.transport = &t1;
+	qpair1_1.ctrlr = &c1;
 	CU_ASSERT(spdk_nvme_poll_group_add(group, &qpair1_1) == 0);
 
 	/* Don't remove busy poll groups. */
@@ -446,6 +548,35 @@ test_spdk_nvme_poll_group_destroy(void)
 	CU_ASSERT(tgroup_2 == NULL)
 	SPDK_CU_ASSERT_FATAL(spdk_nvme_poll_group_destroy(group) == 0);
 	free(tgroup_1);
+}
+
+static void
+test_spdk_nvme_poll_group_get_free_stats(void)
+{
+	struct spdk_nvme_poll_group group = {};
+	struct spdk_nvme_poll_group_stat *stats = NULL;
+	struct spdk_nvme_transport_poll_group tgroup[3] = {};
+	int rc, i;
+
+	/* Multiple tgroups */
+	STAILQ_INIT(&group.tgroups);
+	for (i = 0; i < 3; i++) {
+		STAILQ_INSERT_TAIL(&group.tgroups, &tgroup[i], link);
+	}
+
+	rc = spdk_nvme_poll_group_get_stats(&group, &stats);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(stats->num_transports == 3);
+
+	spdk_nvme_poll_group_free_stats(&group, stats);
+	for (i = 0; i < 3; i++) {
+		STAILQ_REMOVE(&group.tgroups, &tgroup[i], spdk_nvme_transport_poll_group, link);
+	}
+	SPDK_CU_ASSERT_FATAL(STAILQ_EMPTY(&group.tgroups));
+
+	/* No available tgroup */
+	rc = spdk_nvme_poll_group_get_stats(&group, &stats);
+	CU_ASSERT(rc == -ENOTSUP);
 }
 
 int
@@ -470,15 +601,15 @@ main(int argc, char **argv)
 			    test_spdk_nvme_poll_group_add_remove) == NULL ||
 		CU_add_test(suite, "nvme_poll_group_process_completions",
 			    test_spdk_nvme_poll_group_process_completions) == NULL ||
-		CU_add_test(suite, "nvme_poll_group_destroy_test", test_spdk_nvme_poll_group_destroy) == NULL
+		CU_add_test(suite, "nvme_poll_group_destroy_test", test_spdk_nvme_poll_group_destroy) == NULL ||
+		CU_add_test(suite, "nvme_poll_group_get_free_stats",
+			    test_spdk_nvme_poll_group_get_free_stats) == NULL
 	) {
 		CU_cleanup_registry();
 		return CU_get_error();
 	}
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

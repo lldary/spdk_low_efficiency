@@ -1,40 +1,19 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "env_internal.h"
 
 #include <rte_config.h>
 #include <rte_lcore.h>
+
+#include "spdk/cpuset.h"
+#include "spdk/log.h"
+#include "spdk/string.h"
+
+#define THREAD_SIBLINGS_FILE \
+	"/sys/devices/system/cpu/cpu%d/topology/thread_siblings"
 
 uint32_t
 spdk_env_get_core_count(void)
@@ -46,6 +25,12 @@ uint32_t
 spdk_env_get_current_core(void)
 {
 	return rte_lcore_id();
+}
+
+uint32_t
+spdk_env_get_main_core(void)
+{
+	return rte_get_main_lcore();
 }
 
 uint32_t
@@ -81,14 +66,130 @@ spdk_env_get_next_core(uint32_t prev_core)
 	return lcore;
 }
 
-uint32_t
-spdk_env_get_socket_id(uint32_t core)
+int32_t
+spdk_env_get_numa_id(uint32_t core)
 {
 	if (core >= RTE_MAX_LCORE) {
-		return SPDK_ENV_SOCKET_ID_ANY;
+		return SPDK_ENV_NUMA_ID_ANY;
 	}
 
 	return rte_lcore_to_socket_id(core);
+}
+
+SPDK_LOG_DEPRECATION_REGISTER(env_socket_id, "spdk_env_get_socket_id", "v25.05", 0);
+
+uint32_t
+spdk_env_get_socket_id(uint32_t core)
+{
+	SPDK_LOG_DEPRECATED(env_socket_id);
+	return spdk_env_get_numa_id(core);
+}
+
+int32_t
+spdk_env_get_first_numa_id(void)
+{
+	assert(rte_socket_count() > 0);
+
+	return rte_socket_id_by_idx(0);
+}
+
+int32_t
+spdk_env_get_last_numa_id(void)
+{
+	assert(rte_socket_count() > 0);
+
+	return rte_socket_id_by_idx(rte_socket_count() - 1);
+}
+
+int32_t
+spdk_env_get_next_numa_id(int32_t prev_numa_id)
+{
+	uint32_t i;
+
+	for (i = 0; i < rte_socket_count(); i++) {
+		if (rte_socket_id_by_idx(i) == prev_numa_id) {
+			break;
+		}
+	}
+
+	if ((i + 1) < rte_socket_count()) {
+		return rte_socket_id_by_idx(i + 1);
+	} else {
+		return INT32_MAX;
+	}
+}
+
+void
+spdk_env_get_cpuset(struct spdk_cpuset *cpuset)
+{
+	uint32_t i;
+
+	spdk_cpuset_zero(cpuset);
+	SPDK_ENV_FOREACH_CORE(i) {
+		spdk_cpuset_set_cpu(cpuset, i, true);
+	}
+}
+
+static bool
+env_core_get_smt_cpuset(struct spdk_cpuset *cpuset, uint32_t core)
+{
+#ifdef __linux__
+	struct spdk_cpuset smt_siblings;
+	char path[PATH_MAX];
+	FILE *f;
+	char *line = NULL;
+	size_t len = 0;
+	ssize_t read;
+	bool valid = false;
+
+	snprintf(path, sizeof(path), THREAD_SIBLINGS_FILE, core);
+	f = fopen(path, "r");
+	if (f == NULL) {
+		SPDK_ERRLOG("Could not fopen('%s'): %s\n", path, spdk_strerror(errno));
+		return false;
+	}
+	read = getline(&line, &len, f);
+	if (read == -1) {
+		SPDK_ERRLOG("Could not getline() for '%s': %s\n", path, spdk_strerror(errno));
+		goto ret;
+	}
+
+	/* Remove trailing newline */
+	line[strlen(line) - 1] = 0;
+	if (spdk_cpuset_parse(&smt_siblings, line)) {
+		SPDK_ERRLOG("Could not parse '%s' from '%s'\n", line, path);
+		goto ret;
+	}
+
+	valid = true;
+	spdk_cpuset_or(cpuset, &smt_siblings);
+ret:
+	free(line);
+	fclose(f);
+	return valid;
+#else
+	return false;
+#endif
+}
+
+bool
+spdk_env_core_get_smt_cpuset(struct spdk_cpuset *cpuset, uint32_t core)
+{
+	uint32_t i;
+
+	spdk_cpuset_zero(cpuset);
+
+	if (core != UINT32_MAX) {
+		return env_core_get_smt_cpuset(cpuset, core);
+	}
+
+	SPDK_ENV_FOREACH_CORE(i) {
+		if (!env_core_get_smt_cpuset(cpuset, i)) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 int

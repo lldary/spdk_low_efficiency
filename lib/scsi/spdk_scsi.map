@@ -11,6 +11,8 @@
 	spdk_scsi_dev_get_name;
 	spdk_scsi_dev_get_id;
 	spdk_scsi_dev_get_lun;
+	spdk_scsi_dev_get_first_lun;
+	spdk_scsi_dev_get_next_lun;
 	spdk_scsi_dev_has_pending_tasks;
 	spdk_scsi_dev_destruct;
 	spdk_scsi_dev_queue_mgmt_task;
@@ -44,6 +46,9 @@
 	spdk_scsi_port_set_iscsi_transport_id;
 	spdk_scsi_lun_id_int_to_fmt;
 	spdk_scsi_lun_id_fmt_to_int;
+	spdk_scsi_dev_construct_ext;
+	spdk_scsi_dev_add_lun_ext;
+	spdk_scsi_sbc_opcode_string;
 
 	local: *;
 };

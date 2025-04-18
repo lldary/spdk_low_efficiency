@@ -1,3 +1,8 @@
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
+
 set -e
 
 function nbd_start_disks() {
@@ -120,4 +125,29 @@ function nbd_rpc_start_stop_verify() {
 	fi
 
 	return 0
+}
+
+function nbd_with_lvol_verify() {
+	local rpc_server=$1
+	local nbd=$2
+
+	$rootdir/scripts/rpc.py -s $rpc_server bdev_malloc_create -b malloc_lvol_verify 16 512
+	$rootdir/scripts/rpc.py -s $rpc_server bdev_lvol_create_lvstore malloc_lvol_verify lvs
+	$rootdir/scripts/rpc.py -s $rpc_server bdev_lvol_create lvol 4 -l lvs
+	$rootdir/scripts/rpc.py -s $rpc_server nbd_start_disk lvs/lvol "$nbd"
+
+	wait_for_nbd_set_capacity "$nbd"
+
+	mkfs.ext4 "$nbd"
+	nbd_stop_disks $rpc_server "$nbd"
+}
+
+function wait_for_nbd_set_capacity() {
+	local nbd=${1##*/}
+
+	[[ -e /sys/block/$nbd/size ]] || return 1
+
+	while (($(< "/sys/block/$nbd/size") == 0)); do
+		sleep 0.1
+	done
 }

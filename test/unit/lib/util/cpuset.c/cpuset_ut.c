@@ -1,40 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 #include "spdk/cpuset.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "util/cpuset.c"
 
@@ -149,7 +121,7 @@ test_cpuset_parse(void)
 	rc = spdk_cpuset_parse(NULL, "[1]");
 	CU_ASSERT(rc < 0);
 
-	/* Wrong formated core lists */
+	/* Wrong formatted core lists */
 	rc = spdk_cpuset_parse(core_mask, "");
 	CU_ASSERT(rc < 0);
 
@@ -179,6 +151,36 @@ test_cpuset_parse(void)
 	/* Overflow value (UINT64_MAX * 10) */
 	rc = spdk_cpuset_parse(core_mask, "[184467440737095516150]");
 	CU_ASSERT(rc < 0);
+
+	/* Test mask with cores 4-7 and 168-171 set. */
+	rc = spdk_cpuset_parse(core_mask, "0xF0000000000000000000000000000000000000000F0");
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 0, 3, false) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 4, 7, true) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 8, 167, false) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 168, 171, true) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 172, SPDK_CPUSET_SIZE - 1, false) == 0);
+
+	/* Test masks with commas. The commas should be ignored by cpuset, to
+	 * allow using spdk_cpuset_parse() with Linux kernel sysfs strings
+	 * that insert commas for readability purposes.
+	 */
+	rc = spdk_cpuset_parse(core_mask, "FF,FF0000FF,00000000");
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 0, 31, false) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 32, 39, true) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 40, 55, false) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 56, 71, true) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 72, SPDK_CPUSET_SIZE - 1, false) == 0);
+
+	/* Test masks with random commas. We just ignore the commas, cpuset
+	 * should not try to validate that commas are only in certain positions.
+	 */
+	rc = spdk_cpuset_parse(core_mask, ",,,,,000,,1,0,0,,,,");
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 0, 7, false) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 8, 8, true) == 0);
+	CU_ASSERT(cpuset_check_range(core_mask, 9, SPDK_CPUSET_SIZE - 1, false) == 0);
 
 	spdk_cpuset_free(core_mask);
 }
@@ -236,13 +238,32 @@ test_cpuset_fmt(void)
 	spdk_cpuset_free(core_mask);
 }
 
+static void
+set_bit(void *ctx, uint32_t cpu)
+{
+	uint64_t *mask = ctx;
+
+	SPDK_CU_ASSERT_FATAL(cpu < 64);
+	(*mask) |= (1 << cpu);
+}
+
+static void
+test_cpuset_foreach(void)
+{
+	struct spdk_cpuset cpuset = {};
+	uint64_t mask = 0;
+
+	CU_ASSERT(spdk_cpuset_parse(&cpuset, "0xF135704") == 0);
+	spdk_cpuset_for_each_cpu(&cpuset, set_bit, &mask);
+	CU_ASSERT(mask == 0xF135704);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("cpuset", NULL, NULL);
@@ -250,12 +271,10 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_cpuset);
 	CU_ADD_TEST(suite, test_cpuset_parse);
 	CU_ADD_TEST(suite, test_cpuset_fmt);
+	CU_ADD_TEST(suite, test_cpuset_foreach);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
-	CU_basic_run_tests();
-
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 
 	return num_failures;

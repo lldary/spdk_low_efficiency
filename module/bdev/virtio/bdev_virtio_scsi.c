@@ -1,40 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 
 #include "spdk/bdev.h"
-#include "spdk/conf.h"
 #include "spdk/endian.h"
 #include "spdk/env.h"
 #include "spdk/thread.h"
@@ -44,11 +15,12 @@
 #include "spdk/json.h"
 
 #include "spdk/bdev_module.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 #include "spdk_internal/virtio.h"
 #include "spdk_internal/vhost_user.h"
 
 #include <linux/virtio_scsi.h>
+#include <linux/virtio_ids.h>
 
 #include "bdev_virtio.h"
 
@@ -194,8 +166,7 @@ static bool g_bdev_virtio_finish = false;
 #define VIRTIO_SCSI_DEV_SUPPORTED_FEATURES		\
 	(1ULL << VIRTIO_SCSI_F_INOUT		|	\
 	 1ULL << VIRTIO_SCSI_F_HOTPLUG		|	\
-	 1ULL << VIRTIO_RING_F_EVENT_IDX	|	\
-	 1ULL << VHOST_USER_F_PROTOCOL_FEATURES)
+	 1ULL << VIRTIO_RING_F_EVENT_IDX)
 
 static void virtio_scsi_dev_unregister_cb(void *io_device);
 static void virtio_scsi_dev_remove(struct virtio_scsi_dev *svdev,
@@ -222,7 +193,7 @@ virtio_scsi_dev_send_eventq_io(struct virtqueue *vq, struct virtio_scsi_eventq_i
 }
 
 static int
-virtio_scsi_dev_init(struct virtio_scsi_dev *svdev, uint16_t max_queues)
+virtio_scsi_dev_init(struct virtio_scsi_dev *svdev, uint16_t max_queues, uint64_t feature_bits)
 {
 	struct virtio_dev *vdev = &svdev->vdev;
 	struct spdk_ring *ctrlq_ring;
@@ -231,7 +202,7 @@ virtio_scsi_dev_init(struct virtio_scsi_dev *svdev, uint16_t max_queues)
 	uint16_t i, num_events;
 	int rc;
 
-	rc = virtio_dev_reset(vdev, VIRTIO_SCSI_DEV_SUPPORTED_FEATURES);
+	rc = virtio_dev_reset(vdev, feature_bits);
 	if (rc != 0) {
 		return rc;
 	}
@@ -242,7 +213,7 @@ virtio_scsi_dev_init(struct virtio_scsi_dev *svdev, uint16_t max_queues)
 	}
 
 	ctrlq_ring = spdk_ring_create(SPDK_RING_TYPE_MP_SC, CTRLQ_RING_SIZE,
-				      SPDK_ENV_SOCKET_ID_ANY);
+				      SPDK_ENV_NUMA_ID_ANY);
 	if (ctrlq_ring == NULL) {
 		SPDK_ERRLOG("Failed to allocate send ring for the controlq.\n");
 		return -1;
@@ -344,19 +315,21 @@ virtio_pci_scsi_dev_create(const char *name, struct virtio_pci_ctx *pci_ctx)
 					&num_queues, sizeof(num_queues));
 	if (rc) {
 		SPDK_ERRLOG("%s: config read failed: %s\n", vdev->name, spdk_strerror(-rc));
-		virtio_dev_destruct(vdev);
-		free(svdev);
-		return NULL;
+		goto fail;
 	}
 
-	rc = virtio_scsi_dev_init(svdev, num_queues);
+	rc = virtio_scsi_dev_init(svdev, num_queues, VIRTIO_SCSI_DEV_SUPPORTED_FEATURES);
 	if (rc != 0) {
-		virtio_dev_destruct(vdev);
-		free(svdev);
-		return NULL;
+		goto fail;
 	}
 
 	return svdev;
+
+fail:
+	vdev->ctx = NULL;
+	virtio_dev_destruct(vdev);
+	free(svdev);
+	return NULL;
 }
 
 static struct virtio_scsi_dev *
@@ -365,6 +338,7 @@ virtio_user_scsi_dev_create(const char *name, const char *path,
 {
 	struct virtio_scsi_dev *svdev;
 	struct virtio_dev *vdev;
+	uint64_t feature_bits;
 	int rc;
 
 	svdev = calloc(1, sizeof(*svdev));
@@ -381,7 +355,9 @@ virtio_user_scsi_dev_create(const char *name, const char *path,
 		return NULL;
 	}
 
-	rc = virtio_scsi_dev_init(svdev, num_queues);
+	feature_bits = VIRTIO_SCSI_DEV_SUPPORTED_FEATURES;
+	feature_bits |= (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
+	rc = virtio_scsi_dev_init(svdev, num_queues + SPDK_VIRTIO_SCSI_QUEUE_NUM_FIXED, feature_bits);
 	if (rc != 0) {
 		virtio_dev_destruct(vdev);
 		free(svdev);
@@ -454,7 +430,6 @@ static struct spdk_bdev_module virtio_scsi_if = {
 	.module_fini = bdev_virtio_finish,
 	.get_ctx_size = bdev_virtio_get_ctx_size,
 	.config_json = bdev_virtio_scsi_config_json,
-	.async_init = true,
 	.async_fini = true,
 };
 
@@ -641,7 +616,8 @@ bdev_virtio_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
 	bdev_virtio_rw(ch, bdev_io);
 }
 
-static int _bdev_virtio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+static int
+_bdev_virtio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	struct virtio_scsi_disk *disk = SPDK_CONTAINEROF(bdev_io->bdev, struct virtio_scsi_disk, bdev);
 
@@ -680,7 +656,8 @@ static int _bdev_virtio_submit_request(struct spdk_io_channel *ch, struct spdk_b
 	return 0;
 }
 
-static void bdev_virtio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+static void
+bdev_virtio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	if (_bdev_virtio_submit_request(ch, bdev_io) < 0) {
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
@@ -828,6 +805,11 @@ bdev_virtio_poll(void *arg)
 		bdev_virtio_io_cpl(io[i]);
 	}
 
+	/* scan_ctx could have been freed while processing completions above, so
+	 * we need to re-read the value again here into the local variable before
+	 * using it.
+	 */
+	scan_ctx = svdev->scan_ctx;
 	if (spdk_unlikely(scan_ctx && scan_ctx->needs_resend)) {
 		if (svdev->removed) {
 			_virtio_scsi_dev_scan_finish(scan_ctx, -EINTR);
@@ -1280,7 +1262,7 @@ process_scan_inquiry_vpd_block_thin_provision(struct virtio_scsi_scan_base *base
 		base->info.unmap_supported = !!(vpd_data[5] & SPDK_SCSI_UNMAP_LBPU);
 	}
 
-	SPDK_INFOLOG(SPDK_LOG_VIRTIO, "Target %u: unmap supported = %d\n",
+	SPDK_INFOLOG(virtio, "Target %u: unmap supported = %d\n",
 		     base->info.target, (int)base->info.unmap_supported);
 
 	return send_read_cap_10(base);
@@ -1302,18 +1284,30 @@ process_scan_inquiry(struct virtio_scsi_scan_base *base)
 	case SPDK_SPC_VPD_BLOCK_THIN_PROVISION:
 		return process_scan_inquiry_vpd_block_thin_provision(base);
 	default:
-		SPDK_DEBUGLOG(SPDK_LOG_VIRTIO, "Unexpected VPD page 0x%02x\n", inquiry_cdb->page_code);
+		SPDK_DEBUGLOG(virtio, "Unexpected VPD page 0x%02x\n", inquiry_cdb->page_code);
 		return -1;
 	}
 }
 
 static void
-bdev_virtio_disc_notify_remove(void *remove_ctx)
+bdev_virtio_disk_notify_remove(struct virtio_scsi_disk *disk)
 {
-	struct virtio_scsi_disk *disk = remove_ctx;
-
 	disk->removed = true;
 	spdk_bdev_close(disk->notify_desc);
+}
+
+static void
+bdev_virtio_disk_notify_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+				 void *event_ctx)
+{
+	switch (type) {
+	case SPDK_BDEV_EVENT_REMOVE:
+		bdev_virtio_disk_notify_remove(event_ctx);
+		break;
+	default:
+		SPDK_NOTICELOG("Unsupported bdev event: type %d\n", type);
+		break;
+	}
 }
 
 /* To be called only from the thread performing target scan */
@@ -1371,7 +1365,8 @@ virtio_scsi_dev_add_tgt(struct virtio_scsi_dev *svdev, struct virtio_scsi_scan_i
 		return rc;
 	}
 
-	rc = spdk_bdev_open(bdev, false, bdev_virtio_disc_notify_remove, disk, &disk->notify_desc);
+	rc = spdk_bdev_open_ext(bdev->name, false, bdev_virtio_disk_notify_event_cb,
+				disk, &disk->notify_desc);
 	if (rc) {
 		assert(false);
 	}
@@ -1467,8 +1462,8 @@ process_scan_resp(struct virtio_scsi_scan_base *base)
 		base->retries--;
 		if (base->retries == 0) {
 			SPDK_NOTICELOG("Target %"PRIu8" is present, but unavailable.\n", target_id);
-			SPDK_LOGDUMP(SPDK_LOG_VIRTIO, "CDB", req->cdb, sizeof(req->cdb));
-			SPDK_LOGDUMP(SPDK_LOG_VIRTIO, "SENSE DATA", resp->sense, sizeof(resp->sense));
+			SPDK_LOGDUMP(virtio, "CDB", req->cdb, sizeof(req->cdb));
+			SPDK_LOGDUMP(virtio, "SENSE DATA", resp->sense, sizeof(resp->sense));
 			_virtio_scsi_dev_scan_next(base, -EBUSY);
 			return;
 		}
@@ -1551,89 +1546,6 @@ _virtio_scsi_dev_scan_next(struct virtio_scsi_scan_base *base, int rc)
 
 	_virtio_scsi_dev_scan_tgt(base, target_id);
 	return 0;
-}
-
-static int
-virtio_pci_scsi_dev_enumerate_cb(struct virtio_pci_ctx *pci_ctx, void *ctx)
-{
-	struct virtio_scsi_dev *svdev;
-
-	svdev = virtio_pci_scsi_dev_create(NULL, pci_ctx);
-	return svdev == NULL ? -1 : 0;
-}
-
-static int
-bdev_virtio_process_config(void)
-{
-	struct spdk_conf_section *sp;
-	struct virtio_scsi_dev *svdev;
-	char *default_name = NULL;
-	char *path, *type, *name;
-	unsigned vdev_num;
-	int num_queues;
-	bool enable_pci;
-	int rc = 0;
-
-	for (sp = spdk_conf_first_section(NULL); sp != NULL; sp = spdk_conf_next_section(sp)) {
-		if (!spdk_conf_section_match_prefix(sp, "VirtioUser")) {
-			continue;
-		}
-
-		if (sscanf(spdk_conf_section_get_name(sp), "VirtioUser%u", &vdev_num) != 1) {
-			SPDK_ERRLOG("Section '%s' has non-numeric suffix.\n",
-				    spdk_conf_section_get_name(sp));
-			rc = -1;
-			goto out;
-		}
-
-		path = spdk_conf_section_get_val(sp, "Path");
-		if (path == NULL) {
-			SPDK_ERRLOG("VirtioUser%u: missing Path\n", vdev_num);
-			rc = -1;
-			goto out;
-		}
-
-		type = spdk_conf_section_get_val(sp, "Type");
-		if (type != NULL && strcmp(type, "SCSI") != 0) {
-			continue;
-		}
-
-		num_queues = spdk_conf_section_get_intval(sp, "Queues");
-		if (num_queues < 1) {
-			num_queues = 1;
-		} else if (num_queues > SPDK_VIRTIO_MAX_VIRTQUEUES) {
-			num_queues = SPDK_VIRTIO_MAX_VIRTQUEUES;
-		}
-
-		name = spdk_conf_section_get_val(sp, "Name");
-		if (name == NULL) {
-			default_name = spdk_sprintf_alloc("VirtioScsi%u", vdev_num);
-			name = default_name;
-		}
-
-		svdev = virtio_user_scsi_dev_create(name, path, num_queues, 512);
-		free(default_name);
-		default_name = NULL;
-
-		if (svdev == NULL) {
-			rc = -1;
-			goto out;
-		}
-	}
-
-	sp = spdk_conf_find_section(NULL, "VirtioPci");
-	if (sp == NULL) {
-		return 0;
-	}
-
-	enable_pci = spdk_conf_section_get_boolval(sp, "Enable", false);
-	if (enable_pci) {
-		rc = virtio_pci_dev_enumerate(virtio_pci_scsi_dev_enumerate_cb, NULL,
-					      PCI_DEVICE_ID_VIRTIO_SCSI_MODERN);
-	}
-
-out:
-	return rc;
 }
 
 static int
@@ -1762,63 +1674,10 @@ virtio_scsi_dev_scan_tgt(struct virtio_scsi_dev *svdev, uint8_t target)
 	return 0;
 }
 
-static void
-bdev_virtio_initial_scan_complete(void *ctx, int result,
-				  struct spdk_bdev **bdevs, size_t bdevs_cnt)
-{
-	struct virtio_scsi_dev *svdev;
-
-	pthread_mutex_lock(&g_virtio_scsi_mutex);
-	TAILQ_FOREACH(svdev, &g_virtio_scsi_devs, tailq) {
-		if (svdev->scan_ctx) {
-			/* another device is still being scanned */
-			pthread_mutex_unlock(&g_virtio_scsi_mutex);
-			return;
-		}
-	}
-
-	pthread_mutex_unlock(&g_virtio_scsi_mutex);
-	spdk_bdev_module_init_done(&virtio_scsi_if);
-}
-
 static int
 bdev_virtio_initialize(void)
 {
-	struct virtio_scsi_dev *svdev, *next_svdev;
-	int rc;
-
-	rc = bdev_virtio_process_config();
-	pthread_mutex_lock(&g_virtio_scsi_mutex);
-
-	if (rc != 0) {
-		goto err_unlock;
-	}
-
-	if (TAILQ_EMPTY(&g_virtio_scsi_devs)) {
-		goto out_unlock;
-	}
-
-	/* Initialize all created devices and scan available targets */
-	TAILQ_FOREACH(svdev, &g_virtio_scsi_devs, tailq) {
-		rc = virtio_scsi_dev_scan(svdev, bdev_virtio_initial_scan_complete, NULL);
-		if (rc != 0) {
-			goto err_unlock;
-		}
-	}
-
-	pthread_mutex_unlock(&g_virtio_scsi_mutex);
 	return 0;
-
-err_unlock:
-	/* Remove any created devices */
-	TAILQ_FOREACH_SAFE(svdev, &g_virtio_scsi_devs, tailq, next_svdev) {
-		virtio_scsi_dev_remove(svdev, NULL, NULL);
-	}
-
-out_unlock:
-	pthread_mutex_unlock(&g_virtio_scsi_mutex);
-	spdk_bdev_module_init_done(&virtio_scsi_if);
-	return rc;
 }
 
 static void
@@ -1856,7 +1715,7 @@ _virtio_scsi_dev_unregister_cb(void *io_device)
 	finish_module = TAILQ_EMPTY(&g_virtio_scsi_devs);
 
 	if (g_bdev_virtio_finish && finish_module) {
-		spdk_bdev_module_finish_done();
+		spdk_bdev_module_fini_done();
 	}
 }
 
@@ -1915,7 +1774,7 @@ bdev_virtio_finish(void)
 	pthread_mutex_lock(&g_virtio_scsi_mutex);
 	if (TAILQ_EMPTY(&g_virtio_scsi_devs)) {
 		pthread_mutex_unlock(&g_virtio_scsi_mutex);
-		spdk_bdev_module_finish_done();
+		spdk_bdev_module_fini_done();
 		return;
 	}
 
@@ -1947,6 +1806,58 @@ bdev_virtio_user_scsi_dev_create(const char *base_name, const char *path,
 	return rc;
 }
 
+int
+bdev_vfio_user_scsi_dev_create(const char *base_name, const char *path,
+			       bdev_virtio_create_cb cb_fn, void *cb_arg)
+{
+	struct virtio_scsi_dev *svdev;
+	uint32_t num_queues = 0;
+	int rc;
+
+	svdev = calloc(1, sizeof(*svdev));
+	if (svdev == NULL) {
+		SPDK_ERRLOG("calloc failed for virtio device %s: %s\n", base_name, path);
+		return -ENOMEM;
+	}
+
+	rc = virtio_vfio_user_dev_init(&svdev->vdev, base_name, path);
+	if (rc != 0) {
+		SPDK_ERRLOG("Failed to create %s as virtio device\n", path);
+		free(svdev);
+		return -EFAULT;
+	}
+
+	rc = virtio_dev_read_dev_config(&svdev->vdev, offsetof(struct virtio_scsi_config, num_queues),
+					&num_queues, sizeof(num_queues));
+	if (rc) {
+		SPDK_ERRLOG("%s: config read failed: %s\n", base_name, spdk_strerror(-rc));
+		virtio_dev_destruct(&svdev->vdev);
+		free(svdev);
+		return rc;
+	}
+
+	if (num_queues < SPDK_VIRTIO_SCSI_QUEUE_NUM_FIXED) {
+		SPDK_ERRLOG("%s: invalid num_queues %u\n", base_name, num_queues);
+		virtio_dev_destruct(&svdev->vdev);
+		free(svdev);
+		return -EINVAL;
+	}
+
+	rc = virtio_scsi_dev_init(svdev, num_queues, VIRTIO_SCSI_DEV_SUPPORTED_FEATURES);
+	if (rc != 0) {
+		virtio_dev_destruct(&svdev->vdev);
+		free(svdev);
+		return -EFAULT;
+	}
+
+	rc = virtio_scsi_dev_scan(svdev, cb_fn, cb_arg);
+	if (rc) {
+		virtio_scsi_dev_remove(svdev, NULL, NULL);
+	}
+
+	return rc;
+}
+
 struct bdev_virtio_pci_dev_create_ctx {
 	const char *name;
 	bdev_virtio_create_cb cb_fn;
@@ -1967,6 +1878,7 @@ bdev_virtio_pci_scsi_dev_create_cb(struct virtio_pci_ctx *pci_ctx, void *ctx)
 
 	rc = virtio_scsi_dev_scan(svdev, create_ctx->cb_fn, create_ctx->cb_arg);
 	if (rc) {
+		svdev->vdev.ctx = NULL;
 		virtio_scsi_dev_remove(svdev, NULL, NULL);
 	}
 
@@ -1984,7 +1896,7 @@ bdev_virtio_pci_scsi_dev_create(const char *name, struct spdk_pci_addr *pci_addr
 	create_ctx.cb_arg = cb_arg;
 
 	return virtio_pci_dev_attach(bdev_virtio_pci_scsi_dev_create_cb, &create_ctx,
-				     PCI_DEVICE_ID_VIRTIO_SCSI_MODERN, pci_addr);
+				     VIRTIO_ID_SCSI, pci_addr);
 }
 
 int
@@ -2033,4 +1945,4 @@ bdev_virtio_scsi_dev_list(struct spdk_json_write_ctx *w)
 	spdk_json_write_array_end(w);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("virtio", SPDK_LOG_VIRTIO)
+SPDK_LOG_REGISTER_COMPONENT(virtio)

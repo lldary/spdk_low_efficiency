@@ -21,7 +21,9 @@ packages=(
 	bison
 	gdisk
 	socat
+	openssl
 	sshpass
-	py37-pandas
 	wget
+	llvm-devel
+	avahi
 )

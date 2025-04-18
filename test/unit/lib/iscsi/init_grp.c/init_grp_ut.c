@@ -1,48 +1,21 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "CUnit/Basic.h"
 
 #include "iscsi/init_grp.c"
 #include "unit/lib/json_mock.c"
 
-SPDK_LOG_REGISTER_COMPONENT("iscsi", SPDK_LOG_ISCSI)
+SPDK_LOG_REGISTER_COMPONENT(iscsi)
 
-struct spdk_iscsi_globals g_iscsi;
-
-const char *config_file;
+struct spdk_iscsi_globals g_iscsi = {
+	.mutex = PTHREAD_MUTEX_INITIALIZER
+};
 
 static int
 test_setup(void)
@@ -50,58 +23,6 @@ test_setup(void)
 	TAILQ_INIT(&g_iscsi.ig_head);
 	return 0;
 }
-
-static void
-create_from_config_file_cases(void)
-{
-	struct spdk_conf *config;
-	struct spdk_conf_section *sp;
-	char section_name[64];
-	int section_index;
-	int rc;
-
-	config = spdk_conf_allocate();
-
-	rc = spdk_conf_read(config, config_file);
-	CU_ASSERT(rc == 0);
-
-	section_index = 0;
-	while (true) {
-		snprintf(section_name, sizeof(section_name), "IG_Valid%d", section_index);
-
-		sp = spdk_conf_find_section(config, section_name);
-		if (sp == NULL) {
-			break;
-		}
-
-		rc = iscsi_parse_init_grp(sp);
-		CU_ASSERT(rc == 0);
-
-		iscsi_init_grps_destroy();
-
-		section_index++;
-	}
-
-	section_index = 0;
-	while (true) {
-		snprintf(section_name, sizeof(section_name), "IG_Invalid%d", section_index);
-
-		sp = spdk_conf_find_section(config, section_name);
-		if (sp == NULL) {
-			break;
-		}
-
-		rc = iscsi_parse_init_grp(sp);
-		CU_ASSERT(rc != 0);
-
-		iscsi_init_grps_destroy();
-
-		section_index++;
-	}
-
-	spdk_conf_free(config);
-}
-
 
 static void
 create_initiator_group_success_case(void)
@@ -635,19 +556,10 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (argc < 2) {
-		fprintf(stderr, "usage: %s <config file>\n", argv[0]);
-		exit(1);
-	}
-
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
-
-	config_file = argv[1];
 
 	suite = CU_add_suite("init_grp_suite", test_setup, NULL);
 
-	CU_ADD_TEST(suite, create_from_config_file_cases);
 	CU_ADD_TEST(suite, create_initiator_group_success_case);
 	CU_ADD_TEST(suite, find_initiator_group_success_case);
 	CU_ADD_TEST(suite, register_initiator_group_twice_case);
@@ -666,9 +578,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, add_duplicated_netmasks_case);
 	CU_ADD_TEST(suite, delete_nonexisting_netmasks_case);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

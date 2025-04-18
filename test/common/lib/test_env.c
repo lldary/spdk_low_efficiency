@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
+ *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -38,6 +11,7 @@
 #include "spdk/env.h"
 #include "spdk/queue.h"
 #include "spdk/util.h"
+#include "spdk/string.h"
 
 static uint32_t g_ut_num_cores;
 static bool *g_ut_cores;
@@ -52,6 +26,14 @@ DEFINE_STUB_V(spdk_pci_driver_register, (const char *name, struct spdk_pci_id *i
 DEFINE_STUB(spdk_pci_nvme_get_driver, struct spdk_pci_driver *, (void), NULL)
 DEFINE_STUB(spdk_pci_ioat_get_driver, struct spdk_pci_driver *, (void), NULL)
 DEFINE_STUB(spdk_pci_virtio_get_driver, struct spdk_pci_driver *, (void), NULL)
+DEFINE_STUB(spdk_env_thread_launch_pinned, int, (uint32_t core, thread_start_fn fn, void *arg), 0);
+DEFINE_STUB_V(spdk_env_thread_wait_all, (void));
+DEFINE_STUB_V(spdk_env_opts_init, (struct spdk_env_opts *opts));
+DEFINE_STUB(spdk_env_init, int, (const struct spdk_env_opts *opts), 0);
+DEFINE_STUB_V(spdk_env_fini, (void));
+DEFINE_STUB(spdk_env_get_first_numa_id, int32_t, (void), 0);
+DEFINE_STUB(spdk_env_get_next_numa_id, int32_t, (int32_t prev_numa_id), INT32_MAX);
+DEFINE_STUB(spdk_env_get_last_numa_id, int32_t, (void), 0);
 
 void
 allocate_cores(uint32_t num_cores)
@@ -136,13 +118,13 @@ spdk_env_get_current_core(void)
 	return UINT32_MAX;
 }
 
-DEFINE_RETURN_MOCK(spdk_env_get_socket_id, uint32_t);
-uint32_t
-spdk_env_get_socket_id(uint32_t core)
+DEFINE_RETURN_MOCK(spdk_env_get_numa_id, int32_t);
+int32_t
+spdk_env_get_numa_id(uint32_t core)
 {
-	HANDLE_RETURN_MOCK(spdk_env_get_socket_id);
+	HANDLE_RETURN_MOCK(spdk_env_get_numa_id);
 
-	return SPDK_ENV_SOCKET_ID_ANY;
+	return SPDK_ENV_NUMA_ID_ANY;
 }
 
 /*
@@ -152,7 +134,7 @@ spdk_env_get_socket_id(uint32_t core)
 
 DEFINE_RETURN_MOCK(spdk_memzone_reserve, void *);
 void *
-spdk_memzone_reserve(const char *name, size_t len, int socket_id, unsigned flags)
+spdk_memzone_reserve(const char *name, size_t len, int numa_id, unsigned flags)
 {
 	HANDLE_RETURN_MOCK(spdk_memzone_reserve);
 
@@ -161,7 +143,7 @@ spdk_memzone_reserve(const char *name, size_t len, int socket_id, unsigned flags
 
 DEFINE_RETURN_MOCK(spdk_memzone_reserve_aligned, void *);
 void *
-spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
+spdk_memzone_reserve_aligned(const char *name, size_t len, int numa_id,
 			     unsigned flags, unsigned align)
 {
 	HANDLE_RETURN_MOCK(spdk_memzone_reserve_aligned);
@@ -171,11 +153,18 @@ spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
 
 DEFINE_RETURN_MOCK(spdk_malloc, void *);
 void *
-spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags)
+spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int numa_id, uint32_t flags)
 {
 	HANDLE_RETURN_MOCK(spdk_malloc);
 
 	void *buf = NULL;
+
+	if (size == 0) {
+		/* Align how mock handles 0 size with rte functions - return NULL.
+		 * According to posix_memalig docs, if size is 0, then the
+		 * value placed in *memptr is either NULL or a unique pointer value. */
+		return NULL;
+	}
 
 	if (align == 0) {
 		align = 8;
@@ -193,7 +182,7 @@ spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint3
 
 DEFINE_RETURN_MOCK(spdk_zmalloc, void *);
 void *
-spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags)
+spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int numa_id, uint32_t flags)
 {
 	HANDLE_RETURN_MOCK(spdk_zmalloc);
 
@@ -234,7 +223,7 @@ spdk_dma_zmalloc(size_t size, size_t align, uint64_t *phys_addr)
 
 DEFINE_RETURN_MOCK(spdk_dma_malloc_socket, void *);
 void *
-spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socket_id)
+spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int numa_id)
 {
 	HANDLE_RETURN_MOCK(spdk_dma_malloc_socket);
 
@@ -243,7 +232,7 @@ spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socke
 
 DEFINE_RETURN_MOCK(spdk_dma_zmalloc_socket, void *);
 void *
-spdk_dma_zmalloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socket_id)
+spdk_dma_zmalloc_socket(size_t size, size_t align, uint64_t *phys_addr, int numa_id)
 {
 	HANDLE_RETURN_MOCK(spdk_dma_zmalloc_socket);
 
@@ -276,12 +265,16 @@ spdk_dma_free(void *buf)
 #ifndef UNIT_TEST_NO_VTOPHYS
 DEFINE_RETURN_MOCK(spdk_vtophys, uint64_t);
 uint64_t
-spdk_vtophys(void *buf, uint64_t *size)
+spdk_vtophys(const void *buf, uint64_t *size)
 {
 	HANDLE_RETURN_MOCK(spdk_vtophys);
 
 	return (uintptr_t)buf;
 }
+#endif
+
+#ifndef UNIT_TEST_NO_ENV_MEMORY
+DEFINE_STUB(spdk_mem_get_numa_id, int32_t, (const void *buf, uint64_t *size), 0);
 #endif
 
 void
@@ -307,7 +300,7 @@ struct test_mempool {
 DEFINE_RETURN_MOCK(spdk_mempool_create, struct spdk_mempool *);
 struct spdk_mempool *
 spdk_mempool_create(const char *name, size_t count,
-		    size_t ele_size, size_t cache_size, int socket_id)
+		    size_t ele_size, size_t cache_size, int numa_id)
 {
 	struct test_mempool *mp;
 
@@ -363,6 +356,12 @@ spdk_mempool_get(struct spdk_mempool *_mp)
 int
 spdk_mempool_get_bulk(struct spdk_mempool *mp, void **ele_arr, size_t count)
 {
+	struct test_mempool *test_mp = (struct test_mempool *)mp;
+
+	if (test_mp && test_mp->count < count) {
+		return -1;
+	}
+
 	for (size_t i = 0; i < count; i++) {
 		ele_arr[i] = spdk_mempool_get(mp);
 		if (ele_arr[i] == NULL) {
@@ -419,7 +418,7 @@ struct spdk_ring {
 
 DEFINE_RETURN_MOCK(spdk_ring_create, struct spdk_ring *);
 struct spdk_ring *
-spdk_ring_create(enum spdk_ring_type type, size_t count, int socket_id)
+spdk_ring_create(enum spdk_ring_type type, size_t count, int numa_id)
 {
 	struct spdk_ring *ring;
 
@@ -548,7 +547,6 @@ spdk_delay_us(unsigned int us)
 	ut_spdk_get_ticks += us;
 }
 
-#ifndef UNIT_TEST_NO_PCI_ADDR
 DEFINE_RETURN_MOCK(spdk_pci_addr_parse, int);
 int
 spdk_pci_addr_parse(struct spdk_pci_addr *addr, const char *bdf)
@@ -634,4 +632,3 @@ spdk_pci_addr_compare(const struct spdk_pci_addr *a1, const struct spdk_pci_addr
 
 	return 0;
 }
-#endif

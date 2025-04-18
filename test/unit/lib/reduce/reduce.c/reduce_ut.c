@@ -1,43 +1,19 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "reduce/reduce.c"
 #include "spdk_internal/mock.h"
+#define UNIT_TEST_NO_VTOPHYS
 #include "common/lib/test_env.c"
+#include "thread/thread_internal.h"
+#undef UNIT_TEST_NO_VTOPHYS
 
 static struct spdk_reduce_vol *g_vol;
 static int g_reduce_errno;
@@ -48,8 +24,26 @@ static size_t g_persistent_pm_buf_len;
 static char *g_backing_dev_buf;
 static char g_path[REDUCE_PATH_MAX];
 static char *g_decomp_buf;
+static int g_decompressed_len;
 
 #define TEST_MD_PATH "/tmp"
+
+uint64_t
+spdk_vtophys(const void *buf, uint64_t *size)
+{
+	/* add + 1 to buf addr for cases where buf is the start of the page, that will give us correct end of the page */
+	const uint8_t *page_2mb_end = (const uint8_t *)SPDK_ALIGN_CEIL((uintptr_t)buf + 1, VALUE_2MB);
+	uint64_t bytes_to_page_end = page_2mb_end - (const uint8_t *)buf;
+	uint64_t _size;
+
+	if (*size) {
+		_size = *size;
+		_size = spdk_min(_size, bytes_to_page_end);
+		*size = _size;
+	}
+
+	return (uintptr_t)buf;
+}
 
 enum ut_reduce_bdev_io_type {
 	UT_REDUCE_IO_READV = 1,
@@ -72,6 +66,7 @@ static bool g_defer_bdev_io = false;
 static TAILQ_HEAD(, ut_reduce_bdev_io) g_pending_bdev_io =
 	TAILQ_HEAD_INITIALIZER(g_pending_bdev_io);
 static uint32_t g_pending_bdev_io_count = 0;
+static struct spdk_thread *g_thread = NULL;
 
 static void
 sync_pm_buf(const void *addr, size_t length)
@@ -108,7 +103,7 @@ get_pm_file_size(void)
 	expected_pm_size = sizeof(struct spdk_reduce_vol_superblock);
 	/* 100 chunks in logical map * 8 bytes per chunk */
 	expected_pm_size += 100 * sizeof(uint64_t);
-	/* 100 chunks * (chunk stuct size + 4 backing io units per chunk * 8 bytes per backing io unit) */
+	/* 100 chunks * (chunk struct size + 4 backing io units per chunk * 8 bytes per backing io unit) */
 	expected_pm_size += 100 * (sizeof(struct spdk_reduce_chunk_map) + 4 * sizeof(uint64_t));
 	/* reduce allocates some extra chunks too for in-flight writes when logical map
 	 * is full.  REDUCE_EXTRA_CHUNKS is a private #ifdef in reduce.c Here we need the num chunks
@@ -385,6 +380,28 @@ backing_dev_io_execute(uint32_t count)
 	}
 }
 
+static void
+backing_dev_submit_io(struct spdk_reduce_backing_io *backing_io)
+{
+	switch (backing_io->backing_io_type) {
+	case SPDK_REDUCE_BACKING_IO_WRITE:
+		backing_dev_writev(backing_io->dev, backing_io->iov, backing_io->iovcnt,
+				   backing_io->lba, backing_io->lba_count, backing_io->backing_cb_args);
+		break;
+	case SPDK_REDUCE_BACKING_IO_READ:
+		backing_dev_readv(backing_io->dev, backing_io->iov, backing_io->iovcnt,
+				  backing_io->lba, backing_io->lba_count, backing_io->backing_cb_args);
+		break;
+	case SPDK_REDUCE_BACKING_IO_UNMAP:
+		backing_dev_unmap(backing_io->dev, backing_io->lba, backing_io->lba_count,
+				  backing_io->backing_cb_args);
+		break;
+	default:
+		CU_ASSERT(false);
+		break;
+	}
+}
+
 static int
 ut_compress(char *outbuf, uint32_t *compressed_len, char *inbuf, uint32_t inbuflen)
 {
@@ -486,7 +503,9 @@ backing_dev_compress(struct spdk_reduce_backing_dev *backing_dev,
 	rc = ut_compress(dst_iov[0].iov_base, &compressed_len,
 			 g_decomp_buf, total_length);
 
-	args->cb_fn(args->cb_arg, rc ? rc : (int)compressed_len);
+	args->output_size = compressed_len;
+
+	args->cb_fn(args->cb_arg, rc);
 }
 
 static void
@@ -513,7 +532,9 @@ backing_dev_decompress(struct spdk_reduce_backing_dev *backing_dev,
 		buf += dst_iov[i].iov_len;
 	}
 
-	args->cb_fn(args->cb_arg, rc ? rc : (int)decompressed_len);
+	args->output_size = decompressed_len;
+
+	args->cb_fn(args->cb_arg, rc);
 }
 
 static void
@@ -536,11 +557,11 @@ backing_dev_init(struct spdk_reduce_backing_dev *backing_dev, struct spdk_reduce
 	size = 4 * 1024 * 1024;
 	backing_dev->blocklen = backing_blocklen;
 	backing_dev->blockcnt = size / backing_dev->blocklen;
-	backing_dev->readv = backing_dev_readv;
-	backing_dev->writev = backing_dev_writev;
-	backing_dev->unmap = backing_dev_unmap;
+	backing_dev->submit_backing_io = backing_dev_submit_io;
 	backing_dev->compress = backing_dev_compress;
 	backing_dev->decompress = backing_dev_decompress;
+	backing_dev->sgl_in = true;
+	backing_dev->sgl_out = true;
 
 	g_decomp_buf = calloc(1, params->chunk_size);
 	SPDK_CU_ASSERT_FATAL(g_decomp_buf != NULL);
@@ -715,6 +736,12 @@ write_cb(void *arg, int reduce_errno)
 
 static void
 read_cb(void *arg, int reduce_errno)
+{
+	g_reduce_errno = reduce_errno;
+}
+
+static void
+unmap_cb(void *arg, int reduce_errno)
 {
 	g_reduce_errno = reduce_errno;
 }
@@ -1017,6 +1044,120 @@ readv_writev(void)
 	_readv_writev(4096);
 }
 
+/* 1.write offset  0KB, length 32KB, with 0xAA
+ * 2.unmap offset  8KB, length 24KB, fail with -EINVAL, verify
+ * 3.unmap offset  8KB, length  8KB
+ * 4.unmap offset 16KB, length 16KB
+ * 5.two fullchunk read verify
+ */
+static void
+write_unmap_verify(void)
+{
+	uint32_t backing_blocklen = 512;
+	uint64_t blocks_per_chunk;
+
+	struct spdk_reduce_vol_params params = {};
+	struct spdk_reduce_backing_dev backing_dev = {};
+	struct iovec iov;
+	char buf[16 * 1024]; /* chunk size */
+	char compare_buf[32 * 1024];
+
+	params.chunk_size = 16 * 1024;
+	params.backing_io_unit_size = 4096;
+	params.logical_block_size = 512;
+	spdk_uuid_generate(&params.uuid);
+
+	backing_dev_init(&backing_dev, &params, backing_blocklen);
+
+	blocks_per_chunk = params.chunk_size / params.logical_block_size;
+	g_vol = NULL;
+	g_reduce_errno = -1;
+	spdk_reduce_vol_init(&params, &backing_dev, TEST_MD_PATH, init_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	SPDK_CU_ASSERT_FATAL(g_vol != NULL);
+
+	/* 1.write offset 0KB, length 32KB, with 0xAA */
+	iov.iov_base = buf;
+	iov.iov_len = sizeof(buf);
+	memset(buf, 0xAA, sizeof(buf));
+	g_reduce_errno = -1;
+	spdk_reduce_vol_writev(g_vol, &iov, 1, 0, blocks_per_chunk, write_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	g_reduce_errno = -1;
+	spdk_reduce_vol_writev(g_vol, &iov, 1, blocks_per_chunk, blocks_per_chunk, write_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+
+	memset(compare_buf, 0xAA, sizeof(compare_buf));
+
+	memset(buf, 0xFF, sizeof(buf));
+	g_reduce_errno = -1;
+	spdk_reduce_vol_readv(g_vol, &iov, 1, 0, blocks_per_chunk, read_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(memcmp(buf, compare_buf, sizeof(buf)) == 0);
+
+	memset(buf, 0xFF, sizeof(buf));
+	g_reduce_errno = -1;
+	spdk_reduce_vol_readv(g_vol, &iov, 1, blocks_per_chunk, blocks_per_chunk, read_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(memcmp(buf, compare_buf + sizeof(buf), sizeof(buf)) == 0);
+
+	/* 2.unmap offset 8KB, length 24KB, fail with -EINVAL */
+	g_reduce_errno = 0;
+	spdk_reduce_vol_unmap(g_vol, 8 * 1024 / params.logical_block_size,
+			      24 * 1024 / params.logical_block_size, unmap_cb, NULL);
+	spdk_thread_poll(g_thread, 0, 0);
+	CU_ASSERT(g_reduce_errno == -EINVAL);
+
+	memset(buf, 0xFF, sizeof(buf));
+	g_reduce_errno = -1;
+	spdk_reduce_vol_readv(g_vol, &iov, 1, 0, blocks_per_chunk, read_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(memcmp(buf, compare_buf, sizeof(buf)) == 0);
+
+	memset(buf, 0xFF, sizeof(buf));
+	g_reduce_errno = -1;
+	spdk_reduce_vol_readv(g_vol, &iov, 1, blocks_per_chunk, blocks_per_chunk, read_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(memcmp(buf, compare_buf + sizeof(buf), sizeof(buf)) == 0);
+
+	/* 3.unmap offset  8KB, length  8KB */
+	g_reduce_errno = -1;
+	spdk_reduce_vol_unmap(g_vol, 8 * 1024 / params.logical_block_size,
+			      8 * 1024 / params.logical_block_size, unmap_cb, NULL);
+	spdk_thread_poll(g_thread, 0, 0);
+	CU_ASSERT(g_reduce_errno == 0);
+	memset(compare_buf + 8 * 1024, 0x00, 8 * 1024);
+
+	/* 4.unmap offset 16KB, length 16KB */
+	g_reduce_errno = -1;
+	spdk_reduce_vol_unmap(g_vol, 16 * 1024 / params.logical_block_size,
+			      16 * 1024 / params.logical_block_size, unmap_cb, NULL);
+	spdk_thread_poll(g_thread, 0, 0);
+	CU_ASSERT(g_reduce_errno == 0);
+	memset(compare_buf + 16 * 1024, 0x00, 16 * 1024);
+
+	/* 5.two fullchunk read verify */
+	memset(buf, 0xFF, sizeof(buf));
+	g_reduce_errno = -1;
+	spdk_reduce_vol_readv(g_vol, &iov, 1, 0, blocks_per_chunk, read_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(memcmp(buf, compare_buf, sizeof(buf)) == 0);
+
+	memset(buf, 0xFF, sizeof(buf));
+	g_reduce_errno = -1;
+	spdk_reduce_vol_readv(g_vol, &iov, 1, blocks_per_chunk, blocks_per_chunk, read_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(memcmp(buf, compare_buf + 16 * 1024, sizeof(buf)) == 0);
+	/* done */
+
+	g_reduce_errno = -1;
+	spdk_reduce_vol_unload(g_vol, unload_cb, NULL);
+	CU_ASSERT(g_reduce_errno == 0);
+
+	persistent_pm_buf_destroy();
+	backing_dev_destroy(&backing_dev);
+}
+
 static void
 destroy_cb(void *ctx, int reduce_errno)
 {
@@ -1264,16 +1405,578 @@ compress_algorithm(void)
 	CU_ASSERT(rc == -ENOSPC);
 }
 
+static void
+test_prepare_compress_chunk(void)
+{
+	struct spdk_reduce_vol vol = {};
+	struct spdk_reduce_backing_dev backing_dev = {};
+	struct spdk_reduce_vol_request req = {};
+	void *buf;
+	char *buffer_end, *aligned_user_buffer, *unaligned_user_buffer;
+	char decomp_buffer[16 * 1024] = {};
+	char comp_buffer[16 * 1024] = {};
+	struct iovec user_iov[2] = {};
+	size_t user_buffer_iov_len = 8192;
+	size_t remainder_bytes;
+	size_t offset_bytes;
+	size_t memcmp_offset;
+	uint32_t i;
+
+	vol.params.chunk_size = 16 * 1024;
+	vol.params.backing_io_unit_size = 4096;
+	vol.params.logical_block_size = 512;
+	backing_dev_init(&backing_dev, &vol.params, 512);
+	vol.backing_dev = &backing_dev;
+	vol.logical_blocks_per_chunk = vol.params.chunk_size / vol.params.logical_block_size;
+
+	/* Allocate 1 extra byte to test a case when buffer crosses huge page boundary */
+	SPDK_CU_ASSERT_FATAL(posix_memalign(&buf, VALUE_2MB, VALUE_2MB + 1) == 0);
+	buffer_end = (char *)buf + VALUE_2MB + 1;
+	aligned_user_buffer = (char *)buf;
+	memset(aligned_user_buffer, 0xc, vol.params.chunk_size);
+	unaligned_user_buffer = buffer_end - vol.params.chunk_size;
+	memset(unaligned_user_buffer, 0xc, vol.params.chunk_size);
+
+	req.vol = &vol;
+	req.decomp_buf = decomp_buffer;
+	req.comp_buf = comp_buffer;
+	req.iov = user_iov;
+	req.iovcnt = 2;
+	req.offset = 0;
+
+	/* Part 1 - backing dev supports sgl_in */
+	/* Test 1 - user's buffers length equals to chunk_size */
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+	}
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 2);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i].iov_len == req.iov[i].iov_len);
+	}
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 2);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i].iov_len == req.iov[i].iov_len);
+	}
+
+	/* Test 2 - user's buffer less than chunk_size, without offset */
+	user_buffer_iov_len = 4096;
+	remainder_bytes = vol.params.chunk_size - user_buffer_iov_len * 2;
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+	}
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 3);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i].iov_len == req.iov[i].iov_len);
+	}
+	CU_ASSERT(req.decomp_iov[i].iov_base == req.decomp_buf + user_buffer_iov_len * 2);
+	CU_ASSERT(req.decomp_iov[i].iov_len == remainder_bytes);
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 3);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i].iov_len == req.iov[i].iov_len);
+	}
+	CU_ASSERT(req.decomp_iov[i].iov_base == g_zero_buf + user_buffer_iov_len * 2);
+	CU_ASSERT(req.decomp_iov[i].iov_len == remainder_bytes);
+
+	/* Test 3 - user's buffer less than chunk_size, non zero offset */
+	user_buffer_iov_len = 4096;
+	req.offset = 3;
+	offset_bytes = req.offset * vol.params.logical_block_size;
+	remainder_bytes = vol.params.chunk_size - offset_bytes - user_buffer_iov_len * 2;
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 4);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == offset_bytes);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i + 1].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i + 1].iov_len == req.iov[i].iov_len);
+	}
+	CU_ASSERT(req.decomp_iov[3].iov_base == req.decomp_buf + offset_bytes + user_buffer_iov_len * 2);
+	CU_ASSERT(req.decomp_iov[3].iov_len == remainder_bytes);
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 4);
+	CU_ASSERT(req.decomp_iov[0].iov_base == g_zero_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == offset_bytes);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i + 1].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i + 1].iov_len == req.iov[i].iov_len);
+	}
+	CU_ASSERT(req.decomp_iov[3].iov_base == g_zero_buf + offset_bytes + user_buffer_iov_len * 2);
+	CU_ASSERT(req.decomp_iov[3].iov_len == remainder_bytes);
+
+	/* Part 2 - backing dev doesn't support sgl_in */
+	/* Test 1 - user's buffers length equals to chunk_size
+	 * user's buffers are copied */
+	vol.backing_dev->sgl_in = false;
+	req.offset = 0;
+	user_buffer_iov_len = 8192;
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+		memset(req.iov[i].iov_base, 0xb + i, req.iov[i].iov_len);
+	}
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base, req.iov[0].iov_base, req.iov[0].iov_len) == 0);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + req.iov[0].iov_len, req.iov[1].iov_base,
+			 req.iov[1].iov_len) == 0);
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base, req.iov[0].iov_base, req.iov[0].iov_len) == 0);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + req.iov[0].iov_len, req.iov[1].iov_base,
+			 req.iov[1].iov_len) == 0);
+
+	/* Test 2 - single user's buffer length equals to chunk_size, buffer is not aligned
+	* User's buffer is copied */
+	req.iov[0].iov_base = unaligned_user_buffer;
+	req.iov[0].iov_len = vol.params.chunk_size;
+	req.iovcnt = 1;
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base, req.iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base, req.iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+
+	/* Test 3 - single user's buffer length equals to chunk_size
+	 * User's buffer is not copied */
+	req.iov[0].iov_base = aligned_user_buffer;
+	req.iov[0].iov_len = vol.params.chunk_size;
+	req.iovcnt = 1;
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.iov[0].iov_base);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.iov[0].iov_base);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+
+	/* Test 4 - user's buffer less than chunk_size, without offset
+	 * User's buffers are copied */
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+	user_buffer_iov_len = 4096;
+	req.iovcnt = 2;
+	remainder_bytes = vol.params.chunk_size - user_buffer_iov_len * 2;
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+	}
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	memcmp_offset = 0;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+	memcmp_offset += req.iov[0].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[1].iov_base,
+			 req.iov[1].iov_len) == 0);
+	memcmp_offset += req.iov[0].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.decomp_buf + memcmp_offset,
+			 remainder_bytes) == 0);
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	memcmp_offset = 0;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+	memcmp_offset += req.iov[0].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[1].iov_base,
+			 req.iov[1].iov_len) == 0);
+	memcmp_offset += req.iov[0].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, g_zero_buf + memcmp_offset,
+			 remainder_bytes) == 0);
+
+	/* Test 5 - user's buffer less than chunk_size, non zero offset
+	 * user's buffers are copied */
+	req.offset = 3;
+	offset_bytes = req.offset * vol.params.logical_block_size;
+	remainder_bytes = vol.params.chunk_size - offset_bytes - user_buffer_iov_len * 2;
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, false);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	memcmp_offset = 0;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.decomp_buf, offset_bytes) == 0);
+	memcmp_offset += offset_bytes;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+	memcmp_offset += req.iov[0].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[1].iov_base,
+			 req.iov[1].iov_len) == 0);
+	memcmp_offset += req.iov[1].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.decomp_buf + memcmp_offset,
+			 remainder_bytes) == 0);
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+
+	_prepare_compress_chunk(&req, true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	memcmp_offset = 0;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, g_zero_buf, offset_bytes) == 0);
+	memcmp_offset += offset_bytes;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+	memcmp_offset += req.iov[0].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, req.iov[1].iov_base,
+			 req.iov[1].iov_len) == 0);
+	memcmp_offset += req.iov[1].iov_len;
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + memcmp_offset, g_zero_buf + memcmp_offset,
+			 remainder_bytes) == 0);
+	backing_dev_destroy(&backing_dev);
+	free(buf);
+}
+
+static void
+_reduce_vol_op_complete(void *ctx, int reduce_errno)
+{
+	g_reduce_errno = reduce_errno;
+}
+
+static void
+dummy_backing_dev_decompress(struct spdk_reduce_backing_dev *backing_dev,
+			     struct iovec *src_iov, int src_iovcnt,
+			     struct iovec *dst_iov, int dst_iovcnt,
+			     struct spdk_reduce_vol_cb_args *args)
+{
+	args->output_size = g_decompressed_len;
+	args->cb_fn(args->cb_arg, 0);
+}
+static void
+test_reduce_decompress_chunk(void)
+{
+	struct spdk_reduce_vol vol = {};
+	struct spdk_reduce_backing_dev backing_dev = {};
+	struct spdk_reduce_vol_request req = {};
+	void *buf;
+	char *buffer_end, *aligned_user_buffer, *unaligned_user_buffer;
+	char decomp_buffer[16 * 1024] = {};
+	char comp_buffer[16 * 1024] = {};
+	struct iovec user_iov[2] = {};
+	struct iovec comp_buf_iov = {};
+	struct spdk_reduce_chunk_map chunk = {};
+	size_t user_buffer_iov_len = 8192;
+	size_t remainder_bytes;
+	size_t offset_bytes;
+	uint32_t i;
+
+	vol.params.chunk_size = 16 * 1024;
+	vol.params.backing_io_unit_size = 4096;
+	vol.params.logical_block_size = 512;
+	backing_dev_init(&backing_dev, &vol.params, 512);
+	backing_dev.decompress = dummy_backing_dev_decompress;
+	vol.backing_dev = &backing_dev;
+	vol.logical_blocks_per_chunk = vol.params.chunk_size / vol.params.logical_block_size;
+	RB_INIT(&vol.executing_requests);
+	TAILQ_INIT(&vol.queued_requests);
+	TAILQ_INIT(&vol.free_requests);
+
+	/* Allocate 1 extra byte to test a case when buffer crosses huge page boundary */
+	SPDK_CU_ASSERT_FATAL(posix_memalign(&buf, VALUE_2MB, VALUE_2MB + 1) == 0);
+	buffer_end = (char *)buf + VALUE_2MB + 1;
+	aligned_user_buffer = (char *)buf;
+	unaligned_user_buffer = buffer_end - vol.params.chunk_size;
+
+	chunk.compressed_size = user_buffer_iov_len / 2;
+	req.chunk = &chunk;
+	req.vol = &vol;
+	req.decomp_buf = decomp_buffer;
+	req.comp_buf = comp_buffer;
+	req.comp_buf_iov = &comp_buf_iov;
+	req.iov = user_iov;
+	req.iovcnt = 2;
+	req.offset = 0;
+	req.cb_fn = _reduce_vol_op_complete;
+
+	/* Part 1 - backing dev supports sgl_out */
+	/* Test 1 - user's buffers length equals to chunk_size */
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+		memset(req.iov[i].iov_base, 0, req.iov[i].iov_len);
+	}
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+	g_decompressed_len = vol.params.chunk_size;
+
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == false);
+	CU_ASSERT(req.decomp_iovcnt == 2);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i].iov_len == req.iov[i].iov_len);
+	}
+	CU_ASSERT(RB_EMPTY(&vol.executing_requests));
+	CU_ASSERT(TAILQ_FIRST(&vol.free_requests) == &req);
+
+	/* Test 2 - user's buffer less than chunk_size, without offset */
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+	user_buffer_iov_len = 4096;
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+		memset(req.iov[i].iov_base, 0, req.iov[i].iov_len);
+	}
+	remainder_bytes = vol.params.chunk_size - user_buffer_iov_len * 2;
+
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == false);
+	CU_ASSERT(req.decomp_iovcnt == 3);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i].iov_len == req.iov[i].iov_len);
+	}
+	CU_ASSERT(req.decomp_iov[i].iov_base == req.decomp_buf + user_buffer_iov_len * 2);
+	CU_ASSERT(req.decomp_iov[i].iov_len == remainder_bytes);
+	CU_ASSERT(RB_EMPTY(&vol.executing_requests));
+	CU_ASSERT(TAILQ_FIRST(&vol.free_requests) == &req);
+
+	/* Test 3 - user's buffer less than chunk_size, non zero offset */
+	req.offset = 3;
+	offset_bytes = req.offset * vol.params.logical_block_size;
+	remainder_bytes = vol.params.chunk_size - offset_bytes - user_buffer_iov_len * 2;
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == false);
+	CU_ASSERT(req.decomp_iovcnt == 4);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == offset_bytes);
+	for (i = 0; i < 2; i++) {
+		CU_ASSERT(req.decomp_iov[i + 1].iov_base == req.iov[i].iov_base);
+		CU_ASSERT(req.decomp_iov[i + 1].iov_len == req.iov[i].iov_len);
+	}
+	CU_ASSERT(req.decomp_iov[3].iov_base == req.decomp_buf + offset_bytes + user_buffer_iov_len * 2);
+	CU_ASSERT(req.decomp_iov[3].iov_len == remainder_bytes);
+	CU_ASSERT(RB_EMPTY(&vol.executing_requests));
+	CU_ASSERT(TAILQ_FIRST(&vol.free_requests) == &req);
+
+	/* Part 2 - backing dev doesn't support sgl_out */
+	/* Test 1 - user's buffers length equals to chunk_size
+	 * user's buffers are copied */
+	vol.backing_dev->sgl_out = false;
+	req.offset = 0;
+	user_buffer_iov_len = 8192;
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+		memset(req.iov[i].iov_base, 0xb + i, req.iov[i].iov_len);
+	}
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.iov[0].iov_base, req.decomp_iov[0].iov_base, req.iov[0].iov_len) == 0);
+	CU_ASSERT(memcmp(req.iov[1].iov_base, req.decomp_iov[0].iov_base + req.iov[0].iov_len,
+			 req.iov[1].iov_len) == 0);
+	CU_ASSERT(RB_EMPTY(&vol.executing_requests));
+	CU_ASSERT(TAILQ_FIRST(&vol.free_requests) == &req);
+
+	/* Test 2 - single user's buffer length equals to chunk_size, buffer is not aligned
+	* User's buffer is copied */
+	memset(unaligned_user_buffer, 0xc, vol.params.chunk_size);
+	req.iov[0].iov_base = unaligned_user_buffer;
+	req.iov[0].iov_len = vol.params.chunk_size;
+	req.iovcnt = 1;
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.iov[0].iov_base, req.decomp_iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+
+	/* Test 3 - single user's buffer length equals to chunk_size
+	* User's buffer is not copied */
+	req.iov[0].iov_base = aligned_user_buffer;
+	req.iov[0].iov_len = vol.params.chunk_size;
+	req.iovcnt = 1;
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == false);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.iov[0].iov_base);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+
+	/* Test 4 - user's buffer less than chunk_size, without offset
+	 * User's buffers are copied */
+	user_buffer_iov_len = 4096;
+	req.iovcnt = 2;
+	remainder_bytes = vol.params.chunk_size - user_buffer_iov_len * 2;
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+		memset(req.iov[i].iov_base, 0xb + i, req.iov[i].iov_len);
+	}
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.iov[0].iov_base, req.decomp_iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+	CU_ASSERT(memcmp(req.iov[1].iov_base, req.decomp_iov[0].iov_base + req.iov[0].iov_len,
+			 req.iov[1].iov_len) == 0);
+	CU_ASSERT(RB_EMPTY(&vol.executing_requests));
+	CU_ASSERT(TAILQ_FIRST(&vol.free_requests) == &req);
+
+	/* Test 5 - user's buffer less than chunk_size, non zero offset
+	* user's buffers are copied */
+	req.offset = 3;
+	offset_bytes = req.offset * vol.params.logical_block_size;
+	remainder_bytes = vol.params.chunk_size - offset_bytes - user_buffer_iov_len * 2;
+
+	for (i = 0; i < 2; i++) {
+		req.iov[i].iov_base = aligned_user_buffer + i * user_buffer_iov_len;
+		req.iov[i].iov_len = user_buffer_iov_len;
+		memset(req.iov[i].iov_base, 0xb + i, req.iov[i].iov_len);
+	}
+
+	memset(req.decomp_buf, 0xa, vol.params.chunk_size);
+	RB_INSERT(executing_req_tree, &vol.executing_requests, &req);
+	g_reduce_errno = -1;
+
+	_prepare_compress_chunk(&req, false);
+	_reduce_vol_decompress_chunk(&req, _read_decompress_done);
+	CU_ASSERT(g_reduce_errno == 0);
+	CU_ASSERT(req.copy_after_decompress == true);
+	CU_ASSERT(req.decomp_iovcnt == 1);
+	CU_ASSERT(req.decomp_iov[0].iov_base == req.decomp_buf);
+	CU_ASSERT(req.decomp_iov[0].iov_len == vol.params.chunk_size);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + offset_bytes, req.iov[0].iov_base,
+			 req.iov[0].iov_len) == 0);
+	CU_ASSERT(memcmp(req.decomp_iov[0].iov_base + offset_bytes + req.iov[0].iov_len,
+			 req.iov[1].iov_base,
+			 req.iov[1].iov_len) == 0);
+	CU_ASSERT(RB_EMPTY(&vol.executing_requests));
+	CU_ASSERT(TAILQ_FIRST(&vol.free_requests) == &req);
+
+	free(buf);
+}
+
+static void
+test_allocate_vol_requests(void)
+{
+	struct spdk_reduce_vol *vol;
+	struct spdk_reduce_backing_dev backing_dev = {};
+	/* include chunk_sizes which are not power of 2 */
+	uint32_t chunk_sizes[] = {8192, 8320, 16384, 16416, 32768};
+	uint32_t io_unit_sizes[] = {512, 520, 4096, 4104, 4096};
+	uint32_t i;
+
+	/* bdev compress module can specify how big the user_ctx_size needs to be */
+	backing_dev.user_ctx_size = 64;
+	for (i = 0; i < 4; i++) {
+		vol = calloc(1, sizeof(*vol));
+		SPDK_CU_ASSERT_FATAL(vol);
+
+		vol->params.chunk_size = chunk_sizes[i];
+		vol->params.logical_block_size = io_unit_sizes[i];
+		vol->params.backing_io_unit_size = io_unit_sizes[i];
+		vol->backing_io_units_per_chunk = vol->params.chunk_size / vol->params.backing_io_unit_size;
+		vol->logical_blocks_per_chunk = vol->params.chunk_size / vol->params.logical_block_size;
+		vol->backing_dev = &backing_dev;
+
+		CU_ASSERT(_validate_vol_params(&vol->params) == 0);
+		CU_ASSERT(_allocate_vol_requests(vol) == 0);
+		_init_load_cleanup(vol, NULL);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("reduce", NULL, NULL);
+
+	spdk_thread_lib_init(NULL, 0);
+	g_thread = spdk_thread_create(NULL, NULL);
+	spdk_set_thread(g_thread);
 
 	CU_ADD_TEST(suite, get_pm_file_size);
 	CU_ADD_TEST(suite, get_vol_size);
@@ -1284,17 +1987,27 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, write_maps);
 	CU_ADD_TEST(suite, read_write);
 	CU_ADD_TEST(suite, readv_writev);
+	CU_ADD_TEST(suite, write_unmap_verify);
 	CU_ADD_TEST(suite, destroy);
 	CU_ADD_TEST(suite, defer_bdev_io);
 	CU_ADD_TEST(suite, overlapped);
 	CU_ADD_TEST(suite, compress_algorithm);
+	CU_ADD_TEST(suite, test_prepare_compress_chunk);
+	CU_ADD_TEST(suite, test_reduce_decompress_chunk);
+	CU_ADD_TEST(suite, test_allocate_vol_requests);
 
 	g_unlink_path = g_path;
 	g_unlink_callback = unlink_cb;
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
+
+	spdk_thread_exit(g_thread);
+	while (!spdk_thread_is_exited(g_thread)) {
+		spdk_thread_poll(g_thread, 0, 0);
+	}
+	spdk_thread_destroy(g_thread);
+	spdk_thread_lib_fini();
+
 	CU_cleanup_registry();
 	return num_failures;
 }

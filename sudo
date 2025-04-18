@@ -1,0 +1,1 @@
+800000 tee /sys/devices/system/cpu/cpu27/cpufreq/scaling_setspeed

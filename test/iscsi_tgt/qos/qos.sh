@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 
-# $1 = "iso" - triggers isolation mode (setting up required environment).
-# $2 = test type posix or vpp. defaults to posix.
-iscsitestinit $1 $2
+iscsitestinit
 
 function run_fio() {
 	local bdev_name=$1
@@ -54,15 +55,14 @@ MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 IOPS_RESULT=
 BANDWIDTH_RESULT=
-rpc_py="$rootdir/scripts/rpc.py"
-fio_py="$rootdir/scripts/fio.py"
+fio_py="$rootdir/scripts/fio-wrapper"
 
 timing_enter start_iscsi_tgt
 
 "${ISCSI_APP[@]}" &
 pid=$!
 echo "Process pid: $pid"
-trap 'killprocess $pid; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
+trap 'killprocess $pid; iscsitestfini; exit 1' SIGINT SIGTERM EXIT
 waitforlisten $pid
 echo "iscsi_tgt is listening. Running tests..."
 
@@ -81,7 +81,7 @@ sleep 1
 iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$ISCSI_PORT
 iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
 
-trap 'iscsicleanup; killprocess $pid; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
+trap 'iscsicleanup; killprocess $pid; iscsitestfini; exit 1' SIGINT SIGTERM EXIT
 
 # Run FIO without any QOS limits to determine the raw performance
 run_fio Malloc0
@@ -142,4 +142,4 @@ rm -f ./local-job0-0-verify.state
 trap - SIGINT SIGTERM EXIT
 killprocess $pid
 
-iscsitestfini $1 $2
+iscsitestfini

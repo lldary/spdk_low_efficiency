@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /**
@@ -44,19 +16,14 @@
 #include "spdk/bdev.h"
 #include "spdk/queue.h"
 
+#include "spdk_internal/trace_defs.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Defines for SPDK tracing framework */
-#define OWNER_SCSI_DEV				0x10
-#define OBJECT_SCSI_TASK			0x10
-#define TRACE_GROUP_SCSI			0x2
-#define TRACE_SCSI_TASK_DONE	SPDK_TPOINT_ID(TRACE_GROUP_SCSI, 0x0)
-#define TRACE_SCSI_TASK_START	SPDK_TPOINT_ID(TRACE_GROUP_SCSI, 0x1)
-
 #define SPDK_SCSI_MAX_DEVS			1024
-#define SPDK_SCSI_DEV_MAX_LUN			64
 #define SPDK_SCSI_DEV_MAX_PORTS			4
 #define SPDK_SCSI_DEV_MAX_NAME			255
 
@@ -74,6 +41,7 @@ enum spdk_scsi_task_func {
 	SPDK_SCSI_TASK_FUNC_ABORT_TASK_SET,
 	SPDK_SCSI_TASK_FUNC_CLEAR_TASK_SET,
 	SPDK_SCSI_TASK_FUNC_LUN_RESET,
+	SPDK_SCSI_TASK_FUNC_TARGET_RESET,
 };
 
 /*
@@ -131,6 +99,7 @@ struct spdk_scsi_task {
 	 * iov is internal buffer. Use iovs to access elements of IO.
 	 */
 	struct iovec iov;
+	struct iovec caw_iov; /* used for compare and write */
 	struct iovec *iovs;
 	uint16_t iovcnt;
 
@@ -230,6 +199,24 @@ int spdk_scsi_dev_get_id(const struct spdk_scsi_dev *dev);
 struct spdk_scsi_lun *spdk_scsi_dev_get_lun(struct spdk_scsi_dev *dev, int lun_id);
 
 /**
+ * Get the first logical unit of the given SCSI device.
+ *
+ * \param dev SCSI device.
+ *
+ * \return the first logical unit on success, or NULL if there is no logical unit.
+ */
+struct spdk_scsi_lun *spdk_scsi_dev_get_first_lun(struct spdk_scsi_dev *dev);
+
+/**
+ * Get the next logical unit of a SCSI device.
+ *
+ * \param prev_lun Previous logical unit.
+ *
+ * \return the next logical unit of a SCSI device, or NULL if the prev_lun was the last.
+ */
+struct spdk_scsi_lun *spdk_scsi_dev_get_next_lun(struct spdk_scsi_lun *prev_lun);
+
+/**
  * Check whether the SCSI device has any pending task.
  *
  * \param dev SCSI device.
@@ -242,7 +229,7 @@ bool spdk_scsi_dev_has_pending_tasks(const struct spdk_scsi_dev *dev,
 				     const struct spdk_scsi_port *initiator_port);
 
 /**
- * Destruct the SCSI decice.
+ * Destruct the SCSI device.
  *
  * \param dev SCSI device.
  * \param cb_fn Callback function.
@@ -343,6 +330,35 @@ struct spdk_scsi_dev *spdk_scsi_dev_construct(const char *name,
 		void *hotremove_ctx);
 
 /**
+ * Construct a SCSI device object using the more given parameters.
+ *
+ * \param name Name for the SCSI device.
+ * \param bdev_name_list List of bdev names to attach to the LUNs for this SCSI
+ * device.
+ * \param lun_id_list List of LUN IDs for the LUN in this SCSI device. Caller is
+ * responsible for managing the memory containing this list. lun_id_list[x] is
+ * the LUN ID for lun_list[x].
+ * \param num_luns Number of entries in lun_list and lun_id_list.
+ * \param protocol_id SCSI SPC protocol identifier to report in INQUIRY data
+ * \param resize_cb Callback of lun resize.
+ * \param resize_ctx Additional argument to resize_cb.
+ * \param hotremove_cb Callback to lun hotremoval. Will be called once hotremove
+ * is first triggered.
+ * \param hotremove_ctx Additional argument to hotremove_cb.
+ *
+ * \return the constructed spdk_scsi_dev object.
+ */
+struct spdk_scsi_dev *spdk_scsi_dev_construct_ext(const char *name,
+		const char *bdev_name_list[],
+		int *lun_id_list,
+		int num_luns,
+		uint8_t protocol_id,
+		void (*resize_cb)(const struct spdk_scsi_lun *, void *),
+		void *resize_ctx,
+		void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
+		void *hotremove_ctx);
+
+/**
  * Delete a logical unit of the given SCSI device.
  *
  * \param dev SCSI device.
@@ -363,6 +379,24 @@ void spdk_scsi_dev_delete_lun(struct spdk_scsi_dev *dev, struct spdk_scsi_lun *l
 int spdk_scsi_dev_add_lun(struct spdk_scsi_dev *dev, const char *bdev_name, int lun_id,
 			  void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
 			  void *hotremove_ctx);
+
+/**
+ * Add a new logical unit to the given SCSI device with more callbacks.
+ *
+ * \param dev SCSI device.
+ * \param bdev_name Name of the bdev attached to the logical unit.
+ * \param lun_id LUN id for the new logical unit.
+ * \param resize_cb Callback of lun resize.
+ * \param resize_ctx Additional argument to resize_cb.
+ * \param hotremove_cb Callback to lun hotremoval. Will be called once hotremove
+ * is first triggered.
+ * \param hotremove_ctx Additional argument to hotremove_cb.
+ */
+int spdk_scsi_dev_add_lun_ext(struct spdk_scsi_dev *dev, const char *bdev_name, int lun_id,
+			      void (*resize_cb)(const struct spdk_scsi_lun *, void *),
+			      void *resize_ctx,
+			      void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
+			      void *hotremove_ctx);
 
 /**
  * Create a new SCSI port.
@@ -394,7 +428,7 @@ const char *spdk_scsi_port_get_name(const struct spdk_scsi_port *port);
 /**
  * Construct a new SCSI task.
  *
- * \param task SCSI task to consturct.
+ * \param task SCSI task to construct.
  * \param cpl_fn Called when the task is completed.
  * \param free_fn Called when the task is freed
  */
@@ -564,6 +598,17 @@ uint64_t spdk_scsi_lun_id_int_to_fmt(int lun_id);
  * \return integer LUN ID
  */
 int spdk_scsi_lun_id_fmt_to_int(uint64_t fmt_lun);
+
+/**
+ * Translate SCSI operation code and service action into string
+ *
+ * \param opcode SCSI operation code
+ *
+ * \param sa SCSI service action code
+ *
+ * \return SCSI operation string
+ */
+const char *spdk_scsi_sbc_opcode_string(uint8_t opcode, uint16_t sa);
 #ifdef __cplusplus
 }
 #endif

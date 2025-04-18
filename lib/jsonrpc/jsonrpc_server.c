@@ -1,39 +1,14 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation. All rights reserved.
+ *   Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "jsonrpc_internal.h"
 
 #include "spdk/util.h"
+
+static enum spdk_log_level g_rpc_log_level = SPDK_LOG_DISABLED;
+static FILE *g_rpc_log_file = NULL;
 
 struct jsonrpc_request {
 	const struct spdk_json_val *version;
@@ -41,6 +16,54 @@ struct jsonrpc_request {
 	const struct spdk_json_val *params;
 	const struct spdk_json_val *id;
 };
+
+void
+spdk_jsonrpc_set_log_level(enum spdk_log_level level)
+{
+	assert(level >= SPDK_LOG_DISABLED);
+	assert(level <= SPDK_LOG_DEBUG);
+	g_rpc_log_level = level;
+}
+
+void
+spdk_jsonrpc_set_log_file(FILE *file)
+{
+	g_rpc_log_file = file;
+}
+
+static void
+remove_newlines(char *text)
+{
+	int i = 0, j = 0;
+
+	while (text[i] != '\0') {
+		if (text[i] != '\n') {
+			text[j++] = text[i];
+		}
+		i++;
+	}
+	text[j] = '\0';
+}
+
+static void
+jsonrpc_log(char *buf, const char *prefix)
+{
+	/* Some custom applications have enabled SPDK_JSON_PARSE_FLAG_ALLOW_COMMENTS
+	 * to allow comments in JSON RPC objects. To keep backward compatibility of
+	 * these applications, remove newlines only if JSON RPC logging is enabled.
+	 */
+	if (g_rpc_log_level != SPDK_LOG_DISABLED || g_rpc_log_file != NULL) {
+		remove_newlines(buf);
+	}
+
+	if (g_rpc_log_level != SPDK_LOG_DISABLED) {
+		spdk_log(g_rpc_log_level, NULL, 0, NULL, "%s%s\n", prefix, buf);
+	}
+
+	if (g_rpc_log_file != NULL) {
+		spdk_flog(g_rpc_log_file, NULL, 0, NULL, "%s%s\n", prefix, buf);
+	}
+}
 
 static int
 capture_val(const struct spdk_json_val *val, void *out)
@@ -126,7 +149,8 @@ jsonrpc_server_write_cb(void *cb_ctx, const void *data, size_t size)
 	if (new_size != request->send_buf_size) {
 		uint8_t *new_buf;
 
-		new_buf = realloc(request->send_buf, new_size);
+		/* Add extra byte for the null terminator. */
+		new_buf = realloc(request->send_buf, new_size + 1);
 		if (new_buf == NULL) {
 			SPDK_ERRLOG("Resizing send_buf failed (current size %zu, new size %zu)\n",
 				    request->send_buf_size, new_size);
@@ -160,11 +184,14 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 
 	request = calloc(1, sizeof(*request));
 	if (request == NULL) {
-		SPDK_DEBUGLOG(SPDK_LOG_RPC, "Out of memory allocating request\n");
+		SPDK_DEBUGLOG(rpc, "Out of memory allocating request\n");
 		return -1;
 	}
 
+	pthread_spin_lock(&conn->queue_lock);
 	conn->outstanding_requests++;
+	STAILQ_INSERT_TAIL(&conn->outstanding_queue, request, link);
+	pthread_spin_unlock(&conn->queue_lock);
 
 	request->conn = conn;
 
@@ -178,6 +205,8 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 
 	memcpy(request->recv_buffer, json, len);
 	request->recv_buffer[len] = '\0';
+
+	jsonrpc_log(request->recv_buffer, "request: ");
 
 	if (rc > 0 && rc <= SPDK_JSONRPC_MAX_VALUES) {
 		request->values_cnt = rc;
@@ -193,7 +222,8 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 	request->send_offset = 0;
 	request->send_len = 0;
 	request->send_buf_size = SPDK_JSONRPC_SEND_BUF_SIZE_INIT;
-	request->send_buf = malloc(request->send_buf_size);
+	/* Add extra byte for the null terminator. */
+	request->send_buf = malloc(request->send_buf_size + 1);
 	if (request->send_buf == NULL) {
 		SPDK_ERRLOG("Failed to allocate send_buf (%zu bytes)\n", request->send_buf_size);
 		jsonrpc_free_request(request);
@@ -208,7 +238,7 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 	}
 
 	if (rc <= 0 || rc > SPDK_JSONRPC_MAX_VALUES) {
-		SPDK_DEBUGLOG(SPDK_LOG_RPC, "JSON parse error\n");
+		SPDK_DEBUGLOG(rpc, "JSON parse error\n");
 		jsonrpc_server_handle_error(request, SPDK_JSONRPC_ERROR_PARSE_ERROR);
 
 		/*
@@ -222,7 +252,7 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 	rc = spdk_json_parse(request->recv_buffer, size, request->values, request->values_cnt, &end,
 			     SPDK_JSON_PARSE_FLAG_DECODE_IN_PLACE);
 	if (rc < 0 || rc > SPDK_JSONRPC_MAX_VALUES) {
-		SPDK_DEBUGLOG(SPDK_LOG_RPC, "JSON parse error on second pass\n");
+		SPDK_DEBUGLOG(rpc, "JSON parse error on second pass\n");
 		jsonrpc_server_handle_error(request, SPDK_JSONRPC_ERROR_PARSE_ERROR);
 		return -1;
 	}
@@ -232,10 +262,10 @@ jsonrpc_parse_request(struct spdk_jsonrpc_server_conn *conn, const void *json, s
 	if (request->values[0].type == SPDK_JSON_VAL_OBJECT_BEGIN) {
 		parse_single_request(request, request->values);
 	} else if (request->values[0].type == SPDK_JSON_VAL_ARRAY_BEGIN) {
-		SPDK_DEBUGLOG(SPDK_LOG_RPC, "Got batch array (not currently supported)\n");
+		SPDK_DEBUGLOG(rpc, "Got batch array (not currently supported)\n");
 		jsonrpc_server_handle_error(request, SPDK_JSONRPC_ERROR_INVALID_REQUEST);
 	} else {
-		SPDK_DEBUGLOG(SPDK_LOG_RPC, "top-level JSON value was not array or object\n");
+		SPDK_DEBUGLOG(rpc, "top-level JSON value was not array or object\n");
 		jsonrpc_server_handle_error(request, SPDK_JSONRPC_ERROR_INVALID_REQUEST);
 	}
 
@@ -290,6 +320,9 @@ end_response(struct spdk_jsonrpc_request *request)
 void
 jsonrpc_free_request(struct spdk_jsonrpc_request *request)
 {
+	struct spdk_jsonrpc_request *req;
+	struct spdk_jsonrpc_server_conn *conn;
+
 	if (!request) {
 		return;
 	}
@@ -297,11 +330,31 @@ jsonrpc_free_request(struct spdk_jsonrpc_request *request)
 	/* We must send or skip response explicitly */
 	assert(request->response == NULL);
 
-	request->conn->outstanding_requests--;
+	conn = request->conn;
+	if (conn != NULL) {
+		pthread_spin_lock(&conn->queue_lock);
+		conn->outstanding_requests--;
+		STAILQ_FOREACH(req, &conn->outstanding_queue, link) {
+			if (req == request) {
+				STAILQ_REMOVE(&conn->outstanding_queue,
+					      req, spdk_jsonrpc_request, link);
+				break;
+			}
+		}
+		pthread_spin_unlock(&conn->queue_lock);
+	}
 	free(request->recv_buffer);
 	free(request->values);
 	free(request->send_buf);
 	free(request);
+}
+
+void
+jsonrpc_complete_request(struct spdk_jsonrpc_request *request)
+{
+	jsonrpc_log(request->send_buf, "response: ");
+
+	jsonrpc_free_request(request);
 }
 
 struct spdk_json_write_ctx *
@@ -325,6 +378,17 @@ spdk_jsonrpc_end_result(struct spdk_jsonrpc_request *request, struct spdk_json_w
 	} else {
 		skip_response(request);
 	}
+}
+
+void
+spdk_jsonrpc_send_bool_response(struct spdk_jsonrpc_request *request, bool value)
+{
+	struct spdk_json_write_ctx *w;
+
+	w = spdk_jsonrpc_begin_result(request);
+	assert(w != NULL);
+	spdk_json_write_bool(w, value);
+	spdk_jsonrpc_end_result(request, w);
 }
 
 void
@@ -358,4 +422,4 @@ spdk_jsonrpc_send_error_response_fmt(struct spdk_jsonrpc_request *request,
 	end_response(request);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("rpc", SPDK_LOG_RPC)
+SPDK_LOG_REGISTER_COMPONENT(rpc)

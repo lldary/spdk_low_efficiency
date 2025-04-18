@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2020 Intel Corporation
+#  All rights reserved.
+#
 [[ $(uname -s) == Linux ]] || exit 0
 
 shopt -s extglob nullglob
@@ -8,7 +12,12 @@ declare -r rdma_rxe_add=$rdma_rxe/parameters/add
 declare -r rdma_rxe_rm=$rdma_rxe/parameters/remove
 
 declare -r infiniband=/sys/class/infiniband
+declare -r infiniband_verbs=/sys/class/infiniband_verbs
 declare -r net=/sys/class/net
+
+declare -A net_devices
+declare -A net_to_rxe
+declare -A rxe_to_net
 
 uevent() (
 	[[ -e $1/uevent ]] || return 0
@@ -41,11 +50,16 @@ get_ipv4() {
 get_rxe_mtu() {
 	local rxe=$1
 	local mtu
+	local uverb
 
-	[[ -c /dev/infiniband/uverbs${rxe/rxe/} ]] || return 0
-
-	[[ $(ibv_devinfo -d "$rxe") =~ active_mtu:(.*\ \(.*\)) ]]
-	echo "${BASH_REMATCH[1]:-(?)}"
+	for uverb in "$infiniband_verbs/uverbs"*; do
+		if [[ $(< "$uverb/ibdev") == "$rxe" ]] \
+			&& [[ -c /dev/infiniband/${uverb##*/} ]]; then
+			[[ $(ibv_devinfo -d "$rxe") =~ active_mtu:(.*\ \(.*\)) ]]
+			echo "${BASH_REMATCH[1]:-(?)}"
+			return 0
+		fi
+	done
 }
 
 start() {
@@ -70,11 +84,7 @@ start() {
 }
 
 stop() {
-	local rxe
-
-	for rxe in "$infiniband/rxe"+([0-9]); do
-		remove_rxe "${rxe##*/}"
-	done
+	remove_rxe
 
 	if ! modprobeq -r rdma_rxe \
 		|| [[ -e $rdma_rxe ]]; then
@@ -93,7 +103,7 @@ status() {
 		printf 'rdma_rxe module not loaded\n' >&2
 	fi
 
-	local dev net_devs
+	local dev
 	local link_map
 
 	link_map[0]=no
@@ -102,21 +112,14 @@ status() {
 	status_header
 
 	local name link driver speed mtu ip rxe rxe_dev active_mtu
-	for dev in "$net/"!(bonding_masters); do
-		(($(< "$dev/type") == 1)) || continue
-
+	for dev in "${net_devices[@]}"; do
 		name="" link="" driver=""
 		speed="" mtu="" ip=""
 		rxe_dev="" active_mtu=""
 
 		name=${dev##*/}
-		for rxe in "$infiniband/rxe"+([0-9]); do
-			if [[ $(< "$rxe/parent") == "$name" ]]; then
-				rxe_dev=${rxe##*/}
-				active_mtu=$(get_rxe_mtu "$rxe_dev")
-				break
-			fi
-		done
+		rxe_dev=${net_to_rxe["$name"]}
+		active_mtu=$(get_rxe_mtu "$rxe_dev")
 
 		link=${link_map[$(< "$dev/carrier")]}
 
@@ -179,6 +182,10 @@ print_status() {
 	local field field_ref fieldidx
 	local pad
 
+	if [[ -n $NO_HEADER ]]; then
+		unset -v "lines[0]"
+	fi
+
 	for field_ref in "${lines[@]}"; do
 		printf '  '
 		fieldidx=0
@@ -203,34 +210,47 @@ print_status() {
 add_rxe() {
 	local dev net_devs
 
-	[[ -e $rdma_rxe/parameters ]] || return 1
+	[[ -e $rdma_rxe_add ]] || return 0
 
 	if [[ -z $1 || $1 == all ]]; then
-		net_devs=("$net/"!(bonding_masters))
-	elif [[ -e $net/$1 ]]; then
-		net_devs=("$net/$1")
+		net_devs=("${!net_devices[@]}")
+	elif [[ -n ${net_to_rxe["$1"]} ]]; then
+		printf '%s interface already in use (%s)\n' \
+			"$1" "${net_to_rxe["$1"]}"
+		return 0
+	elif [[ -n ${net_devices["$1"]} ]]; then
+		net_devs=("$1")
 	else
 		printf '%s interface does not exist\n' "$1"
 		return 1
 	fi
 
 	for dev in "${net_devs[@]}"; do
-		(($(< "$dev/type") != 1)) && continue
-		echo "${dev##*/}" > "$rdma_rxe_add"
+		if [[ -z ${net_to_rxe["$dev"]} ]]; then
+			echo "${dev##*/}" > "$rdma_rxe_add"
+		fi
+		link_up "${dev##*/}"
 	done 2> /dev/null
 }
 
 remove_rxe() {
-	[[ -e $infiniband/${1##*/} ]] && echo "${1##*/}" > "$rdma_rxe_rm"
-}
+	local rxes rxe
 
-link_up_rxes() {
-	local rxe parent
+	[[ -e $rdma_rxe_rm ]] || return 0
 
-	for rxe in "$infiniband/rxe"+([0-9]); do
-		parent=$(< /"$rxe/parent")
-		link_up "$parent"
-	done
+	rxes=("${!rxe_to_net[@]}")
+	if [[ -z $1 || $1 == all ]]; then
+		rxes=("${!rxe_to_net[@]}")
+	elif [[ -z ${rxe_to_net["$1"]} ]]; then
+		printf '%s rxe interface does not exist\n' "$1"
+		return 0
+	elif [[ -n ${rxe_to_net["$1"]} ]]; then
+		rxes=("$1")
+	fi
+
+	for rxe in "${rxes[@]}"; do
+		echo "$rxe" > "$rdma_rxe_rm"
+	done 2> /dev/null
 }
 
 link_up() {
@@ -238,6 +258,39 @@ link_up() {
 
 	echo $(($(< "$net/$1/flags") | 0x1)) > "$net/$1/flags"
 }
+
+collect_net_devices() {
+	local net_dev
+
+	for net_dev in "$net/"!(bonding_masters); do
+		(($(< "$net_dev/type") != 1)) && continue
+		net_devices["${net_dev##*/}"]=$net_dev
+	done
+}
+
+collect_rxe_devices() {
+	local rxe_dev net_dev
+
+	for rxe_dev in "$infiniband/"*; do
+		if [[ -e $rxe_dev/parent ]]; then
+			# Soft
+			net_dev=$(< "$rxe_dev/parent")
+		elif [[ -e $rxe_dev/device/net ]]; then
+			# HW
+			net_dev=$(readlink -f "$rxe_dev/device/net/"*)
+			net_dev=${net_dev##*/}
+		else
+			continue
+		fi 2> /dev/null
+
+		[[ -n ${net_devices["$net_dev"]} ]] || continue
+		net_to_rxe["$net_dev"]=${rxe_dev##*/}
+		rxe_to_net["${rxe_dev##*/}"]=$net_dev
+	done
+}
+
+collect_net_devices
+collect_rxe_devices
 
 case "${1:-status}" in
 	start)
@@ -250,7 +303,7 @@ case "${1:-status}" in
 		add_rxe "${2:-all}"
 		;;
 	remove)
-		remove_rxe "$2"
+		remove_rxe "${2:-all}"
 		;;
 	status)
 		IFS= read -r match < <(
@@ -258,6 +311,9 @@ case "${1:-status}" in
 			printf '%s\n' "${*:2}"
 		)
 		status | grep -E "${match:-.}"
+		;;
+	rxe-net)
+		((${#rxe_to_net[@]} > 0)) && printf '%s\n' "${rxe_to_net[@]}"
 		;;
 	*)
 		printf 'Invalid argument (%s)\n' "$1"

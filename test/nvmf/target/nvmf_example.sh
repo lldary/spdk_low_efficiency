@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/nvmf/common.sh
 
-rpc_py="$rootdir/scripts/rpc.py"
+NVMF_EXAMPLE=("$SPDK_EXAMPLE_DIR/nvmf")
 
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
 function build_nvmf_example_args() {
 	if [ $SPDK_RUN_NON_ROOT -eq 1 ]; then
-		echo "sudo -u $(logname) $SPDK_EXAMPLE_DIR/nvmf -i $NVMF_APP_SHM_ID" -g 10000
-	else
-		echo "$SPDK_EXAMPLE_DIR/nvmf -i $NVMF_APP_SHM_ID" -g 10000
+		NVMF_EXAMPLE=(sudo -u "$USER" "${NVMF_EXAMPLE[@]}")
 	fi
+	NVMF_EXAMPLE+=(-i "$NVMF_APP_SHM_ID" -g 10000)
+	NVMF_EXAMPLE+=("${NO_HUGE[@]}")
 }
 
-NVMF_EXAMPLE="$(build_nvmf_example_args)"
+build_nvmf_example_args
 
 function nvmfexamplestart() {
 	timing_enter start_nvmf_example
-	$NVMF_EXAMPLE $1 &
+
+	if [ "$TEST_TRANSPORT" == "tcp" ]; then
+		NVMF_EXAMPLE=("${NVMF_TARGET_NS_CMD[@]}" "${NVMF_EXAMPLE[@]}")
+	fi
+
+	"${NVMF_EXAMPLE[@]}" $1 &
 	nvmfpid=$!
 	trap 'process_shm --id $NVMF_APP_SHM_ID; nvmftestfini; exit 1' SIGINT SIGTERM EXIT
 	waitforlisten $nvmfpid
@@ -48,11 +56,11 @@ done
 #add listener to subsystem
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
-perf="$SPDK_EXAMPLE_DIR/perf"
+perf="$SPDK_BIN_DIR/spdk_nvme_perf"
 
 $perf -q 64 -o 4096 -w randrw -M 30 -t 10 \
 	-r "trtype:${TEST_TRANSPORT} adrfam:IPv4 traddr:${NVMF_FIRST_TARGET_IP} trsvcid:${NVMF_PORT} \
-subnqn:nqn.2016-06.io.spdk:cnode1"
+subnqn:nqn.2016-06.io.spdk:cnode1" "${NO_HUGE[@]}"
 
 trap - SIGINT SIGTERM EXIT
 nvmftestfini

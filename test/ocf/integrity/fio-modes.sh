@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 curdir=$(dirname $(readlink -f "${BASH_SOURCE[0]}"))
 rootdir=$(readlink -f $curdir/../../..)
 
@@ -28,7 +31,7 @@ ocf_names[2]=WT_Nvme ocf_modes[2]=wt
 ocf_names[3]=WB_Nvme0 ocf_modes[3]=wb
 ocf_names[4]=WB_Nvme1 ocf_modes[4]=wb
 
-mapfile -t config < <("$rootdir/scripts/gen_nvme.sh" --json)
+mapfile -t config < <("$rootdir/scripts/gen_nvme.sh")
 
 # Drop anything from last closing ] so we can inject our own config pieces ...
 config=("${config[@]::${#config[@]}-2}")
@@ -68,12 +71,22 @@ for ((d = 0, c = 1; d <= ${#ocf_names[@]} + 2; d += 2, c++)); do
 	)
 done
 
+config+=(
+	"$(
+		cat <<- JSON
+			{
+			  "method": "bdev_wait_for_examine"
+			}
+		JSON
+	)"
+)
+
 # First ']}' closes our config and bdev subsystem blocks
 cat <<- CONFIG > "$curdir/modes.conf"
 	{"subsystems":[
 	$(
-	IFS=","
-	printf '%s\n' "${config[*]}"
+		IFS=","
+		printf '%s\n' "${config[*]}"
 	)
 	]}]}
 CONFIG

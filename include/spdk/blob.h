@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2021-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 /** \file
@@ -61,13 +34,15 @@
 #define SPDK_BLOB_H
 
 #include "spdk/stdinc.h"
+#include "spdk/assert.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef uint64_t spdk_blob_id;
-#define SPDK_BLOBID_INVALID	(uint64_t)-1
+#define SPDK_BLOBID_INVALID		(uint64_t)-1
+#define SPDK_BLOBID_EXTERNAL_SNAPSHOT	(uint64_t)-2
 #define SPDK_BLOBSTORE_TYPE_LENGTH 16
 
 enum blob_clear_method {
@@ -84,6 +59,7 @@ enum bs_clear_method {
 };
 
 struct spdk_blob_store;
+struct spdk_bs_dev;
 struct spdk_io_channel;
 struct spdk_blob;
 struct spdk_xattr_names;
@@ -127,7 +103,7 @@ typedef void (*spdk_blob_op_with_id_complete)(void *cb_arg, spdk_blob_id blobid,
  * Blob operation completion callback with handle.
  *
  * \param cb_arg Callback argument.
- * \param bs Handle to a blob.
+ * \param blb Handle to a blob.
  * \param bserrno 0 if it completed successfully, or negative errno if it failed.
  */
 typedef void (*spdk_blob_op_with_handle_complete)(void *cb_arg, struct spdk_blob *blb, int bserrno);
@@ -142,11 +118,67 @@ typedef void (*spdk_blob_op_with_handle_complete)(void *cb_arg, struct spdk_blob
 typedef void (*spdk_bs_dev_cpl)(struct spdk_io_channel *channel,
 				void *cb_arg, int bserrno);
 
+/**
+ * Blob device open completion callback with blobstore device.
+ *
+ * \param cb_arg Callback argument.
+ * \param bs_dev Blobstore device.
+ * \param bserrno 0 if it completed successfully, or negative errno if it failed.
+ */
+typedef void (*spdk_blob_op_with_bs_dev)(void *cb_arg, struct spdk_bs_dev *bs_dev, int bserrno);
+
+/**
+ * External snapshot device open callback. As an esnap clone blob is loading, it uses this
+ * callback registered with the blobstore to create the external snapshot device. The blobstore
+ * consumer must set this while loading the blobstore if it intends to support external snapshots.
+ *
+ * If the blobstore consumer does not wish to load an external snapshot, it should set *bs_dev to
+ * NULL and return 0.
+ *
+ * \param bs_ctx Context provided by the blobstore consumer via esnap_ctx member of struct
+ * spdk_bs_opts.
+ * \param blob_ctx Context provided to spdk_bs_open_ext() via esnap_ctx member of struct
+ * spdk_bs_open_opts.
+ * \param blob The blob that needs its external snapshot device.
+ * \param esnap_id A copy of the esnap_id passed via blob_opts when creating the esnap clone.
+ * \param id_size The size in bytes of the data referenced by esnap_id.
+ * \param bs_dev When 0 is returned, the newly created blobstore device is returned by reference.
+ *
+ * \return 0 on success, else a negative errno.
+ */
+typedef int (*spdk_bs_esnap_dev_create)(void *bs_ctx, void *blob_ctx, struct spdk_blob *blob,
+					const void *esnap_id, uint32_t id_size,
+					struct spdk_bs_dev **bs_dev);
+
+/**
+ * Blob shallow copy status callback.
+ *
+ * \param copied_clusters Actual number of copied clusters by the shallow copy operation
+ * \param cb_arg Callback argument.
+ */
+typedef void (*spdk_blob_shallow_copy_status)(uint64_t copied_clusters, void *cb_arg);
+
 struct spdk_bs_dev_cb_args {
 	spdk_bs_dev_cpl		cb_fn;
 	struct spdk_io_channel	*channel;
 	void			*cb_arg;
 };
+
+/**
+ * Structure with optional IO request parameters
+ * The content of this structure must be valid until the IO request is completed
+ */
+struct spdk_blob_ext_io_opts {
+	/** Size of this structure in bytes */
+	size_t size;
+	/** Memory domain which describes payload in this IO request. */
+	struct spdk_memory_domain *memory_domain;
+	/** Context to be passed to memory domain operations */
+	void *memory_domain_ctx;
+	/** Optional user context */
+	void *user_ctx;
+} __attribute__((packed));
+SPDK_STATIC_ASSERT(sizeof(struct spdk_blob_ext_io_opts) == 32, "Incorrect size");
 
 struct spdk_bs_dev {
 	/* Create a new channel which is a software construct that is used
@@ -180,16 +212,51 @@ struct spdk_bs_dev {
 		       uint64_t lba, uint32_t lba_count,
 		       struct spdk_bs_dev_cb_args *cb_args);
 
+	void (*readv_ext)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
+			  struct iovec *iov, int iovcnt,
+			  uint64_t lba, uint32_t lba_count,
+			  struct spdk_bs_dev_cb_args *cb_args,
+			  struct spdk_blob_ext_io_opts *ext_io_opts);
+
+	void (*writev_ext)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
+			   struct iovec *iov, int iovcnt,
+			   uint64_t lba, uint32_t lba_count,
+			   struct spdk_bs_dev_cb_args *cb_args,
+			   struct spdk_blob_ext_io_opts *ext_io_opts);
+
 	void (*flush)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		      struct spdk_bs_dev_cb_args *cb_args);
 
 	void (*write_zeroes)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
-			     uint64_t lba, uint32_t lba_count,
+			     uint64_t lba, uint64_t lba_count,
 			     struct spdk_bs_dev_cb_args *cb_args);
 
 	void (*unmap)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
-		      uint64_t lba, uint32_t lba_count,
+		      uint64_t lba, uint64_t lba_count,
 		      struct spdk_bs_dev_cb_args *cb_args);
+
+	struct spdk_bdev *(*get_base_bdev)(struct spdk_bs_dev *dev);
+
+	bool (*is_zeroes)(struct spdk_bs_dev *dev, uint64_t lba, uint64_t lba_count);
+	/* Is the lba range we are looking for valid or not for this bs_dev. Used to
+	 * check if we can safely reference the bs_dev during CoW or perhaps even
+	 * during read. */
+	bool (*is_range_valid)(struct spdk_bs_dev *dev, uint64_t lba, uint64_t lba_count);
+
+	/* Translate blob lba to lba on the underlying bdev.
+	 * This operation recurses down the whole chain of bs_dev's.
+	 * Returns true and initializes value of base_lba on success.
+	 * Returns false on failure.
+	 * The function may fail when blob lba is not backed by the bdev lba.
+	 * For example, when we eventually hit zeroes device in the chain.
+	 */
+	bool (*translate_lba)(struct spdk_bs_dev *dev, uint64_t lba, uint64_t *base_lba);
+
+	void (*copy)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
+		     uint64_t dst_lba, uint64_t src_lba, uint64_t lba_count,
+		     struct spdk_bs_dev_cb_args *cb_args);
+
+	bool (*is_degraded)(struct spdk_bs_dev *dev);
 
 	uint64_t	blockcnt;
 	uint32_t	blocklen; /* In bytes */
@@ -218,19 +285,45 @@ struct spdk_bs_opts {
 	/** Blobstore type */
 	struct spdk_bs_type bstype;
 
+	/* Hole at bytes 36-39. */
+	uint8_t reserved36[4];
+
 	/** Callback function to invoke for each blob. */
 	spdk_blob_op_with_handle_complete iter_cb_fn;
 
 	/** Argument passed to iter_cb_fn for each blob. */
 	void *iter_cb_arg;
-};
+
+	/**
+	 * The size of spdk_bs_opts according to the caller of this library is used for ABI
+	 * compatibility. The library uses this field to know how many fields in this
+	 * structure are valid. And the library will populate any remaining fields with default values.
+	 * After that, new added fields should be put in the end of the struct.
+	 */
+	size_t opts_size;
+
+	/** Force recovery during import. This is a uint64_t for padding reasons, treated as a bool. */
+	uint64_t force_recover;
+
+	/**
+	 * External snapshot creation callback to register with the blobstore.
+	 */
+	spdk_bs_esnap_dev_create esnap_bs_dev_create;
+
+	/**
+	 * Context to pass with esnap_bs_dev_create.
+	 */
+	void *esnap_ctx;
+} __attribute__((packed));
+SPDK_STATIC_ASSERT(sizeof(struct spdk_bs_opts) == 88, "Incorrect size");
 
 /**
  * Initialize a spdk_bs_opts structure to the default blobstore option values.
  *
  * \param opts The spdk_bs_opts structure to be initialized.
+ * \param opts_size The opts_size must be the size of spdk_bs_opts structure.
  */
-void spdk_bs_opts_init(struct spdk_bs_opts *opts);
+void spdk_bs_opts_init(struct spdk_bs_opts *opts, size_t opts_size);
 
 /**
  * Load a blobstore from the given device.
@@ -242,6 +335,29 @@ void spdk_bs_opts_init(struct spdk_bs_opts *opts);
  */
 void spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
+
+/**
+ * Grow a blobstore to fill the underlying device
+ * Cannot be used on loaded blobstore.
+ *
+ * \param dev Blobstore block device.
+ * \param opts The structure which contains the option values for the blobstore.
+ * \param cb_fn Called when the loading is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_grow(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
+		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
+
+/**
+ * Grow a blobstore to fill the underlying device.
+ * Can be used on loaded blobstore, even with opened blobs.
+ *
+ * \param bs blobstore to grow.
+ * \param cb_fn Called when the growing is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_grow_live(struct spdk_blob_store *bs,
+		       spdk_bs_op_complete cb_fn, void *cb_arg);
 
 /**
  * Initialize a blobstore on the given device.
@@ -294,7 +410,7 @@ void spdk_bs_unload(struct spdk_blob_store *bs, spdk_bs_op_complete cb_fn, void 
 /**
  * Set a super blob on the given blobstore.
  *
- * This will be retrievable immediately after spdk_bs_load() on the next initializaiton.
+ * This will be retrievable immediately after spdk_bs_load() on the next initialization.
  *
  * \param bs blobstore.
  * \param blobid The id of the blob which will be set as the super blob.
@@ -387,13 +503,55 @@ uint64_t spdk_blob_get_num_pages(struct spdk_blob *blob);
 uint64_t spdk_blob_get_num_io_units(struct spdk_blob *blob);
 
 /**
- * Get the number of clusters allocated to the blob.
+ * Get the number of clusters in the blob.
+ *
+ * This value represents the size of the blob in number of clusters.
  *
  * \param blob Blob struct to query.
  *
  * \return the number of clusters.
  */
 uint64_t spdk_blob_get_num_clusters(struct spdk_blob *blob);
+
+/**
+ * Get the number of allocated clusters to the blob.
+ *
+ * In case of a thin-provisioned blob, this value is less than or equal
+ * to the number of clusters in the blob, otherwise they are equal.
+ *
+ * \param blob Blob struct to query.
+ *
+ * \return the number of clusters actually allocated to the blob.
+ */
+uint64_t spdk_blob_get_num_allocated_clusters(struct spdk_blob *blob);
+
+/**
+ * Get next allocated io_unit
+ *
+ * Starting at 'offset' io_units into the blob, returns the offset of
+ * the first allocated io unit found.
+ * If 'offset' points to an allocated io_unit, same offset is returned.
+ *
+ * \param blob Blob struct to query.
+ * \param offset Offset is in io units from the beginning of the blob.
+ *
+ * \return offset in io_units or UINT64_MAX if no allocated io_unit found
+ */
+uint64_t spdk_blob_get_next_allocated_io_unit(struct spdk_blob *blob, uint64_t offset);
+
+/**
+ * Get next unallocated io_unit
+ *
+ * Starting at 'offset' io_units into the blob, returns the offset of
+ * the first unallocated io unit found.
+ * If 'offset' points to an unallocated io_unit, same offset is returned.
+ *
+ * \param blob Blob struct to query.
+ * \param offset Offset is in io units from the beginning of the blob.
+ *
+ * \return offset in io_units or UINT64_MAX if only allocated io_unit found
+ */
+uint64_t spdk_blob_get_next_unallocated_io_unit(struct spdk_blob *blob, uint64_t offset);
 
 struct spdk_blob_xattr_opts {
 	/* Number of attributes */
@@ -415,14 +573,40 @@ struct spdk_blob_opts {
 
 	/** Enable separate extent pages in metadata */
 	bool use_extent_table;
+
+	/**
+	 * The size of spdk_blob_opts according to the caller of this library is used for ABI
+	 * compatibility. The library uses this field to know how many fields in this
+	 * structure are valid. And the library will populate any remaining fields with default values.
+	 * New added fields should be put at the end of the struct.
+	 */
+	size_t opts_size;
+
+	/**
+	 * If set, create an esnap clone. The memory referenced by esnap_id will be copied into the
+	 * blob's metadata and can be retrieved with spdk_blob_get_esnap_id(), typically from an
+	 * esnap_bs_dev_create() callback.
+	 * See struct_bs_opts.
+	 *
+	 * When esnap_id is specified, num_clusters should be specified. If it is not, the blob will
+	 * have no capacity until spdk_blob_resize() is called.
+	 */
+	const void *esnap_id;
+
+	/**
+	 * The size of data referenced by esnap_id, in bytes.
+	 */
+	uint64_t esnap_id_len;
 };
+SPDK_STATIC_ASSERT(sizeof(struct spdk_blob_opts) == 80, "Incorrect size");
 
 /**
  * Initialize a spdk_blob_opts structure to the default blob option values.
  *
  * \param opts spdk_blob_opts structure to initialize.
+ * \param opts_size It must be the size of spdk_blob_opts structure.
  */
-void spdk_blob_opts_init(struct spdk_blob_opts *opts);
+void spdk_blob_opts_init(struct spdk_blob_opts *opts, size_t opts_size);
 
 /**
  * Create a new blob with options on the given blobstore. The new blob id will
@@ -431,7 +615,7 @@ void spdk_blob_opts_init(struct spdk_blob_opts *opts);
  * \param bs blobstore.
  * \param opts The structure which contains the option values for the new blob.
  * \param cb_fn Called when the operation is complete.
- * \param cb_arg Argument passed to funcion cb_fn.
+ * \param cb_arg Argument passed to function cb_fn.
  */
 void spdk_bs_create_blob_ext(struct spdk_blob_store *bs, const struct spdk_blob_opts *opts,
 			     spdk_blob_op_with_id_complete cb_fn, void *cb_arg);
@@ -513,6 +697,18 @@ int spdk_blob_get_clones(struct spdk_blob_store *bs, spdk_blob_id blobid, spdk_b
 spdk_blob_id spdk_blob_get_parent_snapshot(struct spdk_blob_store *bs, spdk_blob_id blobid);
 
 /**
+ * Get the id used to access the esnap clone's parent.
+ *
+ * \param blob The clone's blob.
+ * \param id On successful return, *id will reference memory that has the same life as blob.
+ * \param len On successful return *len will be the size of id in bytes.
+ *
+ * \return 0 on success
+ * \return -EINVAL if blob is not an esnap clone.
+ */
+int spdk_blob_get_esnap_id(struct spdk_blob *blob, const void **id, size_t *len);
+
+/**
  * Check if blob is read only.
  *
  * \param blob Blob.
@@ -531,11 +727,13 @@ bool spdk_blob_is_read_only(struct spdk_blob *blob);
 bool spdk_blob_is_snapshot(struct spdk_blob *blob);
 
 /**
- * Check if blob is a clone.
+ * Check if blob is a clone of a blob.
+ *
+ * Clones of external snapshots will return false. See spdk_blob_is_esnap_clone.
  *
  * \param blob Blob.
  *
- * \return true if blob is a clone.
+ * \return true if blob is a clone of a blob.
  */
 bool spdk_blob_is_clone(struct spdk_blob *blob);
 
@@ -547,6 +745,15 @@ bool spdk_blob_is_clone(struct spdk_blob *blob);
  * \return true if blob is thin-provisioned.
  */
 bool spdk_blob_is_thin_provisioned(struct spdk_blob *blob);
+
+/**
+ * Check if blob is a clone of an external snapshot.
+ *
+ * \param blob Blob.
+ *
+ * \return true if blob is a clone of an external bdev.
+ */
+bool spdk_blob_is_esnap_clone(const struct spdk_blob *blob);
 
 /**
  * Delete an existing blob from the given blobstore.
@@ -592,16 +799,95 @@ void spdk_bs_inflate_blob(struct spdk_blob_store *bs, struct spdk_io_channel *ch
 void spdk_bs_blob_decouple_parent(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
 				  spdk_blob_id blobid, spdk_blob_op_complete cb_fn, void *cb_arg);
 
+/**
+ * Perform a shallow copy of a blob to a blobstore device.
+ *
+ * This makes a shallow copy from a blob to a blobstore device.
+ * Only clusters allocated to the blob will be written on the device.
+ * Blob must be read only and blob size must be less or equal than device size.
+ * Blobstore block size must be a multiple of device block size.
+
+ * \param bs Blobstore
+ * \param channel IO channel used to copy the blob.
+ * \param blobid The id of the blob.
+ * \param ext_dev The device to copy on
+ * \param status_cb_fn Called repeatedly during operation with status updates
+ * \param status_cb_arg Argument passed to function status_cb_fn.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ *
+ * \return 0 if operation starts correctly, negative errno on failure.
+ */
+int spdk_bs_blob_shallow_copy(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
+			      spdk_blob_id blobid, struct spdk_bs_dev *ext_dev,
+			      spdk_blob_shallow_copy_status status_cb_fn, void *status_cb_arg,
+			      spdk_blob_op_complete cb_fn, void *cb_arg);
+
+
+/**
+ * Set a snapshot as the parent of a blob
+ *
+ * This call set a snapshot as the parent of a blob, making the blob a clone of this snapshot.
+ * The previous parent of the blob, if any, can be another snapshot or an external snapshot; if
+ * the blob is not a clone, it must be thin-provisioned.
+ * Blob and parent snapshot must have the same size.
+ *
+ * \param bs blobstore.
+ * \param blob_id The id of the blob.
+ * \param snapshot_id The id of the parent snapshot.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_blob_set_parent(struct spdk_blob_store *bs, spdk_blob_id blob_id,
+			     spdk_blob_id snapshot_id, spdk_blob_op_complete cb_fn, void *cb_arg);
+
+/**
+ * Set an external snapshot as the parent of a blob
+ *
+ * This call set an external snapshot as the parent of a blob, making the blob a clone of this
+ * external snapshot.
+ * The previous parent of the blob, if any, can be another external snapshot or a snapshot; if
+ * the blob is not a clone, it must be thin-provisioned.
+ *
+ * \param bs blobstore.
+ * \param blob_id The id of the blob.
+ * \param esnap_bs_dev The new blobstore device to use as an external snapshot.
+ * \param esnap_id The identifier of the external snapshot.
+ * \param esnap_id_len The length of esnap_id, in bytes.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void spdk_bs_blob_set_external_parent(struct spdk_blob_store *bs, spdk_blob_id blob_id,
+				      struct spdk_bs_dev *esnap_bs_dev, const void *esnap_id,
+				      uint32_t esnap_id_len, spdk_blob_op_complete cb_fn, void *cb_arg);
+
+
 struct spdk_blob_open_opts {
 	enum blob_clear_method  clear_method;
+
+	/**
+	 * The size of spdk_blob_open_opts according to the caller of this library is used for ABI
+	 * compatibility. The library uses this field to know how many fields in this
+	 * structure are valid. And the library will populate any remaining fields with default values.
+	 * New added fields should be put at the end of the struct.
+	 */
+	size_t opts_size;
+
+	/**
+	 * Blob context to be passed to any call of bs->external_bs_dev_create() that is triggered
+	 * by this open call.
+	 */
+	void *esnap_ctx;
 };
+SPDK_STATIC_ASSERT(sizeof(struct spdk_blob_open_opts) == 24, "Incorrect size");
 
 /**
  * Initialize a spdk_blob_open_opts structure to the default blob option values.
  *
  * \param opts spdk_blob_open_opts structure to initialize.
+ * \param opts_size It mus be the size of struct spdk_blob_open_opts.
  */
-void spdk_blob_open_opts_init(struct spdk_blob_open_opts *opts);
+void spdk_blob_open_opts_init(struct spdk_blob_open_opts *opts, size_t opts_size);
 
 /**
  * Open a blob from the given blobstore.
@@ -750,8 +1036,46 @@ void spdk_blob_io_readv(struct spdk_blob *blob, struct spdk_io_channel *channel,
 			spdk_blob_op_complete cb_fn, void *cb_arg);
 
 /**
+ * Write the data described by 'iov' to 'length' io_units beginning at 'offset' io_units
+ * into the blob. Accepts extended IO request options
+ *
+ * \param blob Blob to write.
+ * \param channel I/O channel used to submit requests.
+ * \param iov The pointer points to an array of iovec structures.
+ * \param iovcnt The number of buffers.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of data in io units.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ * \param io_opts Optional extended IO request options
+ */
+void spdk_blob_io_writev_ext(struct spdk_blob *blob, struct spdk_io_channel *channel,
+			     struct iovec *iov, int iovcnt, uint64_t offset, uint64_t length,
+			     spdk_blob_op_complete cb_fn, void *cb_arg,
+			     struct spdk_blob_ext_io_opts *io_opts);
+
+/**
+ * Read 'length' io_units starting at 'offset' io_units into the blob into the memory
+ * described by 'iov'. Accepts extended IO request options
+ *
+ * \param blob Blob to read.
+ * \param channel I/O channel used to submit requests.
+ * \param iov The pointer points to an array of iovec structures.
+ * \param iovcnt The number of buffers.
+ * \param offset Offset is in io units from the beginning of the blob.
+ * \param length Size of data in io units.
+ * \param cb_fn Called when the operation is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ * \param io_opts Optional extended IO request options
+ */
+void spdk_blob_io_readv_ext(struct spdk_blob *blob, struct spdk_io_channel *channel,
+			    struct iovec *iov, int iovcnt, uint64_t offset, uint64_t length,
+			    spdk_blob_op_complete cb_fn, void *cb_arg,
+			    struct spdk_blob_ext_io_opts *io_opts);
+
+/**
  * Unmap 'length' io_units beginning at 'offset' io_units on the blob as unused. Unmapped
- * io_units may allow the underlying storage media to behave more effciently.
+ * io_units may allow the underlying storage media to behave more efficiently.
  *
  * \param blob Blob to unmap.
  * \param channel I/O channel used to submit requests.
@@ -780,6 +1104,13 @@ void spdk_blob_io_write_zeroes(struct spdk_blob *blob, struct spdk_io_channel *c
  * Get the first blob of the blobstore. The obtained blob will be passed to
  * the callback function.
  *
+ * The user's cb_fn will be called with rc == -ENOENT when the iteration is
+ * complete.
+ *
+ * When the user's cb_fn is called with rc == 0, the associated blob is open.
+ * This means that the cb_fn may not attempt to unload the blobstore.  It
+ * must complete the iteration before attempting to unload.
+ *
  * \param bs blobstore to traverse.
  * \param cb_fn Called when the operation is complete.
  * \param cb_arg Argument passed to function cb_fn.
@@ -790,6 +1121,13 @@ void spdk_bs_iter_first(struct spdk_blob_store *bs,
 /**
  * Get the next blob by using the current blob. The obtained blob will be passed
  * to the callback function.
+ *
+ * The user's cb_fn will be called with rc == -ENOENT when the iteration is
+ * complete.
+ *
+ * When the user's cb_fn is called with rc == 0, the associated blob is open.
+ * This means that the cb_fn may not attempt to unload the blobstore.  It
+ * must complete the iteration before attempting to unload.
  *
  * \param bs blobstore to traverse.
  * \param blob The current blob.
@@ -889,6 +1227,35 @@ struct spdk_bs_type spdk_bs_get_bstype(struct spdk_blob_store *bs);
  * \param bstype Type label to set.
  */
 void spdk_bs_set_bstype(struct spdk_blob_store *bs, struct spdk_bs_type bstype);
+
+/**
+ * Replace the existing external snapshot device.
+ *
+ * \param blob The blob that is getting a new external snapshot device.
+ * \param back_bs_dev The new blobstore device to use as an external snapshot.
+ * \param cb_fn Callback to be called when complete.
+ * \param cb_arg Callback argument used with cb_fn.
+ */
+void spdk_blob_set_esnap_bs_dev(struct spdk_blob *blob, struct spdk_bs_dev *back_bs_dev,
+				spdk_blob_op_complete cb_fn, void *cb_arg);
+
+/**
+ * Get the existing external snapshot device
+ *
+ * \param blob A blob that is an esnap clone
+ *
+ * \return NULL if the blob is not an esnap clone, else the current external snapshot device.
+ */
+struct spdk_bs_dev *spdk_blob_get_esnap_bs_dev(const struct spdk_blob *blob);
+
+/**
+ * Determine if the blob is degraded. A degraded blob cannot perform IO.
+ *
+ * \param blob A blob
+ *
+ * \return true if the blob or any snapshots upon which it depends are degraded, else false.
+ */
+bool spdk_blob_is_degraded(const struct spdk_blob *blob);
 
 #ifdef __cplusplus
 }

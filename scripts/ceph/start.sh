@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 # create mon
 
 set -x
@@ -15,6 +19,7 @@ mnt_dir=${base_dir}/mnt
 image=/var/tmp/ceph_raw.img
 dev=/dev/loop200
 
+modprobe loop
 umount ${dev}p2 || true
 losetup -d $dev || true
 
@@ -114,8 +119,11 @@ if [ $update_config = true ]; then
 	fsid=$(ceph -s | grep id | awk '{print $2}')
 	sed -i 's/perf = true/perf = true\n\tfsid = '$fsid' \n/g' $ceph_conf
 
-	# unify the filesystem with the old versions.
-	sed -i 's/perf = true/perf = true\n\tosd objectstore = filestore\n/g' $ceph_conf
+	# filestore backend got deprecated in the Reef release and is no longer supported
+	if ((ceph_maj < 18)); then
+		# unify the filesystem with the old versions.
+		sed -i 's/perf = true/perf = true\n\tosd objectstore = filestore\n/g' $ceph_conf
+	fi
 	cat ${ceph_conf}
 fi
 
@@ -130,6 +138,10 @@ ceph -c ${ceph_conf} osd create ${uuid} $i
 ceph-osd -c ${ceph_conf} -i $i --mkfs --mkkey --osd-uuid ${uuid} ${ceph_osd_extra_config}
 ceph -c ${ceph_conf} osd crush add osd.${i} 1.0 host=$(hostname) root=default
 ceph -c ${ceph_conf} -i ${mnt_dir}/osd-device-${i}-data/keyring auth add osd.${i} osd "allow *" mon "allow profile osd" mgr "allow *"
+
+class_dir=/$(ceph -c "$ceph_conf" config get osd osd_class_dir)
+[[ -e $class_dir ]]
+ceph -c "$ceph_conf" config set osd osd_class_dir "$class_dir"
 
 # start osd
 pkill -9 ceph-osd || true

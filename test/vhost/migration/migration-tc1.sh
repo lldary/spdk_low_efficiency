@@ -1,3 +1,8 @@
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
+
 function migration_tc1_clean_vhost_config() {
 	# Restore trap
 	trap 'error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
@@ -50,12 +55,14 @@ function migration_tc1() {
 	# Use 2 VMs:
 	# incoming VM - the one we want to migrate
 	# targe VM - the one which will accept migration
+	# VM uses 1 GiB memory, here we use light IO workload to keep number of dirty pages
+	# is in low rate of VM's memory, see https://github.com/spdk/spdk/issues/2805.
 	local job_file="$testdir/migration-tc1.job"
 	local log_file
 	log_file="/root/$(basename ${job_file%%.*}).log"
 
 	# Run vhost
-	vhost_run 0
+	vhost_run -n 0
 	migration_tc1_configure_vhost
 
 	notice "Setting up VMs"
@@ -93,7 +100,7 @@ function migration_tc1() {
 	fi
 
 	notice "Waiting for fio to finish"
-	local timeout=40
+	local timeout=20
 	while is_fio_running $target_vm; do
 		sleep 1
 		echo -n "."

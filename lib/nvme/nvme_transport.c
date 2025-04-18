@@ -1,34 +1,8 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2021 Mellanox Technologies LTD. All rights reserved.
+ *   Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 /*
@@ -48,8 +22,14 @@ struct spdk_nvme_transport {
 TAILQ_HEAD(nvme_transport_list, spdk_nvme_transport) g_spdk_nvme_transports =
 	TAILQ_HEAD_INITIALIZER(g_spdk_nvme_transports);
 
-struct spdk_nvme_transport g_spdk_transports[SPDK_MAX_NUM_OF_TRANSPORTS] = {};
-int g_current_transport_index = 0;
+static struct spdk_nvme_transport g_transports[SPDK_MAX_NUM_OF_TRANSPORTS] = {};
+static int g_current_transport_index = 0;
+
+struct spdk_nvme_transport_opts g_spdk_nvme_transport_opts = {
+	.rdma_srq_size = 0,
+	.rdma_max_cq_size = 0,
+	.rdma_cm_event_timeout_ms = 1000
+};
 
 const struct spdk_nvme_transport *
 nvme_get_first_transport(void)
@@ -65,12 +45,16 @@ nvme_get_next_transport(const struct spdk_nvme_transport *transport)
 
 /*
  * Unfortunately, due to NVMe PCIe multiprocess support, we cannot store the
- * transport object in either the controller struct or the admin qpair. THis means
+ * transport object in either the controller struct or the admin qpair. This means
  * that a lot of admin related transport calls will have to call nvme_get_transport
- * in order to knwo which functions to call.
+ * in order to know which functions to call.
  * In the I/O path, we have the ability to store the transport struct in the I/O
  * qpairs to avoid taking a performance hit.
  */
+/* nof和本地读写同时使用条件：需要共享g_spdk_nvme_transports所在内存 */
+/* 细节汇总：一共需要共享的内存指针有 
+ * g_spdk_nvme_transports和整个链表
+*/
 const struct spdk_nvme_transport *
 nvme_get_transport(const char *transport_name)
 {
@@ -97,7 +81,8 @@ spdk_nvme_transport_available_by_name(const char *transport_name)
 	return nvme_get_transport(transport_name) == NULL ? false : true;
 }
 
-void spdk_nvme_transport_register(const struct spdk_nvme_transport_ops *ops)
+void
+spdk_nvme_transport_register(const struct spdk_nvme_transport_ops *ops)
 {
 	struct spdk_nvme_transport *new_transport;
 
@@ -111,7 +96,7 @@ void spdk_nvme_transport_register(const struct spdk_nvme_transport_ops *ops)
 		assert(false);
 		return;
 	}
-	new_transport = &g_spdk_transports[g_current_transport_index++];
+	new_transport = &g_transports[g_current_transport_index++];
 
 	new_transport->ops = *ops;
 	TAILQ_INSERT_TAIL(&g_spdk_nvme_transports, new_transport, link);
@@ -149,12 +134,46 @@ nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 }
 
 int
+nvme_transport_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(probe_ctx->trid.trstring);
+
+	if (transport == NULL) {
+		SPDK_ERRLOG("Transport %s doesn't exist.", probe_ctx->trid.trstring);
+		return -ENOENT;
+	}
+
+	if (transport->ops.ctrlr_scan_attached != NULL) {
+		return transport->ops.ctrlr_scan_attached(probe_ctx);
+	}
+	SPDK_ERRLOG("Transport %s does not support ctrlr_scan_attached callback\n",
+		    probe_ctx->trid.trstring);
+	return -ENOTSUP;
+}
+
+int
 nvme_transport_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 {
 	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
 
 	assert(transport != NULL);
 	return transport->ops.ctrlr_destruct(ctrlr);
+}
+
+int nvme_transport_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, uint16_t flag)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	if (transport == NULL) {
+		SPDK_ERRLOG("Transport %s doesn't exist.", ctrlr->trid.trstring);
+		return -ENOENT;
+	}
+
+	if (transport->ops.ctrlr_alloc_msix) {
+		return transport->ops.ctrlr_alloc_msix(ctrlr, index, flag);
+	}
+
+	return -ENOTSUP;
 }
 
 int
@@ -164,6 +183,32 @@ nvme_transport_ctrlr_enable(struct spdk_nvme_ctrlr *ctrlr)
 
 	assert(transport != NULL);
 	return transport->ops.ctrlr_enable(ctrlr);
+}
+
+int
+nvme_transport_ctrlr_enable_interrupts(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_enable_interrupts != NULL) {
+		return transport->ops.ctrlr_enable_interrupts(ctrlr);
+	}
+
+	return -ENOTSUP;
+}
+
+int
+nvme_transport_ctrlr_ready(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_ready) {
+		return transport->ops.ctrlr_ready(ctrlr);
+	}
+
+	return 0;
 }
 
 int
@@ -200,6 +245,114 @@ nvme_transport_ctrlr_get_reg_8(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, u
 
 	assert(transport != NULL);
 	return transport->ops.ctrlr_get_reg_8(ctrlr, offset, value);
+}
+
+static int
+nvme_queue_register_operation_completion(struct spdk_nvme_ctrlr *ctrlr, uint64_t value,
+		spdk_nvme_reg_cb cb_fn, void *cb_ctx)
+{
+	struct nvme_register_completion *ctx;
+
+	ctx = spdk_zmalloc(sizeof(*ctx), 0, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
+	if (ctx == NULL) {
+		return -ENOMEM;
+	}
+
+	ctx->cpl.status.sct = SPDK_NVME_SCT_GENERIC;
+	ctx->cpl.status.sc = SPDK_NVME_SC_SUCCESS;
+	ctx->cb_fn = cb_fn;
+	ctx->cb_ctx = cb_ctx;
+	ctx->value = value;
+	ctx->pid = getpid();
+
+	nvme_ctrlr_lock(ctrlr);
+	STAILQ_INSERT_TAIL(&ctrlr->register_operations, ctx, stailq);
+	nvme_ctrlr_unlock(ctrlr);
+
+	return 0;
+}
+
+int
+nvme_transport_ctrlr_set_reg_4_async(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint32_t value,
+				     spdk_nvme_reg_cb cb_fn, void *cb_arg)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+	int rc;
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_set_reg_4_async == NULL) {
+		rc = transport->ops.ctrlr_set_reg_4(ctrlr, offset, value);
+		if (rc != 0) {
+			return rc;
+		}
+
+		return nvme_queue_register_operation_completion(ctrlr, value, cb_fn, cb_arg);
+	}
+
+	return transport->ops.ctrlr_set_reg_4_async(ctrlr, offset, value, cb_fn, cb_arg);
+}
+
+int
+nvme_transport_ctrlr_set_reg_8_async(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint64_t value,
+				     spdk_nvme_reg_cb cb_fn, void *cb_arg)
+
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+	int rc;
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_set_reg_8_async == NULL) {
+		rc = transport->ops.ctrlr_set_reg_8(ctrlr, offset, value);
+		if (rc != 0) {
+			return rc;
+		}
+
+		return nvme_queue_register_operation_completion(ctrlr, value, cb_fn, cb_arg);
+	}
+
+	return transport->ops.ctrlr_set_reg_8_async(ctrlr, offset, value, cb_fn, cb_arg);
+}
+
+int
+nvme_transport_ctrlr_get_reg_4_async(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset,
+				     spdk_nvme_reg_cb cb_fn, void *cb_arg)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+	uint32_t value;
+	int rc;
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_get_reg_4_async == NULL) {
+		rc = transport->ops.ctrlr_get_reg_4(ctrlr, offset, &value);
+		if (rc != 0) {
+			return rc;
+		}
+
+		return nvme_queue_register_operation_completion(ctrlr, value, cb_fn, cb_arg);
+	}
+
+	return transport->ops.ctrlr_get_reg_4_async(ctrlr, offset, cb_fn, cb_arg);
+}
+
+int
+nvme_transport_ctrlr_get_reg_8_async(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset,
+				     spdk_nvme_reg_cb cb_fn, void *cb_arg)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+	uint64_t value;
+	int rc;
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_get_reg_8_async == NULL) {
+		rc = transport->ops.ctrlr_get_reg_8(ctrlr, offset, &value);
+		if (rc != 0) {
+			return rc;
+		}
+
+		return nvme_queue_register_operation_completion(ctrlr, value, cb_fn, cb_arg);
+	}
+
+	return transport->ops.ctrlr_get_reg_8_async(ctrlr, offset, cb_fn, cb_arg);
 }
 
 uint32_t
@@ -259,6 +412,58 @@ nvme_transport_ctrlr_unmap_cmb(struct spdk_nvme_ctrlr *ctrlr)
 	return 0;
 }
 
+int
+nvme_transport_ctrlr_enable_pmr(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_enable_pmr != NULL) {
+		return transport->ops.ctrlr_enable_pmr(ctrlr);
+	}
+
+	return -ENOSYS;
+}
+
+int
+nvme_transport_ctrlr_disable_pmr(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_disable_pmr != NULL) {
+		return transport->ops.ctrlr_disable_pmr(ctrlr);
+	}
+
+	return -ENOSYS;
+}
+
+void *
+nvme_transport_ctrlr_map_pmr(struct spdk_nvme_ctrlr *ctrlr, size_t *size)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_map_pmr != NULL) {
+		return transport->ops.ctrlr_map_pmr(ctrlr, size);
+	}
+
+	return NULL;
+}
+
+int
+nvme_transport_ctrlr_unmap_pmr(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_unmap_pmr != NULL) {
+		return transport->ops.ctrlr_unmap_pmr(ctrlr);
+	}
+
+	return -ENOSYS;
+}
+/* 创建qpair关键函数 */
 struct spdk_nvme_qpair *
 nvme_transport_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid,
 				     const struct spdk_nvme_io_qpair_opts *opts)
@@ -275,10 +480,11 @@ nvme_transport_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid
 	return qpair;
 }
 
-int
+void
 nvme_transport_ctrlr_delete_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
 	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+	int rc;
 
 	assert(transport != NULL);
 
@@ -287,31 +493,44 @@ nvme_transport_ctrlr_delete_io_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_
 	 * own unique transport objects since they contain function pointers).  So we look up the
 	 * transport object in the delete_io_qpair case.
 	 */
-	return transport->ops.ctrlr_delete_io_qpair(ctrlr, qpair);
+	rc = transport->ops.ctrlr_delete_io_qpair(ctrlr, qpair);
+	if (rc != 0) {
+		SPDK_ERRLOG("transport %s returned non-zero for ctrlr_delete_io_qpair op\n",
+			    transport->ops.name);
+		assert(false);
+	}
 }
 
+static void
+nvme_transport_connect_qpair_fail(struct spdk_nvme_qpair *qpair, void *unused)
+{
+	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
+
+	/* If the qpair was unable to reconnect, restore the original failure reason */
+	qpair->transport_failure_reason = qpair->last_transport_failure_reason;
+	nvme_transport_ctrlr_disconnect_qpair(ctrlr, qpair);
+}
+/* 创建qpair关键函数 */
 int
 nvme_transport_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
 	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
-	uint8_t transport_failure_reason;
 	int rc;
 
 	assert(transport != NULL);
-	if (!nvme_qpair_is_admin_queue(qpair)) {
+	if (!nvme_qpair_is_admin_queue(qpair) && qpair->transport == NULL) {
 		qpair->transport = transport;
 	}
 
-	transport_failure_reason = qpair->transport_failure_reason;
+	qpair->last_transport_failure_reason = qpair->transport_failure_reason;
 	qpair->transport_failure_reason = SPDK_NVME_QPAIR_FAILURE_NONE;
 
 	nvme_qpair_set_state(qpair, NVME_QPAIR_CONNECTING);
-	rc = transport->ops.ctrlr_connect_qpair(ctrlr, qpair);
+	rc = transport->ops.ctrlr_connect_qpair(ctrlr, qpair); // 此时CQ指令发送完毕
 	if (rc != 0) {
 		goto err;
 	}
 
-	nvme_qpair_set_state(qpair, NVME_QPAIR_CONNECTED);
 	if (qpair->poll_group) {
 		rc = nvme_poll_group_connect_qpair(qpair);
 		if (rc) {
@@ -319,13 +538,32 @@ nvme_transport_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nv
 		}
 	}
 
-	return rc;
+	if (!qpair->async) {
+		/* Busy wait until the qpair exits the connecting state */
+		while (nvme_qpair_get_state(qpair) == NVME_QPAIR_CONNECTING) {
+			if (qpair->poll_group && spdk_nvme_ctrlr_is_fabrics(ctrlr)) {
+				rc = spdk_nvme_poll_group_process_completions(
+					     qpair->poll_group->group, 0,
+					     nvme_transport_connect_qpair_fail);
+			} else {
+				rc = spdk_nvme_qpair_process_completions(qpair, 0);
+			}
 
+			if (rc < 0) {
+				goto err;
+			}
+		}
+	}
+
+	return 0;
 err:
-	/* If the qpair was unable to reconnect, restore the original failure reason. */
-	qpair->transport_failure_reason = transport_failure_reason;
-	nvme_transport_ctrlr_disconnect_qpair(ctrlr, qpair);
-	nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTED);
+	nvme_transport_connect_qpair_fail(qpair, NULL);
+	if (nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING) {
+		assert(qpair->async == true);
+		/* Let the caller to poll the qpair until it is actually disconnected. */
+		return 0;
+	}
+
 	return rc;
 }
 
@@ -341,28 +579,70 @@ nvme_transport_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk
 
 	nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTING);
 	assert(transport != NULL);
-	if (qpair->poll_group) {
+
+	if (qpair->poll_group && (qpair->active_proc == nvme_ctrlr_get_current_process(ctrlr))) {
 		nvme_poll_group_disconnect_qpair(qpair);
 	}
 
 	transport->ops.ctrlr_disconnect_qpair(ctrlr, qpair);
+}
 
-	nvme_qpair_abort_reqs(qpair, 0);
-	nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTED);
+int
+nvme_transport_qpair_get_fd(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair,
+			    struct spdk_event_handler_opts *opts)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.qpair_get_fd != NULL) {
+		return transport->ops.qpair_get_fd(qpair, opts);
+	}
+
+	return -ENOTSUP;
 }
 
 void
-nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair, uint32_t dnr)
+nvme_transport_ctrlr_disconnect_qpair_done(struct spdk_nvme_qpair *qpair)
+{
+	if (qpair->active_proc == nvme_ctrlr_get_current_process(qpair->ctrlr) ||
+	    nvme_qpair_is_admin_queue(qpair)) {
+		nvme_qpair_abort_all_queued_reqs(qpair);
+	}
+	nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTED);
+
+	/* In interrupt mode qpairs that are added to poll group need an event for the
+	 * disconnected qpairs handling to kick in.
+	 */
+	if (qpair->poll_group) {
+		nvme_poll_group_write_disconnect_qpair_fd(qpair->poll_group->group);
+	}
+}
+
+int
+nvme_transport_ctrlr_get_memory_domains(const struct spdk_nvme_ctrlr *ctrlr,
+					struct spdk_memory_domain **domains, int array_size)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	assert(transport != NULL);
+	if (transport->ops.ctrlr_get_memory_domains) {
+		return transport->ops.ctrlr_get_memory_domains(ctrlr, domains, array_size);
+	}
+
+	return 0;
+}
+
+void
+nvme_transport_qpair_abort_reqs(struct spdk_nvme_qpair *qpair)
 {
 	const struct spdk_nvme_transport *transport;
 
-	assert(dnr <= 1);
 	if (spdk_likely(!nvme_qpair_is_admin_queue(qpair))) {
-		qpair->transport->ops.qpair_abort_reqs(qpair, dnr);
+		qpair->transport->ops.qpair_abort_reqs(qpair, qpair->abort_dnr);
 	} else {
 		transport = nvme_get_transport(qpair->ctrlr->trid.trstring);
 		assert(transport != NULL);
-		transport->ops.qpair_abort_reqs(qpair, dnr);
+		transport->ops.qpair_abort_reqs(qpair, qpair->abort_dnr);
 	}
 }
 
@@ -379,7 +659,12 @@ nvme_transport_qpair_reset(struct spdk_nvme_qpair *qpair)
 	assert(transport != NULL);
 	return transport->ops.qpair_reset(qpair);
 }
-
+/* nof和本地读写同时使用条件：需要处理qpair的ops */
+/* 细节汇总：一共需要共享的内存指针有 
+ * qpair
+ * qpair->transport->ops
+ * qpair->err_cmd_head 整个链表
+*/
 int
 nvme_transport_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_request *req)
 {
@@ -408,6 +693,21 @@ nvme_transport_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t
 	return transport->ops.qpair_process_completions(qpair, max_completions);
 }
 
+int32_t
+nvme_transport_qpair_check_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
+{
+	const struct spdk_nvme_transport *transport;
+
+	if (spdk_likely(!nvme_qpair_is_admin_queue(qpair))) {
+		return qpair->transport->ops.qpair_check_completions(qpair, max_completions);
+	}
+
+	transport = nvme_get_transport(qpair->ctrlr->trid.trstring);
+	assert(transport != NULL);
+	return transport->ops.qpair_process_completions(qpair, max_completions);
+}
+
+
 int
 nvme_transport_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 				      int (*iter_fn)(struct nvme_request *req, void *arg),
@@ -424,6 +724,19 @@ nvme_transport_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 	return transport->ops.qpair_iterate_requests(qpair, iter_fn, arg);
 }
 
+int
+nvme_transport_qpair_authenticate(struct spdk_nvme_qpair *qpair)
+{
+	const struct spdk_nvme_transport *transport;
+
+	transport = nvme_get_transport(qpair->ctrlr->trid.trstring);
+	if (transport->ops.qpair_authenticate == NULL) {
+		return -ENOTSUP;
+	}
+
+	return transport->ops.qpair_authenticate(qpair);
+}
+
 void
 nvme_transport_admin_qpair_abort_aers(struct spdk_nvme_qpair *qpair)
 {
@@ -432,7 +745,7 @@ nvme_transport_admin_qpair_abort_aers(struct spdk_nvme_qpair *qpair)
 	assert(transport != NULL);
 	transport->ops.admin_qpair_abort_aers(qpair);
 }
-
+/* 分配对应数据结构内存 */
 struct spdk_nvme_transport_poll_group *
 nvme_transport_poll_group_create(const struct spdk_nvme_transport *transport)
 {
@@ -443,9 +756,21 @@ nvme_transport_poll_group_create(const struct spdk_nvme_transport *transport)
 		group->transport = transport;
 		STAILQ_INIT(&group->connected_qpairs);
 		STAILQ_INIT(&group->disconnected_qpairs);
+		group->num_connected_qpairs = 0;
 	}
 
 	return group;
+}
+
+struct spdk_nvme_transport_poll_group *
+nvme_transport_qpair_get_optimal_poll_group(const struct spdk_nvme_transport *transport,
+		struct spdk_nvme_qpair *qpair)
+{
+	if (transport->ops.qpair_get_optimal_poll_group) {
+		return transport->ops.qpair_get_optimal_poll_group(qpair);
+	} else {
+		return NULL;
+	}
 }
 
 int
@@ -454,7 +779,7 @@ nvme_transport_poll_group_add(struct spdk_nvme_transport_poll_group *tgroup,
 {
 	int rc;
 
-	rc = tgroup->transport->ops.poll_group_add(tgroup, qpair);
+	rc = tgroup->transport->ops.poll_group_add(tgroup, qpair); // pcie的话是什么都不做
 	if (rc == 0) {
 		qpair->poll_group = tgroup;
 		assert(nvme_qpair_get_state(qpair) < NVME_QPAIR_CONNECTED);
@@ -469,62 +794,47 @@ int
 nvme_transport_poll_group_remove(struct spdk_nvme_transport_poll_group *tgroup,
 				 struct spdk_nvme_qpair *qpair)
 {
-	int rc;
+	int rc __attribute__((unused));
 
-	rc = tgroup->transport->ops.poll_group_remove(tgroup, qpair);
-	if (rc == 0) {
-		if (qpair->poll_group_tailq_head == &tgroup->connected_qpairs) {
-			STAILQ_REMOVE(&tgroup->connected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
-		} else if (qpair->poll_group_tailq_head == &tgroup->disconnected_qpairs) {
-			STAILQ_REMOVE(&tgroup->disconnected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
-		} else {
-			return -ENOENT;
-		}
-
-		qpair->poll_group = NULL;
-		qpair->poll_group_tailq_head = NULL;
+	if (qpair->poll_group_tailq_head == &tgroup->connected_qpairs) {
+		return -EINVAL;
+	} else if (qpair->poll_group_tailq_head != &tgroup->disconnected_qpairs) {
+		return -ENOENT;
 	}
 
-	return rc;
+	rc = tgroup->transport->ops.poll_group_remove(tgroup, qpair);
+	assert(rc == 0);
+
+	STAILQ_REMOVE(&tgroup->disconnected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
+
+	qpair->poll_group = NULL;
+	qpair->poll_group_tailq_head = NULL;
+
+	return 0;
 }
 
 int64_t
 nvme_transport_poll_group_process_completions(struct spdk_nvme_transport_poll_group *tgroup,
 		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb)
 {
-	struct spdk_nvme_qpair *qpair;
-	int64_t rc;
-
-	tgroup->in_completion_context = true;
-	rc = tgroup->transport->ops.poll_group_process_completions(tgroup, completions_per_qpair,
+	return tgroup->transport->ops.poll_group_process_completions(tgroup, completions_per_qpair,
 			disconnected_qpair_cb);
-	tgroup->in_completion_context = false;
+}
 
-	if (spdk_unlikely(tgroup->num_qpairs_to_delete > 0)) {
-		/* deleted qpairs are more likely to be in the disconnected qpairs list. */
-		STAILQ_FOREACH(qpair, &tgroup->disconnected_qpairs, poll_group_stailq) {
-			if (spdk_unlikely(qpair->delete_after_completion_context)) {
-				spdk_nvme_ctrlr_free_io_qpair(qpair);
-				if (--tgroup->num_qpairs_to_delete == 0) {
-					return rc;
-				}
-			}
-		}
+int64_t
+nvme_transport_poll_group_check_completions(struct spdk_nvme_transport_poll_group *tgroup,
+		uint32_t completions_per_qpair, spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb)
+{
+	return tgroup->transport->ops.poll_group_check_completions(tgroup, completions_per_qpair,
+			disconnected_qpair_cb);
+}
 
-		STAILQ_FOREACH(qpair, &tgroup->connected_qpairs, poll_group_stailq) {
-			if (spdk_unlikely(qpair->delete_after_completion_context)) {
-				spdk_nvme_ctrlr_free_io_qpair(qpair);
-				if (--tgroup->num_qpairs_to_delete == 0) {
-					return rc;
-				}
-			}
-		}
-		/* Just in case. */
-		SPDK_DEBUGLOG(SPDK_LOG_NVME, "Mismatch between qpairs to delete and poll group number.\n");
-		tgroup->num_qpairs_to_delete = 0;
-	}
-
-	return rc;
+void
+nvme_transport_poll_group_check_disconnected_qpairs(struct spdk_nvme_transport_poll_group *tgroup,
+		spdk_nvme_disconnected_qpair_cb disconnected_qpair_cb)
+{
+	return tgroup->transport->ops.poll_group_check_disconnected_qpairs(tgroup,
+			disconnected_qpair_cb);
 }
 
 int
@@ -537,7 +847,7 @@ int
 nvme_transport_poll_group_disconnect_qpair(struct spdk_nvme_qpair *qpair)
 {
 	struct spdk_nvme_transport_poll_group *tgroup;
-	int rc;
+	int rc __attribute__((unused));
 
 	tgroup = qpair->poll_group;
 
@@ -547,17 +857,15 @@ nvme_transport_poll_group_disconnect_qpair(struct spdk_nvme_qpair *qpair)
 
 	if (qpair->poll_group_tailq_head == &tgroup->connected_qpairs) {
 		rc = tgroup->transport->ops.poll_group_disconnect_qpair(qpair);
-		if (rc == 0) {
-			qpair->poll_group_tailq_head = &tgroup->disconnected_qpairs;
-			STAILQ_REMOVE(&tgroup->connected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
-			STAILQ_INSERT_TAIL(&tgroup->disconnected_qpairs, qpair, poll_group_stailq);
-			/* EINPROGRESS indicates that a call has already been made to this function.
-			 * It just keeps us from segfaulting on a double removal/insert.
-			 */
-		} else if (rc == -EINPROGRESS) {
-			rc = 0;
-		}
-		return rc;
+		assert(rc == 0);
+
+		qpair->poll_group_tailq_head = &tgroup->disconnected_qpairs;
+		STAILQ_REMOVE(&tgroup->connected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
+		assert(tgroup->num_connected_qpairs > 0);
+		tgroup->num_connected_qpairs--;
+		STAILQ_INSERT_TAIL(&tgroup->disconnected_qpairs, qpair, poll_group_stailq);
+
+		return 0;
 	}
 
 	return -EINVAL;
@@ -581,6 +889,7 @@ nvme_transport_poll_group_connect_qpair(struct spdk_nvme_qpair *qpair)
 			qpair->poll_group_tailq_head = &tgroup->connected_qpairs;
 			STAILQ_REMOVE(&tgroup->disconnected_qpairs, qpair, spdk_nvme_qpair, poll_group_stailq);
 			STAILQ_INSERT_TAIL(&tgroup->connected_qpairs, qpair, poll_group_stailq);
+			tgroup->num_connected_qpairs++;
 		}
 
 		return rc == -EINPROGRESS ? 0 : rc;
@@ -588,4 +897,106 @@ nvme_transport_poll_group_connect_qpair(struct spdk_nvme_qpair *qpair)
 
 
 	return -EINVAL;
+}
+
+int
+nvme_transport_poll_group_get_stats(struct spdk_nvme_transport_poll_group *tgroup,
+				    struct spdk_nvme_transport_poll_group_stat **stats)
+{
+	if (tgroup->transport->ops.poll_group_get_stats) {
+		return tgroup->transport->ops.poll_group_get_stats(tgroup, stats);
+	}
+	return -ENOTSUP;
+}
+
+void
+nvme_transport_poll_group_free_stats(struct spdk_nvme_transport_poll_group *tgroup,
+				     struct spdk_nvme_transport_poll_group_stat *stats)
+{
+	if (tgroup->transport->ops.poll_group_free_stats) {
+		tgroup->transport->ops.poll_group_free_stats(tgroup, stats);
+	}
+}
+
+spdk_nvme_transport_type_t
+nvme_transport_get_trtype(const struct spdk_nvme_transport *transport)
+{
+	return transport->ops.type;
+}
+
+void
+spdk_nvme_transport_get_opts(struct spdk_nvme_transport_opts *opts, size_t opts_size)
+{
+	if (opts == NULL) {
+		SPDK_ERRLOG("opts should not be NULL.\n");
+		return;
+	}
+
+	if (opts_size == 0) {
+		SPDK_ERRLOG("opts_size should not be zero.\n");
+		return;
+	}
+
+	opts->opts_size = opts_size;
+
+#define SET_FIELD(field) \
+	if (offsetof(struct spdk_nvme_transport_opts, field) + sizeof(opts->field) <= opts_size) { \
+		opts->field = g_spdk_nvme_transport_opts.field; \
+	} \
+
+	SET_FIELD(rdma_srq_size);
+	SET_FIELD(rdma_max_cq_size);
+	SET_FIELD(rdma_cm_event_timeout_ms);
+
+	/* Do not remove this statement, you should always update this statement when you adding a new field,
+	 * and do not forget to add the SET_FIELD statement for your added field. */
+	SPDK_STATIC_ASSERT(sizeof(struct spdk_nvme_transport_opts) == 24, "Incorrect size");
+
+#undef SET_FIELD
+}
+
+int
+spdk_nvme_transport_set_opts(const struct spdk_nvme_transport_opts *opts, size_t opts_size)
+{
+	if (opts == NULL) {
+		SPDK_ERRLOG("opts should not be NULL.\n");
+		return -EINVAL;
+	}
+
+	if (opts_size == 0) {
+		SPDK_ERRLOG("opts_size should not be zero.\n");
+		return -EINVAL;
+	}
+
+#define SET_FIELD(field) \
+	if (offsetof(struct spdk_nvme_transport_opts, field) + sizeof(opts->field) <= opts->opts_size) { \
+		g_spdk_nvme_transport_opts.field = opts->field; \
+	} \
+
+	SET_FIELD(rdma_srq_size);
+	SET_FIELD(rdma_max_cq_size);
+	SET_FIELD(rdma_cm_event_timeout_ms);
+
+	g_spdk_nvme_transport_opts.opts_size = opts->opts_size;
+
+#undef SET_FIELD
+
+	return 0;
+}
+
+volatile struct spdk_nvme_registers *
+spdk_nvme_ctrlr_get_registers(struct spdk_nvme_ctrlr *ctrlr)
+{
+	const struct spdk_nvme_transport *transport = nvme_get_transport(ctrlr->trid.trstring);
+
+	if (transport == NULL) {
+		/* Transport does not exist. */
+		return NULL;
+	}
+
+	if (transport->ops.ctrlr_get_registers) {
+		return transport->ops.ctrlr_get_registers(ctrlr);
+	}
+
+	return NULL;
 }

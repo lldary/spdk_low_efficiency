@@ -1,3 +1,8 @@
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
+
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -88,7 +93,7 @@ function print_test_fio_header() {
 function vms_setup() {
 	for vm_conf in "${vms[@]}"; do
 		IFS=',' read -ra conf <<< "$vm_conf"
-		if [[ x"${conf[0]}" == x"" ]] || ! assert_number ${conf[0]}; then
+		if [[ -z ${conf[0]} ]] || ! assert_number ${conf[0]}; then
 			fail "invalid VM configuration syntax $vm_conf"
 		fi
 
@@ -134,10 +139,7 @@ function vms_prepare() {
 function vms_reboot_all() {
 	notice "Rebooting all vms "
 	for vm_num in $1; do
-		vm_exec $vm_num "reboot" || true
-		while vm_os_booted $vm_num; do
-			sleep 0.5
-		done
+		VM_SSH_OPTIONS="-oServerAliveInterval=1" vm_exec $vm_num "reboot -f" || true
 	done
 
 	vm_wait_for_boot 300 $1
@@ -208,17 +210,10 @@ function check_disks() {
 function get_traddr() {
 	local nvme_name=$1
 	local nvme
+
 	nvme="$($rootdir/scripts/gen_nvme.sh)"
-	while read -r line; do
-		if [[ $line == *"TransportID"* ]] && [[ $line == *$nvme_name* ]]; then
-			local word_array=($line)
-			for word in "${word_array[@]}"; do
-				if [[ $word == *"traddr"* ]]; then
-					traddr=$(echo $word | sed 's/traddr://' | sed 's/"//')
-				fi
-			done
-		fi
-	done <<< "$nvme"
+	traddr=$(jq -r ".config[] | select(.params.name == \"$nvme_name\") | .params.traddr" <<< "$nvme")
+	[[ -n $traddr ]] || return 1
 }
 
 function delete_nvme() {

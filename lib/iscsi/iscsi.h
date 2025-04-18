@@ -1,42 +1,14 @@
-/*-
- *   BSD LICENSE
- *
+/*   SPDX-License-Identifier: BSD-3-Clause
  *   Copyright (C) 2008-2012 Daisuke Aoyama <aoyama@peach.ne.jp>.
- *   Copyright (c) Intel Corporation.
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef SPDK_ISCSI_H
 #define SPDK_ISCSI_H
 
 #include "spdk/stdinc.h"
-
+#include "spdk/env.h"
 #include "spdk/bdev.h"
 #include "spdk/iscsi_spec.h"
 #include "spdk/thread.h"
@@ -91,11 +63,11 @@
 #define MAX_DATA_OUT_PER_CONNECTION 16
 
 /*
- * Defines maximum number of data in buffers each connection can have in
+ * Defines default maximum number of data in buffers each connection can have in
  *  use at any given time. So this limit does not affect I/O smaller than
  *  SPDK_BDEV_SMALL_BUF_MAX_SIZE.
  */
-#define MAX_LARGE_DATAIN_PER_CONNECTION 64
+#define DEFAULT_MAX_LARGE_DATAIN_PER_CONNECTION 64
 
 #define SPDK_ISCSI_MAX_BURST_LENGTH	\
 		(SPDK_ISCSI_MAX_RECV_DATA_SEGMENT_LENGTH * MAX_DATA_OUT_PER_CONNECTION)
@@ -132,6 +104,9 @@
  */
 #define ISCSI_LOGOUT_TIMEOUT 5 /* in seconds */
 
+/** Defines how long we should wait until login process completes. */
+#define ISCSI_LOGIN_TIMEOUT 30 /* in seconds */
+
 /* For spdk_iscsi_login_in related function use, we need to avoid the conflict
  * with other errors
  * */
@@ -144,6 +119,7 @@
 struct spdk_mobj {
 	struct spdk_mempool *mp;
 	void *buf;
+	uint32_t data_len;
 };
 
 /*
@@ -152,13 +128,24 @@ struct spdk_mobj {
  */
 #define SPDK_ISCSI_MAX_SGL_DESCRIPTORS	(5)
 
+#define SPDK_CRC32C_INITIAL	0xffffffffUL
+#define SPDK_CRC32C_XOR		0xffffffffUL
+
 typedef void (*iscsi_conn_xfer_complete_cb)(void *cb_arg);
 
 struct spdk_iscsi_pdu {
 	struct iscsi_bhs bhs;
-	struct spdk_mobj *mobj;
+
+	/* Merge multiple Data-OUT PDUs in a sequence into a subtask up to
+	 * SPDK_ISCSI_MAX_RECV_DATA_SEGMENT_LENGTH or the final PDU comes.
+	 *
+	 * Both the size of a data buffer and MaxRecvDataSegmentLength are
+	 * SPDK_ISCSI_MAX_RECV_DATA_SEGMENT_LENGTH at most. Hence the data segment of
+	 * a Data-OUT PDU can be split into two data buffers at most.
+	 */
+	struct spdk_mobj *mobj[2];
+
 	bool is_rejected;
-	uint8_t *data_buf;
 	uint8_t *data;
 	uint8_t header_digest[ISCSI_DIGEST_LEN];
 	uint8_t data_digest[ISCSI_DIGEST_LEN];
@@ -174,6 +161,8 @@ struct spdk_iscsi_pdu {
 	uint32_t cmd_sn;
 	uint32_t writev_offset;
 	uint32_t data_buf_len;
+	uint32_t data_offset;
+	uint32_t crc32c;
 	bool dif_insert_or_strip;
 	struct spdk_dif_ctx dif_ctx;
 	struct spdk_iscsi_conn *conn;
@@ -299,6 +288,7 @@ struct spdk_iscsi_poll_group {
 	STAILQ_HEAD(connections, spdk_iscsi_conn)	connections;
 	struct spdk_sock_group				*sock_group;
 	TAILQ_ENTRY(spdk_iscsi_poll_group)		link;
+	uint32_t					num_active_targets;
 };
 
 struct spdk_iscsi_opts {
@@ -320,6 +310,11 @@ struct spdk_iscsi_opts {
 	bool ImmediateData;
 	uint32_t ErrorRecoveryLevel;
 	bool AllowDuplicateIsid;
+	uint32_t MaxLargeDataInPerConnection;
+	uint32_t MaxR2TPerConnection;
+	uint32_t pdu_pool_size;
+	uint32_t immediate_data_pool_size;
+	uint32_t data_out_pool_size;
 };
 
 struct spdk_iscsi_globals {
@@ -351,6 +346,11 @@ struct spdk_iscsi_globals {
 	bool ImmediateData;
 	uint32_t ErrorRecoveryLevel;
 	bool AllowDuplicateIsid;
+	uint32_t MaxLargeDataInPerConnection;
+	uint32_t MaxR2TPerConnection;
+	uint32_t pdu_pool_size;
+	uint32_t immediate_data_pool_size;
+	uint32_t data_out_pool_size;
 
 	struct spdk_mempool *pdu_pool;
 	struct spdk_mempool *pdu_immediate_data_pool;
@@ -400,7 +400,6 @@ void spdk_iscsi_init(spdk_iscsi_init_cb cb_fn, void *cb_arg);
 typedef void (*spdk_iscsi_fini_cb)(void *arg);
 void spdk_iscsi_fini(spdk_iscsi_fini_cb cb_fn, void *cb_arg);
 void shutdown_iscsi_conns_done(void);
-void spdk_iscsi_config_text(FILE *fp);
 void spdk_iscsi_config_json(struct spdk_json_write_ctx *w);
 
 struct spdk_iscsi_opts *iscsi_opts_alloc(void);
@@ -445,6 +444,21 @@ void iscsi_op_abort_task_set(struct spdk_iscsi_task *task,
 			     uint8_t function);
 void iscsi_queue_task(struct spdk_iscsi_conn *conn, struct spdk_iscsi_task *task);
 
+static inline struct spdk_mobj *
+iscsi_datapool_get(struct spdk_mempool *pool)
+{
+	return spdk_mempool_get(pool);
+}
+
+static inline void
+iscsi_datapool_put(struct spdk_mobj *mobj)
+{
+	assert(mobj != NULL);
+
+	mobj->data_len = 0;
+	spdk_mempool_put(mobj->mp, (void *)mobj);
+}
+
 static inline uint32_t
 iscsi_get_max_immediate_data_size(void)
 {
@@ -453,7 +467,7 @@ iscsi_get_max_immediate_data_size(void)
 	 *  account for a header digest, data digest and additional header
 	 *  segments (AHS).  These are not normally used but they do not
 	 *  take up much space and we need to make sure the worst-case scenario
-	 *  can be satisified by the size returned here.
+	 *  can be satisfied by the size returned here.
 	 */
 	return g_iscsi.FirstBurstLength +
 	       ISCSI_DIGEST_LEN + /* data digest */

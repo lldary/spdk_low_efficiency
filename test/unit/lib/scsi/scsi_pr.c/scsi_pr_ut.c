@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -36,11 +8,11 @@
 #include "scsi/port.c"
 #include "scsi/scsi_pr.c"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "spdk_internal/mock.h"
 
-SPDK_LOG_REGISTER_COMPONENT("scsi", SPDK_LOG_SCSI)
+SPDK_LOG_REGISTER_COMPONENT(scsi)
 
 void
 spdk_scsi_task_set_status(struct spdk_scsi_task *task, int sc, int sk,
@@ -234,6 +206,149 @@ test_reservation_register(void)
 }
 
 static void
+test_all_registrant_reservation_reserve(void)
+{
+	struct spdk_scsi_pr_registrant *reg;
+	struct spdk_scsi_task task = {0};
+	uint32_t gen;
+	int rc;
+
+	task.lun = &g_lun;
+	task.target_port = &g_t_port_0;
+
+	ut_init_reservation_test();
+
+	test_build_registrants();
+	gen = g_lun.pr_generation;
+	/* Test Case: Host A takes all registrant reservation */
+	task.initiator_port = &g_i_port_a;
+	task.status = 0;
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS,
+				 0xa, 0, 0, 0);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(task.status == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
+	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen);
+
+	/* Test case: Host A release reservation - which should pass to next inline -> Host B */
+	task.initiator_port = &g_i_port_a;
+	task.status = 0;
+	rc = scsi_pr_out_release(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS, 0xa);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(task.status == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xb);
+	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen);
+
+	/* Test case: Host A unregister + Host C unregister: Host B left alone.
+	 * Host B than releases reservation - lun should not have any reservation holder *
+	 */
+	task.initiator_port = &g_i_port_a;
+	task.status = 0;
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0xa, 0, 0, 0, 0);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(task.status == 0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_a, &g_t_port_0);
+	SPDK_CU_ASSERT_FATAL(reg == NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == ++gen);
+
+	task.initiator_port = &g_i_port_c;
+	task.status = 0;
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0xc, 0, 0, 0, 0);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(task.status == 0);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_c, &g_t_port_0);
+	SPDK_CU_ASSERT_FATAL(reg == NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == ++gen);
+
+	task.initiator_port = &g_i_port_b;
+	task.status = 0;
+	rc = scsi_pr_out_release(&task, SPDK_SCSI_PR_WRITE_EXCLUSIVE_ALL_REGS, 0xb);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(task.status == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == 0x0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0x0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.holder == NULL);
+	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen);
+
+	ut_deinit_reservation_test();
+}
+
+static void
+test_all_registrant_reservation_access(void)
+{
+	struct spdk_scsi_pr_registrant *reg;
+	struct spdk_scsi_task task = {0};
+	uint8_t cdb[32] = {0};
+	uint32_t gen;
+	int rc;
+
+	task.lun = &g_lun;
+	task.target_port = &g_t_port_0;
+	task.cdb = cdb;
+
+	ut_init_reservation_test();
+
+	test_build_registrants();
+	gen = g_lun.pr_generation;
+
+	/* Test case: registered host A takes EXCLUSIVE_ACCESS_ALL_REGS reservation */
+	task.initiator_port = &g_i_port_a;
+	task.status = 0;
+	rc = scsi_pr_out_reserve(&task, SPDK_SCSI_PR_EXCLUSIVE_ACCESS_ALL_REGS,
+				 0xa, 0, 0, 0);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(task.status == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.rtype == SPDK_SCSI_PR_EXCLUSIVE_ACCESS_ALL_REGS);
+	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
+	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen);
+
+	/* Test case: registered host B tries getting read access */
+	task.initiator_port = &g_i_port_b;
+	task.status = 0;
+	task.cdb[0] = SPDK_SBC_READ_6;
+	rc = scsi_pr_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Test case: registered host B tries getting write access */
+	task.initiator_port = &g_i_port_b;
+	task.status = 0;
+	task.cdb[0] = SPDK_SBC_WRITE_12;
+	rc = scsi_pr_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	/* Test case: B unregisters */
+	task.initiator_port = &g_i_port_b;
+	task.status = 0;
+	rc = scsi_pr_out_register(&task, SPDK_SCSI_PR_OUT_REGISTER,
+				  0xb, 0, 0, 0, 0);
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+	SPDK_CU_ASSERT_FATAL(task.status == 0);
+	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == ++gen);
+	reg = scsi_pr_get_registrant(&g_lun, &g_i_port_b, &g_t_port_0);
+	SPDK_CU_ASSERT_FATAL(reg == NULL);
+
+	/* Test case: un register host B tries getting read access */
+	task.initiator_port = &g_i_port_b;
+	task.status = 0;
+	task.cdb[0] = SPDK_SBC_READ_6;
+	rc = scsi_pr_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+
+	/* Test case: un register host B tries getting write access */
+	task.initiator_port = &g_i_port_b;
+	task.status = 0;
+	task.cdb[0] = SPDK_SBC_WRITE_12;
+	rc = scsi_pr_check(&task);
+	SPDK_CU_ASSERT_FATAL(rc < 0);
+
+	ut_deinit_reservation_test();
+}
+
+static void
 test_reservation_reserve(void)
 {
 	struct spdk_scsi_pr_registrant *reg;
@@ -245,6 +360,11 @@ test_reservation_reserve(void)
 	task.target_port = &g_t_port_0;
 
 	ut_init_reservation_test();
+	/* Test Case: call Release without a reservation */
+	rc = scsi2_release(&task);
+	CU_ASSERT(rc == -EINVAL);
+	CU_ASSERT(task.status == SPDK_SCSI_STATUS_CHECK_CONDITION);
+
 	test_build_registrants();
 
 	gen = g_lun.pr_generation;
@@ -339,7 +459,7 @@ test_reservation_preempt_non_all_regs(void)
 	SPDK_CU_ASSERT_FATAL(g_lun.reservation.crkey == 0xa);
 	SPDK_CU_ASSERT_FATAL(g_lun.pr_generation == gen);
 
-	/* Test Case: Host B premmpts Host A, Check condition is expected
+	/* Test Case: Host B preempts Host A, Check condition is expected
 	 * for zeroed service action reservation key */
 	task.initiator_port = &g_i_port_b;
 	task.status = 0;
@@ -349,7 +469,7 @@ test_reservation_preempt_non_all_regs(void)
 	SPDK_CU_ASSERT_FATAL(rc < 0);
 	SPDK_CU_ASSERT_FATAL(task.status == SPDK_SCSI_STATUS_CHECK_CONDITION);
 
-	/* Test Case: Host B preempts Host A, Host A is unregisted */
+	/* Test Case: Host B preempts Host A, Host A is unregistered */
 	task.status = 0;
 	gen = g_lun.pr_generation;
 	rc = scsi_pr_out_preempt(&task, SPDK_SCSI_PR_OUT_PREEMPT,
@@ -652,21 +772,20 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("reservation_suite", NULL, NULL);
 	CU_ADD_TEST(suite, test_reservation_register);
 	CU_ADD_TEST(suite, test_reservation_reserve);
+	CU_ADD_TEST(suite, test_all_registrant_reservation_reserve);
+	CU_ADD_TEST(suite, test_all_registrant_reservation_access);
 	CU_ADD_TEST(suite, test_reservation_preempt_non_all_regs);
 	CU_ADD_TEST(suite, test_reservation_preempt_all_regs);
 	CU_ADD_TEST(suite, test_reservation_cmds_conflict);
 	CU_ADD_TEST(suite, test_scsi2_reserve_release);
 	CU_ADD_TEST(suite, test_pr_with_scsi2_reserve_release);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 

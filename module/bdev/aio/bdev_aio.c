@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "bdev_aio.h"
@@ -38,7 +11,6 @@
 #include "spdk/barrier.h"
 #include "spdk/bdev.h"
 #include "spdk/bdev_module.h"
-#include "spdk/conf.h"
 #include "spdk/env.h"
 #include "spdk/fd.h"
 #include "spdk/likely.h"
@@ -47,25 +19,43 @@
 #include "spdk/util.h"
 #include "spdk/string.h"
 
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
+#include <sys/eventfd.h>
+
+#ifndef __FreeBSD__
 #include <libaio.h>
+#endif
 
 struct bdev_aio_io_channel {
 	uint64_t				io_inflight;
+#ifdef __FreeBSD__
+	int					kqfd;
+#else
+	io_context_t				io_ctx;
+#endif
 	struct bdev_aio_group_channel		*group_ch;
+	TAILQ_ENTRY(bdev_aio_io_channel)	link;
 };
 
 struct bdev_aio_group_channel {
+	/* eventfd for io completion notification in interrupt mode.
+	 * Negative value like '-1' indicates it is invalid or unused.
+	 */
+	int					efd;
+	struct spdk_interrupt			*intr;
 	struct spdk_poller			*poller;
-	io_context_t				io_ctx;
+	TAILQ_HEAD(, bdev_aio_io_channel)	io_ch_head;
 };
 
 struct bdev_aio_task {
+#ifdef __FreeBSD__
+	struct aiocb			aiocb;
+#else
 	struct iocb			iocb;
+#endif
 	uint64_t			len;
 	struct bdev_aio_io_channel	*ch;
-	TAILQ_ENTRY(bdev_aio_task)	link;
 };
 
 struct file_disk {
@@ -74,8 +64,13 @@ struct file_disk {
 	struct spdk_bdev	disk;
 	char			*filename;
 	int			fd;
+#ifdef RWF_NOWAIT
+	bool			use_nowait;
+#endif
 	TAILQ_ENTRY(file_disk)  link;
 	bool			block_size_override;
+	bool			readonly;
+	bool			fallocate;
 };
 
 /* For user space reaping of completions */
@@ -96,8 +91,7 @@ struct spdk_aio_ring {
 static int bdev_aio_initialize(void);
 static void bdev_aio_fini(void);
 static void aio_free_disk(struct file_disk *fdisk);
-static void bdev_aio_get_spdk_running_config(FILE *fp);
-static TAILQ_HEAD(, file_disk) g_aio_disk_head;
+static TAILQ_HEAD(, file_disk) g_aio_disk_head = TAILQ_HEAD_INITIALIZER(g_aio_disk_head);
 
 #define SPDK_AIO_QUEUE_DEPTH 128
 #define MAX_EVENTS_PER_POLL 32
@@ -112,7 +106,6 @@ static struct spdk_bdev_module aio_if = {
 	.name		= "aio",
 	.module_init	= bdev_aio_initialize,
 	.module_fini	= bdev_aio_fini,
-	.config_text	= bdev_aio_get_spdk_running_config,
 	.get_ctx_size	= bdev_aio_get_ctx_size,
 };
 
@@ -122,11 +115,15 @@ static int
 bdev_aio_open(struct file_disk *disk)
 {
 	int fd;
+	int io_flag = disk->readonly ? O_RDONLY : O_RDWR;
+#ifdef RWF_NOWAIT
+	struct stat st;
+#endif
 
-	fd = open(disk->filename, O_RDWR | O_DIRECT);
+	fd = open(disk->filename, io_flag | O_DIRECT);
 	if (fd < 0) {
 		/* Try without O_DIRECT for non-disk files */
-		fd = open(disk->filename, O_RDWR);
+		fd = open(disk->filename, io_flag);
 		if (fd < 0) {
 			SPDK_ERRLOG("open() failed (file:%s), errno %d: %s\n",
 				    disk->filename, errno, spdk_strerror(errno));
@@ -136,6 +133,14 @@ bdev_aio_open(struct file_disk *disk)
 	}
 
 	disk->fd = fd;
+
+#ifdef RWF_NOWAIT
+	/* Some aio operations can block, for example if number outstanding
+	 * I/O exceeds number of block layer tags. But not all files can
+	 * support RWF_NOWAIT flag. So use RWF_NOWAIT on block devices only.
+	 */
+	disk->use_nowait = fstat(fd, &st) == 0 && S_ISBLK(st.st_mode);
+#endif
 
 	return 0;
 }
@@ -161,66 +166,91 @@ bdev_aio_close(struct file_disk *disk)
 	return 0;
 }
 
-static int64_t
-bdev_aio_readv(struct file_disk *fdisk, struct spdk_io_channel *ch,
-	       struct bdev_aio_task *aio_task,
-	       struct iovec *iov, int iovcnt, uint64_t nbytes, uint64_t offset)
+#ifdef __FreeBSD__
+static int
+bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+		   struct spdk_io_channel *ch, struct bdev_aio_task *aio_task,
+		   struct iovec *iov, int iovcnt, uint64_t nbytes, uint64_t offset)
 {
-	struct iocb *iocb = &aio_task->iocb;
+	struct aiocb *aiocb = &aio_task->aiocb;
 	struct bdev_aio_io_channel *aio_ch = spdk_io_channel_get_ctx(ch);
-	int rc;
 
-	io_prep_preadv(iocb, fdisk->fd, iov, iovcnt, offset);
-	iocb->data = aio_task;
+	memset(aiocb, 0, sizeof(struct aiocb));
+	aiocb->aio_fildes = fdisk->fd;
+	aiocb->aio_iov = iov;
+	aiocb->aio_iovcnt = iovcnt;
+	aiocb->aio_offset = offset;
+	aiocb->aio_sigevent.sigev_notify_kqueue = aio_ch->kqfd;
+	aiocb->aio_sigevent.sigev_value.sival_ptr = aio_task;
+	aiocb->aio_sigevent.sigev_notify = SIGEV_KEVENT;
+
 	aio_task->len = nbytes;
 	aio_task->ch = aio_ch;
 
-	SPDK_DEBUGLOG(SPDK_LOG_AIO, "read %d iovs size %lu to off: %#lx\n",
-		      iovcnt, nbytes, offset);
-
-	rc = io_submit(aio_ch->group_ch->io_ctx, 1, &iocb);
-	if (rc < 0) {
-		if (rc == -EAGAIN) {
-			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_NOMEM);
-		} else {
-			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_FAILED);
-			SPDK_ERRLOG("%s: io_submit returned %d\n", __func__, rc);
-		}
-		return -1;
+	if (type == SPDK_BDEV_IO_TYPE_READ) {
+		return aio_readv(aiocb);
 	}
-	aio_ch->io_inflight++;
-	return nbytes;
-}
 
-static int64_t
-bdev_aio_writev(struct file_disk *fdisk, struct spdk_io_channel *ch,
-		struct bdev_aio_task *aio_task,
-		struct iovec *iov, int iovcnt, size_t len, uint64_t offset)
+	return aio_writev(aiocb);
+}
+#else
+static int
+bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+		   struct spdk_io_channel *ch, struct bdev_aio_task *aio_task,
+		   struct iovec *iov, int iovcnt, uint64_t nbytes, uint64_t offset)
 {
 	struct iocb *iocb = &aio_task->iocb;
 	struct bdev_aio_io_channel *aio_ch = spdk_io_channel_get_ctx(ch);
-	int rc;
 
-	io_prep_pwritev(iocb, fdisk->fd, iov, iovcnt, offset);
+	if (type == SPDK_BDEV_IO_TYPE_READ) {
+		io_prep_preadv(iocb, fdisk->fd, iov, iovcnt, offset);
+	} else {
+		io_prep_pwritev(iocb, fdisk->fd, iov, iovcnt, offset);
+	}
+
+	if (aio_ch->group_ch->efd >= 0) {
+		io_set_eventfd(iocb, aio_ch->group_ch->efd);
+	}
 	iocb->data = aio_task;
-	aio_task->len = len;
+#ifdef RWF_NOWAIT
+	if (fdisk->use_nowait) {
+		iocb->aio_rw_flags = RWF_NOWAIT;
+	}
+#endif
+	aio_task->len = nbytes;
 	aio_task->ch = aio_ch;
 
-	SPDK_DEBUGLOG(SPDK_LOG_AIO, "write %d iovs size %lu from off: %#lx\n",
-		      iovcnt, len, offset);
+	return io_submit(aio_ch->io_ctx, 1, &iocb);
+}
+#endif
 
-	rc = io_submit(aio_ch->group_ch->io_ctx, 1, &iocb);
-	if (rc < 0) {
+static void
+bdev_aio_rw(enum spdk_bdev_io_type type, struct file_disk *fdisk,
+	    struct spdk_io_channel *ch, struct bdev_aio_task *aio_task,
+	    struct iovec *iov, int iovcnt, uint64_t nbytes, uint64_t offset)
+{
+	struct bdev_aio_io_channel *aio_ch = spdk_io_channel_get_ctx(ch);
+	int rc;
+
+	if (type == SPDK_BDEV_IO_TYPE_READ) {
+		SPDK_DEBUGLOG(aio, "read %d iovs size %lu to off: %#lx\n",
+			      iovcnt, nbytes, offset);
+	} else {
+		SPDK_DEBUGLOG(aio, "write %d iovs size %lu from off: %#lx\n",
+			      iovcnt, nbytes, offset);
+	}
+
+	rc = bdev_aio_submit_io(type, fdisk, ch, aio_task, iov, iovcnt, nbytes, offset);
+	if (spdk_unlikely(rc < 0)) {
 		if (rc == -EAGAIN) {
 			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_NOMEM);
 		} else {
-			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_FAILED);
+			spdk_bdev_io_complete_aio_status(spdk_bdev_io_from_ctx(aio_task), rc);
 			SPDK_ERRLOG("%s: io_submit returned %d\n", __func__, rc);
 		}
-		return -1;
+	} else {
+		aio_ch->io_inflight++;
 	}
-	aio_ch->io_inflight++;
-	return len;
 }
 
 static void
@@ -228,14 +258,58 @@ bdev_aio_flush(struct file_disk *fdisk, struct bdev_aio_task *aio_task)
 {
 	int rc = fsync(fdisk->fd);
 
-	spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task),
-			      rc == 0 ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED);
+	if (rc == 0) {
+		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_SUCCESS);
+	} else {
+		spdk_bdev_io_complete_aio_status(spdk_bdev_io_from_ctx(aio_task), -errno);
+	}
 }
 
-static int
-bdev_aio_destruct(void *ctx)
+#ifndef __FreeBSD__
+static void
+bdev_aio_fallocate(struct spdk_bdev_io *bdev_io, int mode)
 {
-	struct file_disk *fdisk = ctx;
+	struct file_disk *fdisk = (struct file_disk *)bdev_io->bdev->ctxt;
+	struct bdev_aio_task *aio_task = (struct bdev_aio_task *)bdev_io->driver_ctx;
+	uint64_t offset_bytes = bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen;
+	uint64_t length_bytes = bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen;
+	int rc;
+
+	if (!fdisk->fallocate) {
+		spdk_bdev_io_complete_aio_status(spdk_bdev_io_from_ctx(aio_task), -ENOTSUP);
+		return;
+	}
+
+	rc = fallocate(fdisk->fd, mode, offset_bytes, length_bytes);
+	if (rc == 0) {
+		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_SUCCESS);
+	} else {
+		spdk_bdev_io_complete_aio_status(spdk_bdev_io_from_ctx(aio_task), -errno);
+	}
+}
+
+static void
+bdev_aio_unmap(struct spdk_bdev_io *bdev_io)
+{
+	int mode = FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE;
+
+	bdev_aio_fallocate(bdev_io, mode);
+}
+
+
+static void
+bdev_aio_write_zeros(struct spdk_bdev_io *bdev_io)
+{
+	int mode = FALLOC_FL_ZERO_RANGE;
+
+	bdev_aio_fallocate(bdev_io, mode);
+}
+#endif
+
+static void
+bdev_aio_destruct_cb(void *io_device)
+{
+	struct file_disk *fdisk = io_device;
 	int rc = 0;
 
 	TAILQ_REMOVE(&g_aio_disk_head, fdisk, link);
@@ -243,11 +317,72 @@ bdev_aio_destruct(void *ctx)
 	if (rc < 0) {
 		SPDK_ERRLOG("bdev_aio_close() failed\n");
 	}
-	spdk_io_device_unregister(fdisk, NULL);
 	aio_free_disk(fdisk);
-	return rc;
 }
 
+static int
+bdev_aio_destruct(void *ctx)
+{
+	struct file_disk *fdisk = ctx;
+
+	spdk_io_device_unregister(fdisk, bdev_aio_destruct_cb);
+
+	return 0;
+}
+
+#ifdef __FreeBSD__
+static int
+bdev_user_io_getevents(int kq, unsigned int max, struct kevent *events)
+{
+	struct timespec ts;
+	int count;
+
+	memset(events, 0, max * sizeof(struct kevent));
+	memset(&ts, 0, sizeof(ts));
+
+	count = kevent(kq, NULL, 0, events, max, &ts);
+	if (count < 0) {
+		SPDK_ERRLOG("failed to get kevents: %s.\n", spdk_strerror(errno));
+		return -errno;
+	}
+
+	return count;
+}
+
+static int
+bdev_aio_io_channel_poll(struct bdev_aio_io_channel *io_ch)
+{
+	int nr, i, res = 0;
+	struct bdev_aio_task *aio_task;
+	struct kevent events[SPDK_AIO_QUEUE_DEPTH];
+
+	nr = bdev_user_io_getevents(io_ch->kqfd, SPDK_AIO_QUEUE_DEPTH, events);
+	if (nr < 0) {
+		return 0;
+	}
+
+	for (i = 0; i < nr; i++) {
+		aio_task = events[i].udata;
+		aio_task->ch->io_inflight--;
+		if (aio_task == NULL) {
+			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_FAILED);
+			break;
+		} else if ((uint64_t)aio_return(&aio_task->aiocb) == aio_task->len) {
+			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_SUCCESS);
+		} else {
+			SPDK_ERRLOG("failed to complete aio: rc %d\n", aio_error(&aio_task->aiocb));
+			res = aio_error(&aio_task->aiocb);
+			if (res != 0) {
+				spdk_bdev_io_complete_aio_status(spdk_bdev_io_from_ctx(aio_task), res);
+			} else {
+				spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_FAILED);
+			}
+		}
+	}
+
+	return nr;
+}
+#else
 static int
 bdev_user_io_getevents(io_context_t io_ctx, unsigned int max, struct io_event *uevents)
 {
@@ -312,33 +447,88 @@ bdev_user_io_getevents(io_context_t io_ctx, unsigned int max, struct io_event *u
 }
 
 static int
-bdev_aio_group_poll(void *arg)
+bdev_aio_io_channel_poll(struct bdev_aio_io_channel *io_ch)
 {
-	struct bdev_aio_group_channel *group_ch = arg;
-	int nr, i = 0;
-	enum spdk_bdev_io_status status;
+	int nr, i, res = 0;
 	struct bdev_aio_task *aio_task;
 	struct io_event events[SPDK_AIO_QUEUE_DEPTH];
 
-	nr = bdev_user_io_getevents(group_ch->io_ctx, SPDK_AIO_QUEUE_DEPTH, events);
-
+	nr = bdev_user_io_getevents(io_ch->io_ctx, SPDK_AIO_QUEUE_DEPTH, events);
 	if (nr < 0) {
-		return SPDK_POLLER_IDLE;
+		return 0;
 	}
 
 	for (i = 0; i < nr; i++) {
 		aio_task = events[i].data;
-		if (events[i].res != aio_task->len) {
-			status = SPDK_BDEV_IO_STATUS_FAILED;
-		} else {
-			status = SPDK_BDEV_IO_STATUS_SUCCESS;
-		}
-
-		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), status);
 		aio_task->ch->io_inflight--;
+		if (events[i].res == aio_task->len) {
+			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_SUCCESS);
+		} else {
+			/* From aio_abi.h, io_event.res is defined __s64, negative errno
+			 * will be assigned to io_event.res for error situation.
+			 * But from libaio.h, io_event.res is defined unsigned long, so
+			 * convert it to signed value for error detection.
+			 */
+			res = (int)events[i].res;
+			if (res < 0) {
+				if (res == -EAGAIN) {
+					spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_NOMEM);
+				} else {
+					SPDK_ERRLOG("failed to complete aio: rc %"PRId64"\n", events[i].res);
+					spdk_bdev_io_complete_aio_status(spdk_bdev_io_from_ctx(aio_task), res);
+				}
+			} else {
+				SPDK_ERRLOG("failed to complete aio: rc %"PRId64"\n", events[i].res);
+				spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_FAILED);
+			}
+		}
+	}
+
+	return nr;
+}
+#endif
+
+static int
+bdev_aio_group_poll(void *arg)
+{
+	struct bdev_aio_group_channel *group_ch = arg;
+	struct bdev_aio_io_channel *io_ch;
+	int nr = 0;
+
+	TAILQ_FOREACH(io_ch, &group_ch->io_ch_head, link) {
+		nr += bdev_aio_io_channel_poll(io_ch);
 	}
 
 	return nr > 0 ? SPDK_POLLER_BUSY : SPDK_POLLER_IDLE;
+}
+
+static int
+bdev_aio_group_interrupt(void *arg)
+{
+	struct bdev_aio_group_channel *group_ch = arg;
+	int rc;
+	uint64_t num_events;
+
+	assert(group_ch->efd >= 0);
+
+	/* if completed IO number is larger than SPDK_AIO_QUEUE_DEPTH,
+	 * io_getevent should be called again to ensure all completed IO are processed.
+	 */
+	rc = read(group_ch->efd, &num_events, sizeof(num_events));
+	if (rc < 0) {
+		SPDK_ERRLOG("failed to acknowledge aio group: %s.\n", spdk_strerror(errno));
+		return -errno;
+	}
+
+	if (num_events > SPDK_AIO_QUEUE_DEPTH) {
+		num_events -= SPDK_AIO_QUEUE_DEPTH;
+		rc = write(group_ch->efd, &num_events, sizeof(num_events));
+		if (rc < 0) {
+			SPDK_ERRLOG("failed to notify aio group: %s.\n", spdk_strerror(errno));
+		}
+	}
+
+	return bdev_aio_group_poll(group_ch);
 }
 
 static void
@@ -406,22 +596,15 @@ bdev_aio_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
 
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
-		bdev_aio_readv((struct file_disk *)bdev_io->bdev->ctxt,
-			       ch,
-			       (struct bdev_aio_task *)bdev_io->driver_ctx,
-			       bdev_io->u.bdev.iovs,
-			       bdev_io->u.bdev.iovcnt,
-			       bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen,
-			       bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
-		break;
 	case SPDK_BDEV_IO_TYPE_WRITE:
-		bdev_aio_writev((struct file_disk *)bdev_io->bdev->ctxt,
-				ch,
-				(struct bdev_aio_task *)bdev_io->driver_ctx,
-				bdev_io->u.bdev.iovs,
-				bdev_io->u.bdev.iovcnt,
-				bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen,
-				bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
+		bdev_aio_rw(bdev_io->type,
+			    (struct file_disk *)bdev_io->bdev->ctxt,
+			    ch,
+			    (struct bdev_aio_task *)bdev_io->driver_ctx,
+			    bdev_io->u.bdev.iovs,
+			    bdev_io->u.bdev.iovcnt,
+			    bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen,
+			    bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
 		break;
 	default:
 		SPDK_ERRLOG("Wrong io type\n");
@@ -429,17 +612,28 @@ bdev_aio_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
 	}
 }
 
-static int _bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+static int
+_bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
+	struct file_disk *fdisk = (struct file_disk *)bdev_io->bdev->ctxt;
+
 	switch (bdev_io->type) {
 	/* Read and write operations must be performed on buffers aligned to
 	 * bdev->required_alignment. If user specified unaligned buffers,
 	 * get the aligned buffer from the pool by calling spdk_bdev_io_get_buf. */
 	case SPDK_BDEV_IO_TYPE_READ:
-	case SPDK_BDEV_IO_TYPE_WRITE:
 		spdk_bdev_io_get_buf(bdev_io, bdev_aio_get_buf_cb,
 				     bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen);
 		return 0;
+	case SPDK_BDEV_IO_TYPE_WRITE:
+		if (fdisk->readonly) {
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		} else {
+			spdk_bdev_io_get_buf(bdev_io, bdev_aio_get_buf_cb,
+					     bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen);
+		}
+		return 0;
+
 	case SPDK_BDEV_IO_TYPE_FLUSH:
 		bdev_aio_flush((struct file_disk *)bdev_io->bdev->ctxt,
 			       (struct bdev_aio_task *)bdev_io->driver_ctx);
@@ -449,12 +643,24 @@ static int _bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev
 		bdev_aio_reset((struct file_disk *)bdev_io->bdev->ctxt,
 			       (struct bdev_aio_task *)bdev_io->driver_ctx);
 		return 0;
+
+#ifndef __FreeBSD__
+	case SPDK_BDEV_IO_TYPE_UNMAP:
+		bdev_aio_unmap(bdev_io);
+		return 0;
+
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+		bdev_aio_write_zeros(bdev_io);
+		return 0;
+#endif
+
 	default:
 		return -1;
 	}
 }
 
-static void bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+static void
+bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	if (_bdev_aio_submit_request(ch, bdev_io) < 0) {
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
@@ -464,6 +670,8 @@ static void bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev
 static bool
 bdev_aio_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 {
+	struct file_disk *fdisk = ctx;
+
 	switch (io_type) {
 	case SPDK_BDEV_IO_TYPE_READ:
 	case SPDK_BDEV_IO_TYPE_WRITE:
@@ -471,17 +679,66 @@ bdev_aio_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 	case SPDK_BDEV_IO_TYPE_RESET:
 		return true;
 
+	case SPDK_BDEV_IO_TYPE_UNMAP:
+	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+		return fdisk->fallocate;
+
 	default:
 		return false;
 	}
 }
 
+#ifdef __FreeBSD__
+static int
+bdev_aio_create_io(struct bdev_aio_io_channel *ch)
+{
+	ch->kqfd = kqueue();
+	if (ch->kqfd < 0) {
+		SPDK_ERRLOG("async I/O context setup failure: %s.\n", spdk_strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
+static void
+bdev_aio_destroy_io(struct bdev_aio_io_channel *ch)
+{
+	close(ch->kqfd);
+}
+#else
+static int
+bdev_aio_create_io(struct bdev_aio_io_channel *ch)
+{
+	if (io_setup(SPDK_AIO_QUEUE_DEPTH, &ch->io_ctx) < 0) {
+		SPDK_ERRLOG("Async I/O context setup failure, likely due to exceeding kernel limit.\n");
+		SPDK_ERRLOG("This limit may be increased using 'sysctl -w fs.aio-max-nr'.\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static void
+bdev_aio_destroy_io(struct bdev_aio_io_channel *ch)
+{
+	io_destroy(ch->io_ctx);
+}
+#endif
+
 static int
 bdev_aio_create_cb(void *io_device, void *ctx_buf)
 {
 	struct bdev_aio_io_channel *ch = ctx_buf;
+	int rc;
+
+	rc = bdev_aio_create_io(ch);
+	if (rc < 0) {
+		return rc;
+	}
 
 	ch->group_ch = spdk_io_channel_get_ctx(spdk_get_io_channel(&aio_if));
+	TAILQ_INSERT_TAIL(&ch->group_ch->io_ch_head, ch, link);
 
 	return 0;
 }
@@ -490,6 +747,11 @@ static void
 bdev_aio_destroy_cb(void *io_device, void *ctx_buf)
 {
 	struct bdev_aio_io_channel *ch = ctx_buf;
+
+	bdev_aio_destroy_io(ch);
+
+	assert(ch->group_ch);
+	TAILQ_REMOVE(&ch->group_ch->io_ch_head, ch, link);
 
 	spdk_put_io_channel(spdk_io_channel_from_ctx(ch->group_ch));
 }
@@ -512,6 +774,12 @@ bdev_aio_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 
 	spdk_json_write_named_string(w, "filename", fdisk->filename);
 
+	spdk_json_write_named_bool(w, "block_size_override", fdisk->block_size_override);
+
+	spdk_json_write_named_bool(w, "readonly", fdisk->readonly);
+
+	spdk_json_write_named_bool(w, "fallocate", fdisk->fallocate);
+
 	spdk_json_write_object_end(w);
 
 	return 0;
@@ -521,6 +789,7 @@ static void
 bdev_aio_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
 	struct file_disk *fdisk = bdev->ctxt;
+	const struct spdk_uuid *uuid = spdk_bdev_get_uuid(bdev);
 
 	spdk_json_write_object_begin(w);
 
@@ -532,6 +801,11 @@ bdev_aio_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w
 		spdk_json_write_named_uint32(w, "block_size", bdev->blocklen);
 	}
 	spdk_json_write_named_string(w, "filename", fdisk->filename);
+	spdk_json_write_named_bool(w, "readonly", fdisk->readonly);
+	spdk_json_write_named_bool(w, "fallocate", fdisk->fallocate);
+	if (!spdk_uuid_is_null(uuid)) {
+		spdk_json_write_named_uuid(w, "uuid", uuid);
+	}
 	spdk_json_write_object_end(w);
 
 	spdk_json_write_object_end(w);
@@ -546,7 +820,8 @@ static const struct spdk_bdev_fn_table aio_fn_table = {
 	.write_config_json	= bdev_aio_write_json_config,
 };
 
-static void aio_free_disk(struct file_disk *fdisk)
+static void
+aio_free_disk(struct file_disk *fdisk)
 {
 	if (fdisk == NULL) {
 		return;
@@ -557,16 +832,53 @@ static void aio_free_disk(struct file_disk *fdisk)
 }
 
 static int
-bdev_aio_group_create_cb(void *io_device, void *ctx_buf)
+bdev_aio_register_interrupt(struct bdev_aio_group_channel *ch)
 {
-	struct bdev_aio_group_channel *ch = ctx_buf;
+	int efd;
 
-	if (io_setup(SPDK_AIO_QUEUE_DEPTH, &ch->io_ctx) < 0) {
-		SPDK_ERRLOG("async I/O context setup failure\n");
+	efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (efd < 0) {
 		return -1;
 	}
 
+	ch->intr = SPDK_INTERRUPT_REGISTER(efd, bdev_aio_group_interrupt, ch);
+	if (ch->intr == NULL) {
+		close(efd);
+		return -1;
+	}
+	ch->efd = efd;
+
+	return 0;
+}
+
+static void
+bdev_aio_unregister_interrupt(struct bdev_aio_group_channel *ch)
+{
+	spdk_interrupt_unregister(&ch->intr);
+	close(ch->efd);
+	ch->efd = -1;
+}
+
+static int
+bdev_aio_group_create_cb(void *io_device, void *ctx_buf)
+{
+	struct bdev_aio_group_channel *ch = ctx_buf;
+	int rc;
+
+	TAILQ_INIT(&ch->io_ch_head);
+	/* Initialize ch->efd to be invalid and unused. */
+	ch->efd = -1;
+	if (spdk_interrupt_mode_is_enabled()) {
+		rc = bdev_aio_register_interrupt(ch);
+		if (rc < 0) {
+			SPDK_ERRLOG("Failed to prepare intr resource to bdev_aio\n");
+			return rc;
+		}
+	}
+
 	ch->poller = SPDK_POLLER_REGISTER(bdev_aio_group_poll, ch, 0);
+	spdk_poller_register_interrupt(ch->poller, NULL, NULL);
+
 	return 0;
 }
 
@@ -575,24 +887,39 @@ bdev_aio_group_destroy_cb(void *io_device, void *ctx_buf)
 {
 	struct bdev_aio_group_channel *ch = ctx_buf;
 
-	io_destroy(ch->io_ctx);
+	if (!TAILQ_EMPTY(&ch->io_ch_head)) {
+		SPDK_ERRLOG("Group channel of bdev aio has uncleared io channel\n");
+	}
 
 	spdk_poller_unregister(&ch->poller);
+	if (spdk_interrupt_mode_is_enabled()) {
+		bdev_aio_unregister_interrupt(ch);
+	}
 }
 
 int
-create_aio_bdev(const char *name, const char *filename, uint32_t block_size)
+create_aio_bdev(const char *name, const char *filename, uint32_t block_size, bool readonly,
+		bool fallocate, const struct spdk_uuid *uuid)
 {
 	struct file_disk *fdisk;
 	uint32_t detected_block_size;
 	uint64_t disk_size;
 	int rc;
 
+#ifdef __FreeBSD__
+	if (fallocate) {
+		SPDK_ERRLOG("Unable to support fallocate on this platform\n");
+		return -ENOTSUP;
+	}
+#endif
+
 	fdisk = calloc(1, sizeof(*fdisk));
 	if (!fdisk) {
 		SPDK_ERRLOG("Unable to allocate enough memory for aio backend\n");
 		return -ENOMEM;
 	}
+	fdisk->readonly = readonly;
+	fdisk->fallocate = fallocate;
 
 	fdisk->filename = strdup(filename);
 	if (!fdisk->filename) {
@@ -671,6 +998,7 @@ create_aio_bdev(const char *name, const char *filename, uint32_t block_size)
 
 	fdisk->disk.blockcnt = disk_size / fdisk->disk.blocklen;
 	fdisk->disk.ctxt = fdisk;
+	spdk_uuid_copy(&fdisk->disk.uuid, uuid);
 
 	fdisk->disk.fn_table = &aio_fn_table;
 
@@ -692,6 +1020,54 @@ error_return:
 	return rc;
 }
 
+static void
+dummy_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *ctx)
+{
+}
+
+int
+bdev_aio_rescan(const char *name)
+{
+	struct spdk_bdev_desc *desc;
+	struct spdk_bdev *bdev;
+	struct file_disk *fdisk;
+	uint64_t disk_size, blockcnt;
+	int rc;
+
+	rc = spdk_bdev_open_ext(name, false, dummy_bdev_event_cb, NULL, &desc);
+	if (rc != 0) {
+		return rc;
+	}
+
+	bdev = spdk_bdev_desc_get_bdev(desc);
+	if (bdev->module != &aio_if) {
+		rc = -ENODEV;
+		goto exit;
+	}
+
+	fdisk = SPDK_CONTAINEROF(bdev, struct file_disk, disk);
+	disk_size = spdk_fd_get_size(fdisk->fd);
+	blockcnt = disk_size / bdev->blocklen;
+
+	if (bdev->blockcnt != blockcnt) {
+		SPDK_NOTICELOG("AIO device is resized: bdev name %s, old block count %" PRIu64 ", new block count %"
+			       PRIu64 "\n",
+			       fdisk->filename,
+			       bdev->blockcnt,
+			       blockcnt);
+		rc = spdk_bdev_notify_blockcnt_change(bdev, blockcnt);
+		if (rc != 0) {
+			SPDK_ERRLOG("Could not change num blocks for aio bdev: name %s, errno: %d.\n",
+				    fdisk->filename, rc);
+			goto exit;
+		}
+	}
+
+exit:
+	spdk_bdev_close(desc);
+	return rc;
+}
+
 struct delete_aio_bdev_ctx {
 	delete_aio_bdev_complete cb_fn;
 	void *cb_arg;
@@ -707,14 +1083,10 @@ aio_bdev_unregister_cb(void *arg, int bdeverrno)
 }
 
 void
-bdev_aio_delete(struct spdk_bdev *bdev, delete_aio_bdev_complete cb_fn, void *cb_arg)
+bdev_aio_delete(const char *name, delete_aio_bdev_complete cb_fn, void *cb_arg)
 {
 	struct delete_aio_bdev_ctx *ctx;
-
-	if (!bdev || bdev->module != &aio_if) {
-		cb_fn(cb_arg, -ENODEV);
-		return;
-	}
+	int rc;
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (ctx == NULL) {
@@ -724,64 +1096,17 @@ bdev_aio_delete(struct spdk_bdev *bdev, delete_aio_bdev_complete cb_fn, void *cb
 
 	ctx->cb_fn = cb_fn;
 	ctx->cb_arg = cb_arg;
-	spdk_bdev_unregister(bdev, aio_bdev_unregister_cb, ctx);
+	rc = spdk_bdev_unregister_by_name(name, &aio_if, aio_bdev_unregister_cb, ctx);
+	if (rc != 0) {
+		aio_bdev_unregister_cb(ctx, rc);
+	}
 }
 
 static int
 bdev_aio_initialize(void)
 {
-	size_t i;
-	struct spdk_conf_section *sp;
-	int rc = 0;
-
-	TAILQ_INIT(&g_aio_disk_head);
 	spdk_io_device_register(&aio_if, bdev_aio_group_create_cb, bdev_aio_group_destroy_cb,
-				sizeof(struct bdev_aio_group_channel),
-				"aio_module");
-
-	sp = spdk_conf_find_section(NULL, "AIO");
-	if (!sp) {
-		return 0;
-	}
-
-	i = 0;
-	while (true) {
-		const char *file;
-		const char *name;
-		const char *block_size_str;
-		uint32_t block_size = 0;
-		long int tmp;
-
-		file = spdk_conf_section_get_nmval(sp, "AIO", i, 0);
-		if (!file) {
-			break;
-		}
-
-		name = spdk_conf_section_get_nmval(sp, "AIO", i, 1);
-		if (!name) {
-			SPDK_ERRLOG("No name provided for AIO disk with file %s\n", file);
-			i++;
-			continue;
-		}
-
-		block_size_str = spdk_conf_section_get_nmval(sp, "AIO", i, 2);
-		if (block_size_str) {
-			tmp = spdk_strtol(block_size_str, 10);
-			if (tmp < 0) {
-				SPDK_ERRLOG("Invalid block size for AIO disk with file %s\n", file);
-				i++;
-				continue;
-			}
-			block_size = (uint32_t)tmp;
-		}
-
-		rc = create_aio_bdev(name, file, block_size);
-		if (rc) {
-			SPDK_ERRLOG("Unable to create AIO bdev from file %s, err is %s\n", file, spdk_strerror(-rc));
-		}
-
-		i++;
-	}
+				sizeof(struct bdev_aio_group_channel), "aio_module");
 
 	return 0;
 }
@@ -792,36 +1117,4 @@ bdev_aio_fini(void)
 	spdk_io_device_unregister(&aio_if, NULL);
 }
 
-static void
-bdev_aio_get_spdk_running_config(FILE *fp)
-{
-	char			*file;
-	char			*name;
-	uint32_t		block_size;
-	struct file_disk	*fdisk;
-
-	fprintf(fp,
-		"\n"
-		"# Users must change this section to match the /dev/sdX devices to be\n"
-		"# exported as iSCSI LUNs. The devices are accessed using Linux AIO.\n"
-		"# The format is:\n"
-		"# AIO <file name> <bdev name> [<block size>]\n"
-		"# The file name is the backing device\n"
-		"# The bdev name can be referenced from elsewhere in the configuration file.\n"
-		"# Block size may be omitted to automatically detect the block size of a disk.\n"
-		"[AIO]\n");
-
-	TAILQ_FOREACH(fdisk, &g_aio_disk_head, link) {
-		file = fdisk->filename;
-		name = fdisk->disk.name;
-		block_size = fdisk->disk.blocklen;
-		fprintf(fp, "  AIO %s %s ", file, name);
-		if (fdisk->block_size_override) {
-			fprintf(fp, "%d", block_size);
-		}
-		fprintf(fp, "\n");
-	}
-	fprintf(fp, "\n");
-}
-
-SPDK_LOG_REGISTER_COMPONENT("aio", SPDK_LOG_AIO)
+SPDK_LOG_REGISTER_COMPONENT(aio)

@@ -1,39 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "common/lib/ut_multithread.c"
 #include "common/lib/test_sock.c"
@@ -42,11 +14,12 @@
 #include "iscsi/portal_grp.c"
 #include "unit/lib/json_mock.c"
 
-#include "spdk_internal/thread.h"
-
 DEFINE_STUB(iscsi_conn_construct, int,
 	    (struct spdk_iscsi_portal *portal, struct spdk_sock *sock),
 	    0);
+DEFINE_STUB(iscsi_check_chap_params, bool,
+	    (bool disable, bool require, bool mutual, int group),
+	    false);
 
 struct spdk_iscsi_globals g_iscsi;
 
@@ -138,83 +111,6 @@ portal_create_twice_case(void)
 }
 
 static void
-parse_portal_ipv4_normal_case(void)
-{
-	const char *string = "192.168.2.0:3260";
-	const char *host_str = "192.168.2.0";
-	const char *port_str = "3260";
-	struct spdk_iscsi_portal *p = NULL;
-	int rc;
-
-	rc = iscsi_parse_portal(string, &p);
-	CU_ASSERT(rc == 0);
-	SPDK_CU_ASSERT_FATAL(p != NULL);
-	CU_ASSERT(strcmp(p->host, host_str) == 0);
-	CU_ASSERT(strcmp(p->port, port_str) == 0);
-
-	iscsi_portal_destroy(p);
-	CU_ASSERT(TAILQ_EMPTY(&g_iscsi.portal_head));
-
-}
-
-static void
-parse_portal_ipv6_normal_case(void)
-{
-	const char *string = "[2001:ad6:1234::]:3260";
-	const char *host_str = "[2001:ad6:1234::]";
-	const char *port_str = "3260";
-	struct spdk_iscsi_portal *p = NULL;
-	int rc;
-
-	rc = iscsi_parse_portal(string, &p);
-	CU_ASSERT(rc == 0);
-	SPDK_CU_ASSERT_FATAL(p != NULL);
-	CU_ASSERT(strcmp(p->host, host_str) == 0);
-	CU_ASSERT(strcmp(p->port, port_str) == 0);
-
-	iscsi_portal_destroy(p);
-	CU_ASSERT(TAILQ_EMPTY(&g_iscsi.portal_head));
-}
-
-static void
-parse_portal_ipv4_skip_port_case(void)
-{
-	const char *string = "192.168.2.0";
-	const char *host_str = "192.168.2.0";
-	const char *port_str = "3260";
-	struct spdk_iscsi_portal *p = NULL;
-	int rc;
-
-	rc = iscsi_parse_portal(string, &p);
-	CU_ASSERT(rc == 0);
-	SPDK_CU_ASSERT_FATAL(p != NULL);
-	CU_ASSERT(strcmp(p->host, host_str) == 0);
-	CU_ASSERT(strcmp(p->port, port_str) == 0);
-
-	iscsi_portal_destroy(p);
-	CU_ASSERT(TAILQ_EMPTY(&g_iscsi.portal_head));
-}
-
-static void
-parse_portal_ipv6_skip_port_case(void)
-{
-	const char *string = "[2001:ad6:1234::]";
-	const char *host_str = "[2001:ad6:1234::]";
-	const char *port_str = "3260";
-	struct spdk_iscsi_portal *p = NULL;
-	int rc;
-
-	rc = iscsi_parse_portal(string, &p);
-	CU_ASSERT(rc == 0);
-	SPDK_CU_ASSERT_FATAL(p != NULL);
-	CU_ASSERT(strcmp(p->host, host_str) == 0);
-	CU_ASSERT(strcmp(p->port, port_str) == 0);
-
-	iscsi_portal_destroy(p);
-	CU_ASSERT(TAILQ_EMPTY(&g_iscsi.portal_head));
-}
-
-static void
 portal_grp_register_unregister_case(void)
 {
 	struct spdk_iscsi_portal *p;
@@ -223,7 +119,7 @@ portal_grp_register_unregister_case(void)
 	const char *host = "192.168.2.0";
 	const char *port = "3260";
 
-	pg1 = iscsi_portal_grp_create(1);
+	pg1 = iscsi_portal_grp_create(1, false);
 	CU_ASSERT(pg1 != NULL);
 
 	p = iscsi_portal_create(host, port);
@@ -254,7 +150,7 @@ portal_grp_register_twice_case(void)
 	const char *host = "192.168.2.0";
 	const char *port = "3260";
 
-	pg1 = iscsi_portal_grp_create(1);
+	pg1 = iscsi_portal_grp_create(1, false);
 	CU_ASSERT(pg1 != NULL);
 
 	p = iscsi_portal_create(host, port);
@@ -294,7 +190,7 @@ portal_grp_add_delete_case(void)
 	set_thread(0);
 
 	/* internal of iscsi_create_portal_group */
-	pg1 = iscsi_portal_grp_create(1);
+	pg1 = iscsi_portal_grp_create(1, false);
 	CU_ASSERT(pg1 != NULL);
 
 	p = iscsi_portal_create(host, port);
@@ -303,7 +199,7 @@ portal_grp_add_delete_case(void)
 	iscsi_portal_grp_add_portal(pg1, p);
 
 	MOCK_SET(spdk_sock_listen, &sock);
-	rc = iscsi_portal_grp_open(pg1);
+	rc = iscsi_portal_grp_open(pg1, false);
 	CU_ASSERT(rc == 0);
 	MOCK_CLEAR_P(spdk_sock_listen);
 
@@ -340,7 +236,7 @@ portal_grp_add_delete_twice_case(void)
 	set_thread(0);
 
 	/* internal of iscsi_create_portal_group related */
-	pg1 = iscsi_portal_grp_create(1);
+	pg1 = iscsi_portal_grp_create(1, false);
 	CU_ASSERT(pg1 != NULL);
 
 	p = iscsi_portal_create(host, port1);
@@ -349,14 +245,14 @@ portal_grp_add_delete_twice_case(void)
 	iscsi_portal_grp_add_portal(pg1, p);
 
 	MOCK_SET(spdk_sock_listen, &sock);
-	rc = iscsi_portal_grp_open(pg1);
+	rc = iscsi_portal_grp_open(pg1, false);
 	CU_ASSERT(rc == 0);
 
 	rc = iscsi_portal_grp_register(pg1);
 	CU_ASSERT(rc == 0);
 
 	/* internal of iscsi_create_portal_group related */
-	pg2 = iscsi_portal_grp_create(2);
+	pg2 = iscsi_portal_grp_create(2, false);
 	CU_ASSERT(pg2 != NULL);
 
 	p = iscsi_portal_create(host, port2);
@@ -364,7 +260,7 @@ portal_grp_add_delete_twice_case(void)
 
 	iscsi_portal_grp_add_portal(pg2, p);
 
-	rc = iscsi_portal_grp_open(pg2);
+	rc = iscsi_portal_grp_open(pg2, false);
 	CU_ASSERT(rc == 0);
 
 	rc = iscsi_portal_grp_register(pg2);
@@ -392,7 +288,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("portal_grp_suite", test_setup, NULL);
@@ -402,18 +297,12 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, portal_create_ipv4_wildcard_case);
 	CU_ADD_TEST(suite, portal_create_ipv6_wildcard_case);
 	CU_ADD_TEST(suite, portal_create_twice_case);
-	CU_ADD_TEST(suite, parse_portal_ipv4_normal_case);
-	CU_ADD_TEST(suite, parse_portal_ipv6_normal_case);
-	CU_ADD_TEST(suite, parse_portal_ipv4_skip_port_case);
-	CU_ADD_TEST(suite, parse_portal_ipv6_skip_port_case);
 	CU_ADD_TEST(suite, portal_grp_register_unregister_case);
 	CU_ADD_TEST(suite, portal_grp_register_twice_case);
 	CU_ADD_TEST(suite, portal_grp_add_delete_case);
 	CU_ADD_TEST(suite, portal_grp_add_delete_twice_case);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

@@ -1,37 +1,10 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 #include "spdk/opal.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 #include "spdk/util.h"
 
 #include "nvme_opal_internal.h"
@@ -421,7 +394,7 @@ opal_response_parse(const uint8_t *buf, size_t length,
 	clen = from_be32(&hdr->com_packet.length);
 	plen = from_be32(&hdr->packet.length);
 	slen = from_be32(&hdr->sub_packet.length);
-	SPDK_DEBUGLOG(SPDK_LOG_OPAL, "Response size: cp: %u, pkt: %u, subpkt: %u\n",
+	SPDK_DEBUGLOG(opal, "Response size: cp: %u, pkt: %u, subpkt: %u\n",
 		      clen, plen, slen);
 
 	if (clen == 0 || plen == 0 || slen == 0 ||
@@ -538,7 +511,7 @@ opal_response_get_u16(const struct spdk_opal_resp_parsed *resp, int index)
 {
 	uint64_t i = opal_response_get_u64(resp, index);
 	if (i > 0xffffull) {
-		SPDK_ERRLOG("parse reponse u16 failed. Overflow\n");
+		SPDK_ERRLOG("parse response u16 failed. Overflow\n");
 		return 0;
 	}
 	return (uint16_t) i;
@@ -549,7 +522,7 @@ opal_response_get_u8(const struct spdk_opal_resp_parsed *resp, int index)
 {
 	uint64_t i = opal_response_get_u64(resp, index);
 	if (i > 0xffull) {
-		SPDK_ERRLOG("parse reponse u8 failed. Overflow\n");
+		SPDK_ERRLOG("parse response u8 failed. Overflow\n");
 		return 0;
 	}
 	return (uint8_t) i;
@@ -602,6 +575,7 @@ static int
 opal_response_status(const struct spdk_opal_resp_parsed *resp)
 {
 	const struct spdk_opal_resp_token *tok;
+	int startlist_idx = -1, endlist_idx = -1;
 
 	/* if we get an EOS token, just return 0 */
 	tok = opal_response_get_token(resp, 0);
@@ -609,24 +583,27 @@ opal_response_status(const struct spdk_opal_resp_parsed *resp)
 		return 0;
 	}
 
-	if (resp->num < 5) {
-		return SPDK_DTAERROR_NO_METHOD_STATUS;
+	/* Search for a StartList token in the response. Start from the end to ensure that we find
+	 * the StartList token after the EndOfData token and not any StartList token that is part
+	 * of the * actual response data. */
+	for (int i = resp->num - 1; i >= 0; i--) {
+		tok = opal_response_get_token(resp, i);
+		if (opal_response_token_matches(tok, SPDK_OPAL_STARTLIST) && startlist_idx == -1) {
+			startlist_idx = i;
+		}
+		if (opal_response_token_matches(tok, SPDK_OPAL_ENDLIST) && endlist_idx == -1) {
+			endlist_idx = i;
+		}
 	}
 
-	tok = opal_response_get_token(resp, resp->num - 5); /* the first token should be STARTLIST */
-	if (!opal_response_token_matches(tok, SPDK_OPAL_STARTLIST)) {
-		return SPDK_DTAERROR_NO_METHOD_STATUS;
-	}
-
-	tok = opal_response_get_token(resp, resp->num - 1); /* the last token should be ENDLIST */
-	if (!opal_response_token_matches(tok, SPDK_OPAL_ENDLIST)) {
+	if (startlist_idx == -1 || endlist_idx == -1 || startlist_idx >= endlist_idx) {
 		return SPDK_DTAERROR_NO_METHOD_STATUS;
 	}
 
 	/* The second and third values in the status list are reserved, and are
 	defined in core spec to be 0x00 and 0x00 and SHOULD be ignored by the host. */
 	return (int)opal_response_get_u64(resp,
-					  resp->num - 4); /* We only need the first value in the status list. */
+					  startlist_idx + 1); /* We only need the first value in the status list. */
 }
 
 static int
@@ -819,18 +796,18 @@ opal_discovery0_end(struct spdk_opal_dev *dev, void *payload, uint32_t payload_s
 			supported = true;
 			break;
 		default:
-			SPDK_INFOLOG(SPDK_LOG_OPAL, "Unknow feature code: %d\n", feat_code);
+			SPDK_INFOLOG(opal, "Unknown feature code: %d\n", feat_code);
 		}
 		cpos += feat_hdr->length + sizeof(*feat_hdr);
 	}
 
 	if (supported == false) {
-		SPDK_ERRLOG("Opal Not Supported.\n");
+		SPDK_INFOLOG(opal, "Opal Not Supported.\n");
 		return -ENOTSUP;
 	}
 
 	if (single_user == false) {
-		SPDK_INFOLOG(SPDK_LOG_OPAL, "Single User Mode Not Supported\n");
+		SPDK_INFOLOG(opal, "Single User Mode Not Supported\n");
 	}
 
 	dev->comid = comid;
@@ -841,7 +818,37 @@ static int
 opal_discovery0(struct spdk_opal_dev *dev, void *payload, uint32_t payload_size)
 {
 	int ret;
+	uint16_t i, sp_list_len;
+	uint8_t *sp_list;
+	bool sp_tcg_supported = false;
 
+	/* NVMe 1.4 chapter 5.25.2 Security Protocol 00h */
+	ret = spdk_nvme_ctrlr_security_receive(dev->ctrlr, SPDK_SCSI_SECP_INFO, 0,
+					       0, payload, payload_size);
+	if (ret) {
+		return ret;
+	}
+
+	/* spc4r31 chapter 7.7.1.3 Supported security protocols list description */
+	sp_list_len = from_be16((uint8_t *)payload + 6);
+	sp_list = (uint8_t *)payload + 8;
+
+	if (sp_list_len + 8 > (int)payload_size) {
+		return -EINVAL;
+	}
+
+	for (i = 0; i < sp_list_len; i++) {
+		if (sp_list[i] == SPDK_SCSI_SECP_TCG) {
+			sp_tcg_supported = true;
+			break;
+		}
+	}
+
+	if (!sp_tcg_supported) {
+		return -ENOTSUP;
+	}
+
+	memset(payload, 0, payload_size);
 	ret = spdk_nvme_ctrlr_security_receive(dev->ctrlr, SPDK_SCSI_SECP_TCG, LV0_DISCOVERY_COMID,
 					       0, payload, payload_size);
 	if (ret) {
@@ -1006,7 +1013,7 @@ opal_get_msid_cpin_pin_done(struct opal_session *sess,
 	opal_key->key_len = strlen;
 	memcpy(opal_key->key, msid_pin, opal_key->key_len);
 
-	SPDK_DEBUGLOG(SPDK_LOG_OPAL, "MSID = %p\n", opal_key->key);
+	SPDK_DEBUGLOG(opal, "MSID = %p\n", opal_key->key);
 	return 0;
 }
 
@@ -1177,7 +1184,7 @@ opal_activate(struct spdk_opal_dev *dev, struct opal_session *sess)
 		return err;
 	}
 
-	/* TODO: Single User Mode for activatation */
+	/* TODO: Single User Mode for activation */
 
 	ret = opal_cmd_finalize(sess, sess->hsn, sess->tsn, true);
 	if (ret) {
@@ -1318,7 +1325,8 @@ opal_lock_unlock_range(struct spdk_opal_dev *dev, struct opal_session *sess,
 	return opal_parse_and_check_status(sess);
 }
 
-static int opal_generic_locking_range_enable_disable(struct spdk_opal_dev *dev,
+static int
+opal_generic_locking_range_enable_disable(struct spdk_opal_dev *dev,
 		struct opal_session *sess,
 		uint8_t *uid, bool read_lock_enabled, bool write_lock_enabled)
 {
@@ -1839,7 +1847,7 @@ struct spdk_opal_dev *
 	}
 
 	if (opal_discovery0(dev, payload, IO_BUFFER_LENGTH)) {
-		SPDK_INFOLOG(SPDK_LOG_OPAL, "Opal is not supported on this device\n");
+		SPDK_INFOLOG(opal, "Opal is not supported on this device\n");
 		free(dev);
 		free(payload);
 		return NULL;
@@ -1938,7 +1946,7 @@ opal_get_active_key_done(struct opal_session *sess, struct spdk_opal_key *active
 	active_key->key_len = str_len;
 	memcpy(active_key->key, key, active_key->key_len);
 
-	SPDK_DEBUGLOG(SPDK_LOG_OPAL, "active key = %p\n", active_key->key);
+	SPDK_DEBUGLOG(opal, "active key = %p\n", active_key->key);
 	return 0;
 }
 
@@ -2539,12 +2547,6 @@ spdk_opal_get_d0_features_info(struct spdk_opal_dev *dev)
 	return &dev->feat_info;
 }
 
-bool
-spdk_opal_supported(struct spdk_opal_dev *dev)
-{
-	return false;
-}
-
 struct spdk_opal_locking_range_info *
 spdk_opal_get_locking_range_info(struct spdk_opal_dev *dev, enum spdk_opal_locking_range id)
 {
@@ -2563,4 +2565,4 @@ spdk_opal_free_locking_range_info(struct spdk_opal_dev *dev, enum spdk_opal_lock
 }
 
 /* Log component for opal submodule */
-SPDK_LOG_REGISTER_COMPONENT("opal", SPDK_LOG_OPAL)
+SPDK_LOG_REGISTER_COMPONENT(opal)

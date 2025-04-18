@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 set -xe
 
 testdir=$(readlink -f $(dirname $0))
@@ -39,4 +42,5 @@ umount "$test_folder_name"
 rm -rf "${testdir:?}/${test_folder_name:?}"
 
 echo "INFO: Deleting partition"
-echo -e "d\n1\nw" | fdisk /dev/$disk_name
+# Zap the entire drive to make sure the partition table is removed as well
+wipefs --all "/dev/$disk_name"

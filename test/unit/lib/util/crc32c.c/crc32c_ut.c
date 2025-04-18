@@ -1,39 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "util/crc32.c"
 #include "util/crc32c.c"
@@ -42,12 +14,33 @@ static void
 test_crc32c(void)
 {
 	uint32_t crc;
-	char buf[1024];
+	char buf[1024], buf1[1024];
+	struct iovec iov[2] = {};
 
 	/* Verify a string's CRC32-C value against the known correct result. */
 	snprintf(buf, sizeof(buf), "%s", "Hello world!");
 	crc = 0xFFFFFFFFu;
 	crc = spdk_crc32c_update(buf, strlen(buf), crc);
+	crc ^= 0xFFFFFFFFu;
+	CU_ASSERT(crc == 0x7b98e751);
+
+	crc = 0xFFFFFFFFu;
+	iov[0].iov_base = buf;
+	iov[0].iov_len = strlen(buf);
+	crc = spdk_crc32c_iov_update(iov, 1, crc);
+	crc ^= 0xFFFFFFFFu;
+	CU_ASSERT(crc == 0x7b98e751);
+
+	crc = 0xFFFFFFFFu;
+	snprintf(buf, sizeof(buf), "%s", "Hello");
+	iov[0].iov_base = buf;
+	iov[0].iov_len = strlen(buf);
+
+	snprintf(buf1, sizeof(buf1), "%s", " world!");
+	iov[1].iov_base = buf1;
+	iov[1].iov_len = strlen(buf1);
+
+	crc = spdk_crc32c_iov_update(iov, 2, crc);
 	crc ^= 0xFFFFFFFFu;
 	CU_ASSERT(crc == 0x7b98e751);
 
@@ -121,24 +114,72 @@ test_crc32c(void)
 	CU_ASSERT(crc == 0x6087809A);
 }
 
+static void
+test_crc32c_nvme(void)
+{
+	unsigned int buf_size = 4096;
+	char buf[buf_size];
+	uint32_t crc;
+	unsigned int i, j;
+
+	/* All the expected CRC values are compliant with
+	* the NVM Command Set Specification 1.0c */
+
+	/* Input buffer = 0s */
+	memset(buf, 0, buf_size);
+	crc = spdk_crc32c_nvme(buf, buf_size, 0);
+	CU_ASSERT(crc == 0x98F94189);
+
+	/* Input buffer = 1s */
+	memset(buf, 0xFF, buf_size);
+	crc = spdk_crc32c_nvme(buf, buf_size, 0);
+	CU_ASSERT(crc == 0x25C1FE13);
+
+	/* Input buffer = 0x00, 0x01, 0x02, ... */
+	memset(buf, 0, buf_size);
+	j = 0;
+	for (i = 0; i < buf_size; i++) {
+		buf[i] = (char)j;
+		if (j == 0xFF) {
+			j = 0;
+		} else {
+			j++;
+		}
+	}
+	crc = spdk_crc32c_nvme(buf, buf_size, 0);
+	CU_ASSERT(crc == 0x9C71FE32);
+
+	/* Input buffer = 0xFF, 0xFE, 0xFD, ... */
+	memset(buf, 0, buf_size);
+	j = 0xFF;
+	for (i = 0; i < buf_size ; i++) {
+		buf[i] = (char)j;
+		if (j == 0) {
+			j = 0xFF;
+		} else {
+			j--;
+		}
+	}
+	crc = spdk_crc32c_nvme(buf, buf_size, 0);
+	CU_ASSERT(crc == 0x214941A8);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("crc32c", NULL, NULL);
 
 	CU_ADD_TEST(suite, test_crc32c);
+	CU_ADD_TEST(suite, test_crc32c_nvme);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 
 	return num_failures;

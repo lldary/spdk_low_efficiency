@@ -4,6 +4,8 @@
 	# public functions in spdk/sock.h
 	spdk_sock_get_default_opts;
 	spdk_sock_getaddr;
+	spdk_sock_get_interface_name;
+	spdk_sock_get_numa_id;
 	spdk_sock_connect;
 	spdk_sock_connect_ext;
 	spdk_sock_listen;
@@ -12,6 +14,7 @@
 	spdk_sock_close;
 	spdk_sock_flush;
 	spdk_sock_recv;
+	spdk_sock_recv_next;
 	spdk_sock_writev;
 	spdk_sock_writev_async;
 	spdk_sock_readv;
@@ -25,23 +28,28 @@
 	spdk_sock_group_get_ctx;
 	spdk_sock_group_add_sock;
 	spdk_sock_group_remove_sock;
+	spdk_sock_group_provide_buf;
 	spdk_sock_group_poll;
 	spdk_sock_group_poll_count;
 	spdk_sock_group_close;
 	spdk_sock_get_optimal_sock_group;
 	spdk_sock_impl_get_opts;
 	spdk_sock_impl_set_opts;
+	spdk_sock_set_default_impl;
+	spdk_sock_get_default_impl;
 	spdk_sock_write_config_json;
-
-	# public functions in spdk/net.h
-	spdk_net_framework_register;
-	spdk_net_framework_start;
-	spdk_net_framework_fini;
-	spdk_net_framework_init_next;
-	spdk_net_framework_fini_next;
+	spdk_sock_get_impl_name;
+	spdk_sock_group_register_interrupt;
+	spdk_sock_group_unregister_interrupt;
 
 	# internal function in spdk_internal/sock.h
 	spdk_net_impl_register;
+	spdk_sock_group_get_buf;
+	spdk_sock_map_insert;
+	spdk_sock_map_release;
+	spdk_sock_map_lookup;
+	spdk_sock_map_find_free;
+	spdk_sock_map_cleanup;
 
 	local: *;
 };

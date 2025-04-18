@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "jsonrpc_internal.h"
@@ -41,7 +13,7 @@ spdk_jsonrpc_server_listen(int domain, int protocol,
 			   spdk_jsonrpc_handle_request_fn handle_request)
 {
 	struct spdk_jsonrpc_server *server;
-	int rc, val, flag, i;
+	int rc, val, i;
 
 	server = calloc(1, sizeof(struct spdk_jsonrpc_server));
 	if (server == NULL) {
@@ -57,7 +29,7 @@ spdk_jsonrpc_server_listen(int domain, int protocol,
 
 	server->handle_request = handle_request;
 
-	server->sockfd = socket(domain, SOCK_STREAM, protocol);
+	server->sockfd = socket(domain, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, protocol);
 	if (server->sockfd < 0) {
 		SPDK_ERRLOG("socket() failed\n");
 		free(server);
@@ -65,12 +37,9 @@ spdk_jsonrpc_server_listen(int domain, int protocol,
 	}
 
 	val = 1;
-	setsockopt(server->sockfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
-
-	flag = fcntl(server->sockfd, F_GETFL);
-	if (fcntl(server->sockfd, F_SETFL, flag | O_NONBLOCK) < 0) {
-		SPDK_ERRLOG("fcntl can't set nonblocking mode for socket, fd: %d (%s)\n",
-			    server->sockfd, spdk_strerror(errno));
+	rc = setsockopt(server->sockfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+	if (rc != 0) {
+		SPDK_ERRLOG("could not set SO_REUSEADDR sock option: %s\n", spdk_strerror(errno));
 		close(server->sockfd);
 		free(server);
 		return NULL;
@@ -116,6 +85,15 @@ jsonrpc_server_free_conn_request(struct spdk_jsonrpc_server_conn *conn)
 
 	jsonrpc_free_request(conn->send_request);
 	conn->send_request = NULL ;
+
+	pthread_spin_lock(&conn->queue_lock);
+	/* There might still be some requests being processed.
+	 * We need to tell them that this connection is closed. */
+	STAILQ_FOREACH(request, &conn->outstanding_queue, link) {
+		request->conn = NULL;
+	}
+	pthread_spin_unlock(&conn->queue_lock);
+
 	while ((request = jsonrpc_server_dequeue_request(conn)) != NULL) {
 		jsonrpc_free_request(request);
 	}
@@ -217,6 +195,7 @@ jsonrpc_server_accept(struct spdk_jsonrpc_server *server)
 		conn->recv_len = 0;
 		conn->outstanding_requests = 0;
 		STAILQ_INIT(&conn->send_queue);
+		STAILQ_INIT(&conn->outstanding_queue);
 		conn->send_request = NULL;
 
 		if (pthread_spin_init(&conn->queue_lock, PTHREAD_PROCESS_PRIVATE)) {
@@ -298,12 +277,12 @@ jsonrpc_server_conn_recv(struct spdk_jsonrpc_server_conn *conn)
 		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
 			return 0;
 		}
-		SPDK_DEBUGLOG(SPDK_LOG_RPC, "recv() failed: %s\n", spdk_strerror(errno));
+		SPDK_DEBUGLOG(rpc, "recv() failed: %s\n", spdk_strerror(errno));
 		return -1;
 	}
 
 	if (rc == 0) {
-		SPDK_DEBUGLOG(SPDK_LOG_RPC, "remote closed connection\n");
+		SPDK_DEBUGLOG(rpc, "remote closed connection\n");
 		conn->closed = true;
 		return 0;
 	}
@@ -339,8 +318,16 @@ jsonrpc_server_send_response(struct spdk_jsonrpc_request *request)
 {
 	struct spdk_jsonrpc_server_conn *conn = request->conn;
 
+	if (conn == NULL) {
+		/* We cannot respond to the request, because the connection is closed. */
+		SPDK_WARNLOG("Unable to send response: connection closed.\n");
+		jsonrpc_free_request(request);
+		return;
+	}
+
 	/* Queue the response to be sent */
 	pthread_spin_lock(&conn->queue_lock);
+	STAILQ_REMOVE(&conn->outstanding_queue, request, spdk_jsonrpc_request, link);
 	STAILQ_INSERT_TAIL(&conn->send_queue, request, link);
 	pthread_spin_unlock(&conn->queue_lock);
 }
@@ -367,6 +354,11 @@ more:
 		return 0;
 	}
 
+	if (request->send_offset == 0) {
+		/* A byte for the null terminator is included in the send buffer. */
+		request->send_buf[request->send_len] = '\0';
+	}
+
 	if (request->send_len > 0) {
 		rc = send(conn->sockfd, request->send_buf + request->send_offset,
 			  request->send_len, 0);
@@ -375,7 +367,7 @@ more:
 				return 0;
 			}
 
-			SPDK_DEBUGLOG(SPDK_LOG_RPC, "send() failed: %s\n", spdk_strerror(errno));
+			SPDK_DEBUGLOG(rpc, "send() failed: %s\n", spdk_strerror(errno));
 			return -1;
 		}
 
@@ -389,7 +381,7 @@ more:
 		 * Free it and set send_request to NULL to move on to the next queued response.
 		 */
 		conn->send_request = NULL;
-		jsonrpc_free_request(request);
+		jsonrpc_complete_request(request);
 		goto more;
 	}
 

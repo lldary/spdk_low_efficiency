@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /** \file
@@ -41,6 +13,10 @@
 #include "spdk/stdinc.h"
 #include "spdk/bdev.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * \brief SPDK block device.
  *
@@ -49,20 +25,31 @@
 
 struct spdk_bdev;
 
+enum spdk_bdev_zone_type {
+	SPDK_BDEV_ZONE_TYPE_CNV		= 0x1,
+	SPDK_BDEV_ZONE_TYPE_SEQWR	= 0x2,
+	SPDK_BDEV_ZONE_TYPE_SEQWP	= 0x3,
+};
+
 enum spdk_bdev_zone_action {
 	SPDK_BDEV_ZONE_CLOSE,
 	SPDK_BDEV_ZONE_FINISH,
 	SPDK_BDEV_ZONE_OPEN,
-	SPDK_BDEV_ZONE_RESET
+	SPDK_BDEV_ZONE_RESET,
+	SPDK_BDEV_ZONE_OFFLINE,
 };
 
 enum spdk_bdev_zone_state {
-	SPDK_BDEV_ZONE_STATE_EMPTY,
-	SPDK_BDEV_ZONE_STATE_OPEN,
-	SPDK_BDEV_ZONE_STATE_FULL,
-	SPDK_BDEV_ZONE_STATE_CLOSED,
-	SPDK_BDEV_ZONE_STATE_READ_ONLY,
-	SPDK_BDEV_ZONE_STATE_OFFLINE
+	SPDK_BDEV_ZONE_STATE_EMPTY	= 0x0,
+	SPDK_BDEV_ZONE_STATE_IMP_OPEN	= 0x1,
+	/* OPEN is an alias for IMP_OPEN. OPEN is kept for backwards compatibility. */
+	SPDK_BDEV_ZONE_STATE_OPEN	= SPDK_BDEV_ZONE_STATE_IMP_OPEN,
+	SPDK_BDEV_ZONE_STATE_FULL	= 0x2,
+	SPDK_BDEV_ZONE_STATE_CLOSED	= 0x3,
+	SPDK_BDEV_ZONE_STATE_READ_ONLY	= 0x4,
+	SPDK_BDEV_ZONE_STATE_OFFLINE	= 0x5,
+	SPDK_BDEV_ZONE_STATE_EXP_OPEN	= 0x6,
+	SPDK_BDEV_ZONE_STATE_NOT_WP	= 0x7,
 };
 
 struct spdk_bdev_zone_info {
@@ -70,6 +57,7 @@ struct spdk_bdev_zone_info {
 	uint64_t			write_pointer;
 	uint64_t			capacity;
 	enum spdk_bdev_zone_state	state;
+	enum spdk_bdev_zone_type	type;
 };
 
 /**
@@ -81,7 +69,38 @@ struct spdk_bdev_zone_info {
 uint64_t spdk_bdev_get_zone_size(const struct spdk_bdev *bdev);
 
 /**
+ * Get the number of zones for the given device.
+ *
+ * \param bdev Block device to query.
+ * \return The number of zones.
+ */
+uint64_t spdk_bdev_get_num_zones(const struct spdk_bdev *bdev);
+
+/**
+ * Get the first logical block of a zone (known as zone_id or zslba)
+ * for a given offset.
+ *
+ * \param bdev Block device to query.
+ * \param offset_blocks The offset, in blocks, from the start of the block device.
+ * \return The zone_id (also known as zslba) for the given offset.
+ */
+uint64_t spdk_bdev_get_zone_id(const struct spdk_bdev *bdev, uint64_t offset_blocks);
+
+/**
+ * Get device maximum zone append data transfer size in logical blocks.
+ *
+ * If this value is 0, there is no limit.
+ *
+ * \param bdev Block device to query.
+ * \return Maximum zone append data transfer size for this zoned device in logical blocks.
+ */
+uint32_t spdk_bdev_get_max_zone_append_size(const struct spdk_bdev *bdev);
+
+/**
  * Get device maximum number of open zones.
+ *
+ * An open zone is defined as a zone being in zone state
+ * SPDK_BDEV_ZONE_STATE_IMP_OPEN or SPDK_BDEV_ZONE_STATE_EXP_OPEN.
  *
  * If this value is 0, there is no limit.
  *
@@ -89,6 +108,20 @@ uint64_t spdk_bdev_get_zone_size(const struct spdk_bdev *bdev);
  * \return Maximum number of open zones for this zoned device.
  */
 uint32_t spdk_bdev_get_max_open_zones(const struct spdk_bdev *bdev);
+
+/**
+ * Get device maximum number of active zones.
+ *
+ * An active zone is defined as a zone being in zone state
+ * SPDK_BDEV_ZONE_STATE_IMP_OPEN, SPDK_BDEV_ZONE_STATE_EXP_OPEN or
+ * SPDK_BDEV_ZONE_STATE_CLOSED.
+ *
+ * If this value is 0, there is no limit.
+ *
+ * \param bdev Block device to query.
+ * \return Maximum number of active zones for this zoned device.
+ */
+uint32_t spdk_bdev_get_max_active_zones(const struct spdk_bdev *bdev);
 
 /**
  * Get device optimal number of open zones.
@@ -129,7 +162,7 @@ int spdk_bdev_get_zone_info(struct spdk_bdev_desc *desc, struct spdk_io_channel 
  * \param desc Block device descriptor.
  * \param ch I/O channel. Obtained by calling spdk_bdev_get_io_channel().
  * \param zone_id First logical block of a zone.
- * \param action Action to perform on a zone (open, close, reset, finish).
+ * \param action Action to perform on a zone (open, close, reset, finish, offline).
  * \param cb Called when the request is complete.
  * \param cb_arg Argument passed to cb.
  *
@@ -255,5 +288,9 @@ int spdk_bdev_zone_appendv_with_md(struct spdk_bdev_desc *desc, struct spdk_io_c
  * \param bdev_io I/O to get append location from.
  */
 uint64_t spdk_bdev_io_get_append_location(struct spdk_bdev_io *bdev_io);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SPDK_BDEV_ZONE_H */

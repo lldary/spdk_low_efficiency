@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2016 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 
-# $1 = "iso" - triggers isolation mode (setting up required environment).
-# $2 = test type posix or vpp. defaults to posix.
-iscsitestinit $1 $2
+iscsitestinit
 
 timing_enter rbd_setup
 rbd_setup $TARGET_IP $TARGET_NAMESPACE
 trap 'rbd_cleanup; exit 1' SIGINT SIGTERM EXIT
 timing_exit rbd_setup
 
-rpc_py="$rootdir/scripts/rpc.py"
-fio_py="$rootdir/scripts/fio.py"
+fio_py="$rootdir/scripts/fio-wrapper"
 
 timing_enter start_iscsi_tgt
 
 "${ISCSI_APP[@]}" -m $ISCSI_TEST_CORE_MASK --wait-for-rpc &
 pid=$!
 
-trap 'killprocess $pid; rbd_cleanup; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
+trap 'killprocess $pid; rbd_cleanup; iscsitestfini; exit 1' SIGINT SIGTERM EXIT
 
 waitforlisten $pid
 $rpc_py iscsi_set_options -o 30 -a 16
@@ -33,7 +33,9 @@ timing_exit start_iscsi_tgt
 
 $rpc_py iscsi_create_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
 $rpc_py iscsi_create_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
-rbd_bdev="$($rpc_py bdev_rbd_create $RBD_POOL $RBD_NAME 4096)"
+rbd_cluster_name="$($rpc_py bdev_rbd_register_cluster iscsi_rbd_cluster --key-file /etc/ceph/ceph.client.admin.keyring --config-file /etc/ceph/ceph.conf)"
+$rpc_py bdev_rbd_get_clusters_info -b $rbd_cluster_name
+rbd_bdev="$($rpc_py bdev_rbd_create $RBD_POOL $RBD_NAME 4096 -c $rbd_cluster_name)"
 $rpc_py bdev_get_bdevs
 
 $rpc_py bdev_rbd_resize $rbd_bdev 2000
@@ -66,7 +68,8 @@ trap - SIGINT SIGTERM EXIT
 
 iscsicleanup
 $rpc_py bdev_rbd_delete $rbd_bdev
+$rpc_py bdev_rbd_unregister_cluster $rbd_cluster_name
 killprocess $pid
 rbd_cleanup
 
-iscsitestfini $1 $2
+iscsitestfini

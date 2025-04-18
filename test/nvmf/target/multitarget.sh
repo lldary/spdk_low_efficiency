@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/nvmf/common.sh
 
-# For the time being this script is just menat to confirm the basic functionality of the
+# For the time being this script is just meant to confirm the basic functionality of the
 # multitarget RPCs as the in-tree applications don't support multi-target functionality.
 rpc_py="$rootdir/test/nvmf/target/multitarget_rpc.py"
 

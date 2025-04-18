@@ -1,42 +1,14 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "env_dpdk/memory.c"
 
 #define UNIT_TEST_NO_VTOPHYS
-#define UNIT_TEST_NO_PCI_ADDR
+#define UNIT_TEST_NO_ENV_MEMORY
 #include "common/lib/test_env.c"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "spdk/bit_array.h"
 
@@ -51,6 +23,14 @@ DEFINE_STUB(spdk_env_dpdk_external_init, bool, (void), true);
 DEFINE_STUB(rte_mem_event_callback_register, int,
 	    (const char *name, rte_mem_event_callback_t clb, void *arg), 0);
 DEFINE_STUB(rte_mem_virt2iova, rte_iova_t, (const void *virtaddr), 0);
+DEFINE_STUB(rte_eal_iova_mode, enum rte_iova_mode, (void), RTE_IOVA_VA);
+DEFINE_STUB(rte_vfio_is_enabled, int, (const char *modname), 0);
+DEFINE_STUB(rte_vfio_noiommu_is_enabled, int, (void), 0);
+DEFINE_STUB(rte_memseg_get_fd_thread_unsafe, int, (const struct rte_memseg *ms), 0);
+DEFINE_STUB(rte_memseg_get_fd_offset_thread_unsafe, int,
+	    (const struct rte_memseg *ms, size_t *offset), 0);
+DEFINE_STUB(dpdk_pci_device_get_mem_resource, struct rte_mem_resource *,
+	    (struct rte_pci_device *dev, uint32_t bar), 0);
 
 static int
 test_mem_map_notify(void *cb_ctx, struct spdk_mem_map *map,
@@ -94,6 +74,8 @@ test_mem_map_notify_fail(void *cb_ctx, struct spdk_mem_map *map,
 			 enum spdk_mem_map_notify_action action, void *vaddr, size_t size)
 {
 	struct spdk_mem_map *reg_map = cb_ctx;
+	uint64_t reg_addr;
+	uint64_t reg_size = size;
 
 	switch (action) {
 	case SPDK_MEM_MAP_NOTIFY_REGISTER:
@@ -101,8 +83,16 @@ test_mem_map_notify_fail(void *cb_ctx, struct spdk_mem_map *map,
 			/* Test the error handling. */
 			return -1;
 		}
+
+		CU_ASSERT(spdk_mem_map_set_translation(map, (uint64_t)vaddr, (uint64_t)size, (uint64_t)vaddr) == 0);
+
 		break;
 	case SPDK_MEM_MAP_NOTIFY_UNREGISTER:
+		/* validate the start address */
+		reg_addr = spdk_mem_map_translate(map, (uint64_t)vaddr, &reg_size);
+		CU_ASSERT(reg_addr == (uint64_t)vaddr);
+		spdk_mem_map_clear_translation(map, (uint64_t)vaddr, size);
+
 		/* Clear the same region in the other mem_map to be able to
 		 * verify that there was no memory left still registered after
 		 * the mem_map creation failure.
@@ -513,9 +503,7 @@ main(int argc, char **argv)
 		return CU_get_error();
 	}
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	spdk_bit_array_free(&g_page_array);

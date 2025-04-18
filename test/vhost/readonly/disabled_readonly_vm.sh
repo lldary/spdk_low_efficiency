@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 set -xe
 
 testdir=$(readlink -f $(dirname $0))
@@ -30,7 +33,7 @@ if (($(lsblk -r -n -o RO -d "/dev/$disk_name") == 1)); then
 fi
 
 parted -s /dev/$disk_name mklabel gpt
-parted -s /dev/$disk_name mkpart primary 2048s 100%
+parted -s /dev/$disk_name mkpart SPDK_TEST 2048s 100%
 partprobe
 sleep 0.1
 

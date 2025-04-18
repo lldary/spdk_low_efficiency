@@ -1,42 +1,17 @@
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
+
 source $rootdir/test/nvmf/common.sh
 
 function migration_tc2_cleanup_nvmf_tgt() {
-	local i
-
-	if [[ ! -r "$nvmf_dir/nvmf_tgt.pid" ]]; then
-		warning "Pid file '$nvmf_dir/nvmf_tgt.pid' does not exist. "
-		return
-	fi
-
-	if [[ -n "$1" ]]; then
-		trap 'error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
-		pkill --signal $1 -F $nvmf_dir/nvmf_tgt.pid || true
-		sleep 5
-		if ! pkill -F $nvmf_dir/nvmf_tgt.pid; then
-			fail "failed to kill nvmf_tgt app"
-		fi
-	else
-		pkill --signal SIGTERM -F $nvmf_dir/nvmf_tgt.pid || true
-		for ((i = 0; i < 20; i++)); do
-			if ! pkill --signal 0 -F $nvmf_dir/nvmf_tgt.pid; then
-				break
-			fi
-			sleep 0.5
-		done
-
-		if pkill --signal 0 -F $nvmf_dir/nvmf_tgt.pid; then
-			error "nvmf_tgt failed to shutdown"
-		fi
-	fi
-
-	rm $nvmf_dir/nvmf_tgt.pid
-	unset -v nvmf_dir rpc_nvmf
+	process_shm --id $NVMF_APP_SHM_ID
+	nvmftestfini
 }
 
 function migration_tc2_cleanup_vhost_config() {
 	timing_enter migration_tc2_cleanup_vhost_config
-
-	trap 'migration_tc2_cleanup_nvmf_tgt SIGKILL; error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
 
 	notice "Shutting down all VMs"
 	vm_shutdown_all
@@ -46,7 +21,7 @@ function migration_tc2_cleanup_vhost_config() {
 	$rpc_0 bdev_nvme_detach_controller Nvme0
 	$rpc_0 vhost_delete_controller $incoming_vm_ctrlr
 
-	$rpc_1 delete_nvme_controller Nvme0
+	$rpc_1 bdev_nvme_detach_controller Nvme0
 	$rpc_1 vhost_delete_controller $target_vm_ctrlr
 
 	notice "killing vhost app"
@@ -56,7 +31,6 @@ function migration_tc2_cleanup_vhost_config() {
 	unset -v incoming_vm target_vm incoming_vm_ctrlr target_vm_ctrlr
 	unset -v rpc_0 rpc_1
 
-	trap 'error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
 	migration_tc2_cleanup_nvmf_tgt
 
 	timing_exit migration_tc2_cleanup_vhost_config
@@ -65,21 +39,19 @@ function migration_tc2_cleanup_vhost_config() {
 function migration_tc2_configure_vhost() {
 	timing_enter migration_tc2_configure_vhost
 
+	TEST_TRANSPORT=${TEST_TRANSPORT:-tcp}
+	NET_TYPE=${NET_TYPE:-phy-fallback} \
+		TEST_MODE=iso nvmftestinit
+
 	# Those are global intentionally - they will be unset in cleanup handler
-	nvmf_dir="$VHOST_DIR/nvmf_tgt"
 
 	incoming_vm=1
 	target_vm=2
 	incoming_vm_ctrlr=naa.VhostScsi0.$incoming_vm
 	target_vm_ctrlr=naa.VhostScsi0.$target_vm
 
-	rpc_nvmf="$rootdir/scripts/rpc.py -s $nvmf_dir/rpc.sock"
 	rpc_0="$rootdir/scripts/rpc.py -s $(get_vhost_dir 0)/rpc.sock"
 	rpc_1="$rootdir/scripts/rpc.py -s $(get_vhost_dir 1)/rpc.sock"
-
-	# Default cleanup/error handlers will not shutdown nvmf_tgt app so setup it
-	# here to teardown in cleanup function
-	trap 'migration_tc2_error_cleanup; error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
 
 	# Run nvmf_tgt and two vhost instances:
 	# nvmf_tgt uses core id 2 (-m 0x4)
@@ -88,24 +60,19 @@ function migration_tc2_configure_vhost() {
 	# This force to use VM 1 and 2.
 	timing_enter start_nvmf_tgt
 	notice "Running nvmf_tgt..."
-	mkdir -p $nvmf_dir
-	rm -f $nvmf_dir/*
-	$SPDK_BIN_DIR/nvmf_tgt -s 512 -m 0x4 -r $nvmf_dir/rpc.sock --wait-for-rpc &
-	local nvmf_tgt_pid=$!
-	echo $nvmf_tgt_pid > $nvmf_dir/nvmf_tgt.pid
-	waitforlisten "$nvmf_tgt_pid" "$nvmf_dir/rpc.sock"
-	$rpc_nvmf framework_start_init
-	$rpc_nvmf nvmf_create_transport -t RDMA -u 8192
-	$rootdir/scripts/gen_nvme.sh --json | $rpc_nvmf load_subsystem_config
+	nvmfappstart -s 512 -m 0x4 --wait-for-rpc
+	# Override the trap set in place via nvmfappstart()
+	trap 'migration_tc2_error_cleanup; error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
+	rpc_cmd framework_start_init
+	rpc_cmd nvmf_create_transport $NVMF_TRANSPORT_OPTS -u 8192
+	mapfile -t json < <("$rootdir/scripts/gen_nvme.sh")
+	rpc_cmd load_subsystem_config -j "'${json[*]}'"
 	timing_exit start_nvmf_tgt
 
-	vhost_run 0 "-m 0x1 -s 512 -u"
-	vhost_run 1 "-m 0x2 -s 512 -u"
+	vhost_run -n 0 -- -m 0x1 -s 512 -u
+	vhost_run -n 1 -- -m 0x2 -s 512 -u
 
-	local rdma_ip_list
-	local nvmf_target_ip
-	rdma_ip_list=$(get_available_rdma_ips)
-	nvmf_target_ip=$(echo "$rdma_ip_list" | head -n 1)
+	local nvmf_target_ip=$NVMF_FIRST_TARGET_IP
 
 	if [[ -z "$nvmf_target_ip" ]]; then
 		fail "no NIC for nvmf target"
@@ -114,15 +81,15 @@ function migration_tc2_configure_vhost() {
 	notice "Configuring nvmf_tgt, vhost devices & controllers via RPC ..."
 
 	# Construct shared bdevs and controllers
-	$rpc_nvmf nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
-	$rpc_nvmf nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Nvme0n1
-	$rpc_nvmf nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t rdma -a $nvmf_target_ip -s 4420
+	rpc_cmd nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+	rpc_cmd nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Nvme0n1
+	rpc_cmd nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t "$TEST_TRANSPORT" -a $nvmf_target_ip -s 4420
 
-	$rpc_0 bdev_nvme_attach_controller -b Nvme0 -t rdma -f ipv4 -a $nvmf_target_ip -s 4420 -n "nqn.2016-06.io.spdk:cnode1"
+	$rpc_0 bdev_nvme_attach_controller -b Nvme0 -t "$TEST_TRANSPORT" -f ipv4 -a $nvmf_target_ip -s 4420 -n "nqn.2016-06.io.spdk:cnode1"
 	$rpc_0 vhost_create_scsi_controller $incoming_vm_ctrlr
 	$rpc_0 vhost_scsi_controller_add_target $incoming_vm_ctrlr 0 Nvme0n1
 
-	$rpc_1 bdev_nvme_attach_controller -b Nvme0 -t rdma -f ipv4 -a $nvmf_target_ip -s 4420 -n "nqn.2016-06.io.spdk:cnode1"
+	$rpc_1 bdev_nvme_attach_controller -b Nvme0 -t "$TEST_TRANSPORT" -f ipv4 -a $nvmf_target_ip -s 4420 -n "nqn.2016-06.io.spdk:cnode1"
 	$rpc_1 vhost_create_scsi_controller $target_vm_ctrlr
 	$rpc_1 vhost_scsi_controller_add_target $target_vm_ctrlr 0 Nvme0n1
 
@@ -144,10 +111,8 @@ function migration_tc2_configure_vhost() {
 }
 
 function migration_tc2_error_cleanup() {
-	trap - SIGINT ERR EXIT
-	set -x
-
 	vm_kill_all
+	migration_tc2_cleanup_nvmf_tgt
 	migration_tc2_cleanup_vhost_config
 	notice "Migration TC2 FAILED"
 }
@@ -156,6 +121,8 @@ function migration_tc2() {
 	# Use 2 VMs:
 	# incoming VM - the one we want to migrate
 	# targe VM - the one which will accept migration
+	# VM uses 1 GiB memory, here we use light IO workload to keep number of dirty pages
+	# is in low rate of VM's memory, see https://github.com/spdk/spdk/issues/2805.
 	local job_file="$testdir/migration-tc2.job"
 	local log_file
 	log_file="/root/$(basename ${job_file%%.*}).log"
@@ -186,7 +153,7 @@ function migration_tc2() {
 	fi
 
 	notice "Waiting for fio to finish"
-	local timeout=40
+	local timeout=20
 	while is_fio_running $target_vm; do
 		sleep 1
 		echo -n "."

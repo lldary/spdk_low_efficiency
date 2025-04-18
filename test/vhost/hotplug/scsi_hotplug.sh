@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/test/common/autotest_common.sh
-source $rootdir/test/vhost/common.sh
-source $rootdir/test/vhost/hotplug/common.sh
+source "$rootdir/test/vhost/hotplug/common.sh"
 
 if [[ $scsi_hot_remove_test == 1 ]] && [[ $blk_hot_remove_test == 1 ]]; then
 	notice "Vhost-scsi and vhost-blk hotremove tests cannot be run together"
@@ -61,7 +62,7 @@ notice "==============="
 notice ""
 notice "running SPDK"
 notice ""
-vhost_run 0
+vhost_run -n 0
 $rpc_py bdev_nvme_set_hotplug -e
 $rpc_py bdev_split_create Nvme0n1 16
 $rpc_py bdev_malloc_create 128 512 -b Malloc

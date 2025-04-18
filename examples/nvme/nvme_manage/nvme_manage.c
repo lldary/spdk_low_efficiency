@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -99,8 +71,14 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	struct spdk_nvme_cmd cmd;
 
 	/* add to dev list */
-	dev = &devs[num_devs++];
-	spdk_pci_addr_parse(&dev->pci_addr, trid->traddr);
+	dev = &devs[num_devs];
+	if (spdk_pci_addr_parse(&dev->pci_addr, trid->traddr) != 0) {
+		fprintf(stderr, "spdk_pci_addr_parse failure\n");
+		assert(false);
+		return;
+	}
+	num_devs++;
+
 	dev->ctrlr = ctrlr;
 
 	/* Retrieve controller data */
@@ -131,7 +109,8 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	}
 }
 
-static void usage(void)
+static void
+usage(void)
 {
 	printf("NVMe Management Options");
 	printf("\n");
@@ -182,8 +161,10 @@ display_namespace(struct spdk_nvme_ns *ns)
 {
 	const struct spdk_nvme_ns_data		*nsdata;
 	uint32_t				i;
+	uint32_t				format_index;
 
 	nsdata = spdk_nvme_ns_get_data(ns);
+	format_index = spdk_nvme_ns_get_format_index(nsdata);
 
 	printf("Namespace ID:%d\n", spdk_nvme_ns_get_id(ns));
 
@@ -203,7 +184,7 @@ display_namespace(struct spdk_nvme_ns *ns)
 	}
 	printf("Number of LBA Formats:       %d\n", nsdata->nlbaf + 1);
 	printf("Current LBA Format:          LBA Format #%02d\n",
-	       nsdata->flbas.format);
+	       format_index);
 	for (i = 0; i <= nsdata->nlbaf; i++)
 		printf("LBA Format #%02d: Data Size: %5d  Metadata Size: %5d\n",
 		       i, 1 << nsdata->lbaf[i].lbads, nsdata->lbaf[i].ms);
@@ -313,7 +294,7 @@ get_line(char *buf, int buf_size, FILE *f, bool secret)
 	}
 
 	if (secret) {
-		ret = tcsetattr(STDIN_FILENO, TCSAFLUSH, &default_attr); /* restore default confing */
+		ret = tcsetattr(STDIN_FILENO, TCSAFLUSH, &default_attr); /* restore default config */
 		if (ret) {
 			return NULL;
 		}
@@ -488,7 +469,8 @@ ns_manage_add(struct dev *device, uint64_t ns_size, uint64_t ns_capacity, int ns
 
 	ndata->nsze = ns_size;
 	ndata->ncap = ns_capacity;
-	ndata->flbas.format = ns_lbasize;
+	ndata->flbas.format = ns_lbasize & 0xF;
+	ndata->flbas.msb_format = (ns_lbasize >> 4) & 0x3;
 	if (SPDK_NVME_FMT_NVM_PROTECTION_DISABLE != ns_dps_type) {
 		ndata->dps.pit = ns_dps_type;
 		ndata->dps.md_start = ns_dps_location;
@@ -522,11 +504,12 @@ nvme_manage_format(struct dev *device, int ns_id, int ses, int pi, int pil, int 
 	int ret = 0;
 	struct spdk_nvme_format format = {};
 
-	format.lbaf	= lbaf;
+	format.lbaf	= lbaf & 0xF;
 	format.ms	= ms;
 	format.pi	= pi;
 	format.pil	= pil;
 	format.ses	= ses;
+	format.lbafu	= (lbaf >> 4) & 0x3;
 	ret = spdk_nvme_ctrlr_format(device->ctrlr, ns_id, &format);
 	if (ret) {
 		fprintf(stdout, "nvme format: Failed\n");
@@ -909,7 +892,7 @@ opal_dump_info(struct spdk_opal_d0_features_info *feat)
 		printf("Opal Geometry feature:\n");
 		printf("Align = %s", (feat->geo.alignment_granularity ? "Y, " : "N, "));
 		printf("Logical block size = %d, ", from_be32(&feat->geo.logical_block_size));
-		printf("Lowest aligned LBA = %ld\n", from_be64(&feat->geo.lowest_aligned_lba));
+		printf("Lowest aligned LBA = %" PRIu64 "\n", from_be64(&feat->geo.lowest_aligned_lba));
 		printf("\n");
 	}
 
@@ -1104,8 +1087,8 @@ opal_setup_lockingrange(struct dev *iter)
 			info = spdk_opal_get_locking_range_info(iter->opal_dev, locking_range_id);
 
 			printf("\nlocking range ID: %d\n", info->locking_range_id);
-			printf("range start: %ld\n", info->range_start);
-			printf("range length: %ld\n", info->range_length);
+			printf("range start: %" PRIu64 "\n", info->range_start);
+			printf("range length: %" PRIu64 "\n", info->range_length);
 			printf("read lock enabled: %d\n", info->read_lock_enabled);
 			printf("write lock enabled: %d\n", info->write_lock_enabled);
 			printf("read locked: %d\n", info->read_locked);
@@ -1168,8 +1151,8 @@ opal_list_locking_ranges(struct dev *iter)
 				printf("locking range ID: %d\t", info->locking_range_id);
 				if (i == 0) { printf("(Global Range)"); }
 				printf("\n===============================================\n");
-				printf("range start: %ld\t", info->range_start);
-				printf("range length: %ld\n", info->range_length);
+				printf("range start: %" PRIu64 "\t", info->range_start);
+				printf("range length: %" PRIu64 "\n", info->range_length);
 				printf("read lock enabled: %d\t", info->read_lock_enabled);
 				printf("write lock enabled: %d\t", info->write_lock_enabled);
 				printf("read locked: %d\t", info->read_locked);
@@ -1445,7 +1428,7 @@ opal_revert_tper(struct dev *iter)
 			return;
 		}
 		printf("Please be noted this operation will erase ALL DATA on this drive\n");
-		printf("Please don't ternminate this excecution. Otherwise undefined error may occur\n");
+		printf("Please don't terminate this execution. Otherwise undefined error may occur\n");
 		printf("Please input password for revert TPer:");
 		while ((ch = getchar()) != '\n' && ch != EOF);
 		passwd_p = get_line(passwd, SPDK_OPAL_MAX_PASSWORD_SIZE, stdin, true);
@@ -1611,16 +1594,20 @@ parse_args(int argc, char **argv)
 	return 0;
 }
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
-	int			i, rc;
+	int			rc;
 	struct spdk_env_opts	opts;
+	struct dev		*dev;
+	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
 
 	rc = parse_args(argc, argv);
 	if (rc != 0) {
 		return rc;
 	}
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "nvme_manage";
 	opts.core_mask = "0x1";
@@ -1632,6 +1619,7 @@ int main(int argc, char **argv)
 
 	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL) != 0) {
 		fprintf(stderr, "spdk_nvme_probe() failed\n");
+		spdk_env_fini();
 		return 1;
 	}
 
@@ -1694,10 +1682,15 @@ int main(int argc, char **argv)
 
 	printf("Cleaning up...\n");
 
-	for (i = 0; i < num_devs; i++) {
-		struct dev *dev = &devs[i];
-		spdk_nvme_detach(dev->ctrlr);
+	foreach_dev(dev) {
+		spdk_nvme_detach_async(dev->ctrlr, &detach_ctx);
 	}
+
+	if (detach_ctx) {
+		spdk_nvme_detach_poll(detach_ctx);
+	}
+
+	spdk_env_fini();
 
 	return 0;
 }

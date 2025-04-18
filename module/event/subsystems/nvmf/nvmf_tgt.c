@@ -1,57 +1,29 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "event_nvmf.h"
 
 #include "spdk/bdev.h"
-#include "spdk/event.h"
 #include "spdk/thread.h"
 #include "spdk/log.h"
 #include "spdk/nvme.h"
 #include "spdk/nvmf_cmd.h"
-#include "spdk/util.h"
+#include "spdk_internal/usdt.h"
 
 enum nvmf_tgt_state {
 	NVMF_TGT_INIT_NONE = 0,
-	NVMF_TGT_INIT_PARSE_CONFIG,
+	NVMF_TGT_INIT_CREATE_TARGET,
 	NVMF_TGT_INIT_CREATE_POLL_GROUPS,
 	NVMF_TGT_INIT_START_SUBSYSTEMS,
-	NVMF_TGT_INIT_START_ACCEPTOR,
 	NVMF_TGT_RUNNING,
+	NVMF_TGT_FINI_STOP_LISTEN,
 	NVMF_TGT_FINI_STOP_SUBSYSTEMS,
+	NVMF_TGT_FINI_DESTROY_SUBSYSTEMS,
 	NVMF_TGT_FINI_DESTROY_POLL_GROUPS,
-	NVMF_TGT_FINI_STOP_ACCEPTOR,
-	NVMF_TGT_FINI_FREE_RESOURCES,
+	NVMF_TGT_FINI_DESTROY_TARGET,
 	NVMF_TGT_STOPPED,
 	NVMF_TGT_ERROR,
 };
@@ -62,6 +34,31 @@ struct nvmf_tgt_poll_group {
 	TAILQ_ENTRY(nvmf_tgt_poll_group)	link;
 };
 
+#define NVMF_TGT_DEFAULT_DIGESTS (SPDK_BIT(SPDK_NVMF_DHCHAP_HASH_SHA256) | \
+				  SPDK_BIT(SPDK_NVMF_DHCHAP_HASH_SHA384) | \
+				  SPDK_BIT(SPDK_NVMF_DHCHAP_HASH_SHA512))
+
+#define NVMF_TGT_DEFAULT_DHGROUPS (SPDK_BIT(SPDK_NVMF_DHCHAP_DHGROUP_NULL) | \
+				   SPDK_BIT(SPDK_NVMF_DHCHAP_DHGROUP_2048) | \
+				   SPDK_BIT(SPDK_NVMF_DHCHAP_DHGROUP_3072) | \
+				   SPDK_BIT(SPDK_NVMF_DHCHAP_DHGROUP_4096) | \
+				   SPDK_BIT(SPDK_NVMF_DHCHAP_DHGROUP_6144) | \
+				   SPDK_BIT(SPDK_NVMF_DHCHAP_DHGROUP_8192))
+
+struct spdk_nvmf_tgt_conf g_spdk_nvmf_tgt_conf = {
+	.opts = {
+		.size = SPDK_SIZEOF(&g_spdk_nvmf_tgt_conf.opts, dhchap_dhgroups),
+		.name = "nvmf_tgt",
+		.max_subsystems = 0,
+		.crdt = { 0, 0, 0 },
+		.discovery_filter = SPDK_NVMF_TGT_DISCOVERY_MATCH_ANY,
+		.dhchap_digests = NVMF_TGT_DEFAULT_DIGESTS,
+		.dhchap_dhgroups = NVMF_TGT_DEFAULT_DHGROUPS,
+	},
+	.admin_passthru.identify_ctrlr = false
+};
+
+struct spdk_cpuset *g_poll_groups_mask = NULL;
 struct spdk_nvmf_tgt *g_spdk_nvmf_tgt = NULL;
 
 static enum nvmf_tgt_state g_tgt_state;
@@ -71,8 +68,6 @@ static struct spdk_thread *g_tgt_fini_thread = NULL;
 
 static TAILQ_HEAD(, nvmf_tgt_poll_group) g_poll_groups = TAILQ_HEAD_INITIALIZER(g_poll_groups);
 static size_t g_num_poll_groups = 0;
-
-static struct spdk_poller *g_acceptor_poller = NULL;
 
 static void nvmf_tgt_advance_state(void);
 
@@ -90,9 +85,9 @@ nvmf_shutdown_cb(void *arg1)
 
 	if (g_tgt_state == NVMF_TGT_ERROR) {
 		/* Parse configuration error */
-		g_tgt_state = NVMF_TGT_FINI_FREE_RESOURCES;
+		g_tgt_state = NVMF_TGT_FINI_DESTROY_TARGET;
 	} else {
-		g_tgt_state = NVMF_TGT_FINI_STOP_SUBSYSTEMS;
+		g_tgt_state = NVMF_TGT_FINI_STOP_LISTEN;
 	}
 	nvmf_tgt_advance_state();
 }
@@ -103,28 +98,13 @@ nvmf_subsystem_fini(void)
 	nvmf_shutdown_cb(NULL);
 }
 
-static int
-acceptor_poll(void *arg)
-{
-	struct spdk_nvmf_tgt *tgt = arg;
-	uint32_t count;
-
-	count = spdk_nvmf_tgt_accept(tgt);
-
-	if (count > 0) {
-		return SPDK_POLLER_BUSY;
-	} else {
-		return SPDK_POLLER_IDLE;
-	}
-}
-
 static void
 _nvmf_tgt_destroy_poll_group_done(void *ctx)
 {
 	assert(g_num_poll_groups > 0);
 
 	if (--g_num_poll_groups == 0) {
-		g_tgt_state = NVMF_TGT_FINI_STOP_ACCEPTOR;
+		g_tgt_state = NVMF_TGT_FINI_DESTROY_TARGET;
 		nvmf_tgt_advance_state();
 	}
 }
@@ -163,17 +143,37 @@ nvmf_tgt_destroy_poll_groups(void)
 	}
 }
 
+static uint32_t
+nvmf_get_cpuset_count(void)
+{
+	if (g_poll_groups_mask) {
+		return spdk_cpuset_count(g_poll_groups_mask);
+	} else {
+		return spdk_env_get_core_count();
+	}
+}
+
 static void
 nvmf_tgt_create_poll_group_done(void *ctx)
 {
 	struct nvmf_tgt_poll_group *pg = ctx;
 
+	assert(pg);
+
+	if (!pg->group) {
+		SPDK_ERRLOG("Failed to create nvmf poll group\n");
+		/* Change the state to error but wait for completions from all other threads */
+		g_tgt_state = NVMF_TGT_ERROR;
+	}
+
 	TAILQ_INSERT_TAIL(&g_poll_groups, pg, link);
 
-	assert(g_num_poll_groups < spdk_env_get_core_count());
+	assert(g_num_poll_groups < nvmf_get_cpuset_count());
 
-	if (++g_num_poll_groups == spdk_env_get_core_count()) {
-		g_tgt_state = NVMF_TGT_INIT_START_SUBSYSTEMS;
+	if (++g_num_poll_groups == nvmf_get_cpuset_count()) {
+		if (g_tgt_state != NVMF_TGT_ERROR) {
+			g_tgt_state = NVMF_TGT_INIT_START_SUBSYSTEMS;
+		}
 		nvmf_tgt_advance_state();
 	}
 }
@@ -186,7 +186,8 @@ nvmf_tgt_create_poll_group(void *ctx)
 	pg = calloc(1, sizeof(*pg));
 	if (!pg) {
 		SPDK_ERRLOG("Not enough memory to allocate poll groups\n");
-		spdk_app_stop(-ENOMEM);
+		g_tgt_state = NVMF_TGT_ERROR;
+		nvmf_tgt_advance_state();
 		return;
 	}
 
@@ -199,20 +200,20 @@ nvmf_tgt_create_poll_group(void *ctx)
 static void
 nvmf_tgt_create_poll_groups(void)
 {
-	struct spdk_cpuset tmp_cpumask = {};
-	uint32_t i;
+	uint32_t cpu, count = 0;
 	char thread_name[32];
 	struct spdk_thread *thread;
 
 	g_tgt_init_thread = spdk_get_thread();
 	assert(g_tgt_init_thread != NULL);
 
-	SPDK_ENV_FOREACH_CORE(i) {
-		spdk_cpuset_zero(&tmp_cpumask);
-		spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
-		snprintf(thread_name, sizeof(thread_name), "nvmf_tgt_poll_group_%u", i);
+	SPDK_ENV_FOREACH_CORE(cpu) {
+		if (g_poll_groups_mask && !spdk_cpuset_get_cpu(g_poll_groups_mask, cpu)) {
+			continue;
+		}
+		snprintf(thread_name, sizeof(thread_name), "nvmf_tgt_poll_group_%03u", count++);
 
-		thread = spdk_thread_create(thread_name, &tmp_cpumask);
+		thread = spdk_thread_create(thread_name, g_poll_groups_mask);
 		assert(thread != NULL);
 
 		spdk_thread_send_msg(thread, nvmf_tgt_create_poll_group, NULL);
@@ -224,13 +225,19 @@ nvmf_tgt_subsystem_started(struct spdk_nvmf_subsystem *subsystem,
 			   void *cb_arg, int status)
 {
 	subsystem = spdk_nvmf_subsystem_get_next(subsystem);
+	int rc;
 
 	if (subsystem) {
-		spdk_nvmf_subsystem_start(subsystem, nvmf_tgt_subsystem_started, NULL);
+		rc = spdk_nvmf_subsystem_start(subsystem, nvmf_tgt_subsystem_started, NULL);
+		if (rc) {
+			g_tgt_state = NVMF_TGT_FINI_STOP_LISTEN;
+			SPDK_ERRLOG("Unable to start NVMe-oF subsystem. Stopping app.\n");
+			nvmf_tgt_advance_state();
+		}
 		return;
 	}
 
-	g_tgt_state = NVMF_TGT_INIT_START_ACCEPTOR;
+	g_tgt_state = NVMF_TGT_RUNNING;
 	nvmf_tgt_advance_state();
 }
 
@@ -239,10 +246,73 @@ nvmf_tgt_subsystem_stopped(struct spdk_nvmf_subsystem *subsystem,
 			   void *cb_arg, int status)
 {
 	subsystem = spdk_nvmf_subsystem_get_next(subsystem);
+	int rc;
 
 	if (subsystem) {
-		spdk_nvmf_subsystem_stop(subsystem, nvmf_tgt_subsystem_stopped, NULL);
+		rc = spdk_nvmf_subsystem_stop(subsystem, nvmf_tgt_subsystem_stopped, NULL);
+		if (rc) {
+			SPDK_ERRLOG("Unable to stop NVMe-oF subsystem %s with rc %d, Trying others.\n",
+				    spdk_nvmf_subsystem_get_nqn(subsystem), rc);
+			nvmf_tgt_subsystem_stopped(subsystem, NULL, 0);
+		}
 		return;
+	}
+
+	g_tgt_state = NVMF_TGT_FINI_DESTROY_SUBSYSTEMS;
+	nvmf_tgt_advance_state();
+}
+
+static void
+nvmf_tgt_stop_listen(void)
+{
+	struct spdk_nvmf_subsystem *subsystem;
+	struct spdk_nvmf_subsystem_listener *listener;
+	const struct spdk_nvme_transport_id *trid;
+	struct spdk_nvmf_transport *transport;
+	int rc;
+
+	for (subsystem = spdk_nvmf_subsystem_get_first(g_spdk_nvmf_tgt);
+	     subsystem != NULL;
+	     subsystem = spdk_nvmf_subsystem_get_next(subsystem)) {
+		for (listener = spdk_nvmf_subsystem_get_first_listener(subsystem);
+		     listener != NULL;
+		     listener = spdk_nvmf_subsystem_get_next_listener(subsystem, listener)) {
+			trid = spdk_nvmf_subsystem_listener_get_trid(listener);
+			transport = spdk_nvmf_tgt_get_transport(g_spdk_nvmf_tgt, trid->trstring);
+			rc = spdk_nvmf_transport_stop_listen(transport, trid);
+			if (rc != 0) {
+				SPDK_ERRLOG("Unable to stop subsystem %s listener %s:%s, rc %d. Trying others.\n",
+					    spdk_nvmf_subsystem_get_nqn(subsystem), trid->traddr, trid->trsvcid, rc);
+				continue;
+			}
+		}
+	}
+
+	g_tgt_state = NVMF_TGT_FINI_STOP_SUBSYSTEMS;
+}
+
+static void
+_nvmf_tgt_subsystem_destroy(void *cb_arg)
+{
+	struct spdk_nvmf_subsystem *subsystem, *next_subsystem;
+	int rc;
+
+	subsystem = spdk_nvmf_subsystem_get_first(g_spdk_nvmf_tgt);
+
+	while (subsystem != NULL) {
+		next_subsystem = spdk_nvmf_subsystem_get_next(subsystem);
+		rc = spdk_nvmf_subsystem_destroy(subsystem, _nvmf_tgt_subsystem_destroy, NULL);
+		if (rc) {
+			if (rc == -EINPROGRESS) {
+				/* If ret is -EINPROGRESS, nvmf_tgt_subsystem_destroyed will be called when subsystem
+				 * is destroyed, _nvmf_tgt_subsystem_destroy will continue to destroy other subsystems if any */
+				return;
+			} else {
+				SPDK_ERRLOG("Unable to destroy subsystem %s, rc %d. Trying others.\n",
+					    spdk_nvmf_subsystem_get_nqn(subsystem), rc);
+			}
+		}
+		subsystem = next_subsystem;
 	}
 
 	g_tgt_state = NVMF_TGT_FINI_DESTROY_POLL_GROUPS;
@@ -254,40 +324,56 @@ nvmf_tgt_destroy_done(void *ctx, int status)
 {
 	g_tgt_state = NVMF_TGT_STOPPED;
 
-	free(g_spdk_nvmf_tgt_conf);
-	g_spdk_nvmf_tgt_conf = NULL;
 	nvmf_tgt_advance_state();
 }
 
-static void
-nvmf_tgt_parse_conf_done(int status)
+static int
+nvmf_add_discovery_subsystem(void)
 {
-	g_tgt_state = (status == 0) ? NVMF_TGT_INIT_CREATE_POLL_GROUPS : NVMF_TGT_ERROR;
-	nvmf_tgt_advance_state();
-}
+	struct spdk_nvmf_subsystem *subsystem;
 
-static void
-nvmf_tgt_parse_conf_start(void *ctx)
-{
-	if (nvmf_parse_conf(nvmf_tgt_parse_conf_done)) {
-		SPDK_ERRLOG("nvmf_parse_conf() failed\n");
-		g_tgt_state = NVMF_TGT_ERROR;
-		nvmf_tgt_advance_state();
+	subsystem = spdk_nvmf_subsystem_create(g_spdk_nvmf_tgt, SPDK_NVMF_DISCOVERY_NQN,
+					       SPDK_NVMF_SUBTYPE_DISCOVERY_CURRENT, 0);
+	if (subsystem == NULL) {
+		SPDK_ERRLOG("Failed creating discovery nvmf library subsystem\n");
+		return -1;
 	}
+
+	spdk_nvmf_subsystem_set_allow_any_host(subsystem, true);
+
+	return 0;
+}
+
+static int
+nvmf_tgt_create_target(void)
+{
+	g_spdk_nvmf_tgt = spdk_nvmf_tgt_create(&g_spdk_nvmf_tgt_conf.opts);
+	if (!g_spdk_nvmf_tgt) {
+		SPDK_ERRLOG("spdk_nvmf_tgt_create() failed\n");
+		return -1;
+	}
+
+	if (nvmf_add_discovery_subsystem() != 0) {
+		SPDK_ERRLOG("nvmf_add_discovery_subsystem failed\n");
+		return -1;
+	}
+
+	return 0;
 }
 
 static void
 fixup_identify_ctrlr(struct spdk_nvmf_request *req)
 {
-	uint32_t length;
-	int rc;
-	struct spdk_nvme_ctrlr_data *nvme_cdata;
+	struct spdk_nvme_ctrlr_data nvme_cdata = {};
 	struct spdk_nvme_ctrlr_data nvmf_cdata = {};
 	struct spdk_nvmf_ctrlr *ctrlr = spdk_nvmf_request_get_ctrlr(req);
 	struct spdk_nvme_cpl *rsp = spdk_nvmf_request_get_response(req);
+	size_t datalen;
+	int rc;
 
 	/* This is the identify data from the NVMe drive */
-	spdk_nvmf_request_get_data(req, (void **)&nvme_cdata, &length);
+	datalen = spdk_nvmf_request_copy_to_buf(req, &nvme_cdata,
+						sizeof(nvme_cdata));
 
 	/* Get the NVMF identify data */
 	rc = spdk_nvmf_ctrlr_identify_ctrlr(ctrlr, &nvmf_cdata);
@@ -300,17 +386,17 @@ fixup_identify_ctrlr(struct spdk_nvmf_request *req)
 	/* Fixup NVMF identify data with NVMe identify data */
 
 	/* Serial Number (SN) */
-	memcpy(&nvmf_cdata.sn[0], &nvme_cdata->sn[0], sizeof(nvmf_cdata.sn));
+	memcpy(&nvmf_cdata.sn[0], &nvme_cdata.sn[0], sizeof(nvmf_cdata.sn));
 	/* Model Number (MN) */
-	memcpy(&nvmf_cdata.mn[0], &nvme_cdata->mn[0], sizeof(nvmf_cdata.mn));
+	memcpy(&nvmf_cdata.mn[0], &nvme_cdata.mn[0], sizeof(nvmf_cdata.mn));
 	/* Firmware Revision (FR) */
-	memcpy(&nvmf_cdata.fr[0], &nvme_cdata->fr[0], sizeof(nvmf_cdata.fr));
+	memcpy(&nvmf_cdata.fr[0], &nvme_cdata.fr[0], sizeof(nvmf_cdata.fr));
 	/* IEEE OUI Identifier (IEEE) */
-	memcpy(&nvmf_cdata.ieee[0], &nvme_cdata->ieee[0], sizeof(nvmf_cdata.ieee));
+	memcpy(&nvmf_cdata.ieee[0], &nvme_cdata.ieee[0], sizeof(nvmf_cdata.ieee));
 	/* FRU Globally Unique Identifier (FGUID) */
 
 	/* Copy the fixed up data back to the response */
-	memcpy(nvme_cdata, &nvmf_cdata, length);
+	spdk_nvmf_request_copy_from_buf(req, &nvmf_cdata, datalen);
 }
 
 static int
@@ -356,24 +442,23 @@ nvmf_tgt_advance_state(void)
 {
 	enum nvmf_tgt_state prev_state;
 	int rc = -1;
+	int ret;
 
 	do {
+		SPDK_DTRACE_PROBE1(nvmf_tgt_state, g_tgt_state);
 		prev_state = g_tgt_state;
 
 		switch (g_tgt_state) {
 		case NVMF_TGT_INIT_NONE: {
-			g_tgt_state = NVMF_TGT_INIT_PARSE_CONFIG;
+			g_tgt_state = NVMF_TGT_INIT_CREATE_TARGET;
 			break;
 		}
-		case NVMF_TGT_INIT_PARSE_CONFIG:
-			/* Send message to self to call parse conf func.
-			 * Prevents it from possibly performing cb before getting
-			 * out of this function, which causes problems. */
-			spdk_thread_send_msg(spdk_get_thread(), nvmf_tgt_parse_conf_start, NULL);
+		case NVMF_TGT_INIT_CREATE_TARGET:
+			ret = nvmf_tgt_create_target();
+			g_tgt_state = (ret == 0) ? NVMF_TGT_INIT_CREATE_POLL_GROUPS : NVMF_TGT_ERROR;
 			break;
 		case NVMF_TGT_INIT_CREATE_POLL_GROUPS:
-			/* Config parsed */
-			if (g_spdk_nvmf_tgt_conf->admin_passthru.identify_ctrlr) {
+			if (g_spdk_nvmf_tgt_conf.admin_passthru.identify_ctrlr) {
 				SPDK_NOTICELOG("Custom identify ctrlr handler enabled\n");
 				spdk_nvmf_set_custom_admin_cmd_hdlr(SPDK_NVME_OPC_IDENTIFY, nvmf_custom_identify_hdlr);
 			}
@@ -388,19 +473,21 @@ nvmf_tgt_advance_state(void)
 			subsystem = spdk_nvmf_subsystem_get_first(g_spdk_nvmf_tgt);
 
 			if (subsystem) {
-				spdk_nvmf_subsystem_start(subsystem, nvmf_tgt_subsystem_started, NULL);
+				ret = spdk_nvmf_subsystem_start(subsystem, nvmf_tgt_subsystem_started, NULL);
+				if (ret) {
+					SPDK_ERRLOG("Unable to start NVMe-oF subsystem. Stopping app.\n");
+					g_tgt_state = NVMF_TGT_FINI_STOP_LISTEN;
+				}
 			} else {
-				g_tgt_state = NVMF_TGT_INIT_START_ACCEPTOR;
+				g_tgt_state = NVMF_TGT_RUNNING;
 			}
 			break;
 		}
-		case NVMF_TGT_INIT_START_ACCEPTOR:
-			g_acceptor_poller = SPDK_POLLER_REGISTER(acceptor_poll, g_spdk_nvmf_tgt,
-					    g_spdk_nvmf_tgt_conf->acceptor_poll_rate);
-			g_tgt_state = NVMF_TGT_RUNNING;
-			break;
 		case NVMF_TGT_RUNNING:
 			spdk_subsystem_init_next(0);
+			break;
+		case NVMF_TGT_FINI_STOP_LISTEN:
+			nvmf_tgt_stop_listen();
 			break;
 		case NVMF_TGT_FINI_STOP_SUBSYSTEMS: {
 			struct spdk_nvmf_subsystem *subsystem;
@@ -408,21 +495,25 @@ nvmf_tgt_advance_state(void)
 			subsystem = spdk_nvmf_subsystem_get_first(g_spdk_nvmf_tgt);
 
 			if (subsystem) {
-				spdk_nvmf_subsystem_stop(subsystem, nvmf_tgt_subsystem_stopped, NULL);
+				ret = spdk_nvmf_subsystem_stop(subsystem, nvmf_tgt_subsystem_stopped, NULL);
+				if (ret) {
+					nvmf_tgt_subsystem_stopped(subsystem, NULL, 0);
+				}
 			} else {
-				g_tgt_state = NVMF_TGT_FINI_DESTROY_POLL_GROUPS;
+				g_tgt_state = NVMF_TGT_FINI_DESTROY_SUBSYSTEMS;
 			}
 			break;
 		}
+		case NVMF_TGT_FINI_DESTROY_SUBSYSTEMS:
+			_nvmf_tgt_subsystem_destroy(NULL);
+			/* Function above can be asynchronous, it will call nvmf_tgt_advance_state() once done.
+			 * So just return here */
+			return;
 		case NVMF_TGT_FINI_DESTROY_POLL_GROUPS:
 			/* Send a message to each poll group thread, and terminate the thread */
 			nvmf_tgt_destroy_poll_groups();
 			break;
-		case NVMF_TGT_FINI_STOP_ACCEPTOR:
-			spdk_poller_unregister(&g_acceptor_poller);
-			g_tgt_state = NVMF_TGT_FINI_FREE_RESOURCES;
-			break;
-		case NVMF_TGT_FINI_FREE_RESOURCES:
+		case NVMF_TGT_FINI_DESTROY_TARGET:
 			spdk_nvmf_tgt_destroy(g_spdk_nvmf_tgt, nvmf_tgt_destroy_done, NULL);
 			break;
 		case NVMF_TGT_STOPPED:
@@ -444,19 +535,64 @@ nvmf_subsystem_init(void)
 }
 
 static void
+nvmf_subsystem_dump_discover_filter(struct spdk_json_write_ctx *w)
+{
+	static char const *const answers[] = {
+		"match_any",
+		"transport",
+		"address",
+		"transport,address",
+		"svcid",
+		"transport,svcid",
+		"address,svcid",
+		"transport,address,svcid"
+	};
+
+	if ((g_spdk_nvmf_tgt_conf.opts.discovery_filter & ~(SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_TYPE |
+			SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_ADDRESS |
+			SPDK_NVMF_TGT_DISCOVERY_MATCH_TRANSPORT_SVCID)) != 0) {
+		SPDK_ERRLOG("Incorrect discovery filter %d\n", g_spdk_nvmf_tgt_conf.opts.discovery_filter);
+		assert(0);
+		return;
+	}
+
+	spdk_json_write_named_string(w, "discovery_filter",
+				     answers[g_spdk_nvmf_tgt_conf.opts.discovery_filter]);
+}
+
+static void
 nvmf_subsystem_write_config_json(struct spdk_json_write_ctx *w)
 {
+	int i;
+
 	spdk_json_write_array_begin(w);
 
 	spdk_json_write_object_begin(w);
 	spdk_json_write_named_string(w, "method", "nvmf_set_config");
 
 	spdk_json_write_named_object_begin(w, "params");
-	spdk_json_write_named_uint32(w, "acceptor_poll_rate", g_spdk_nvmf_tgt_conf->acceptor_poll_rate);
+	nvmf_subsystem_dump_discover_filter(w);
 	spdk_json_write_named_object_begin(w, "admin_cmd_passthru");
 	spdk_json_write_named_bool(w, "identify_ctrlr",
-				   g_spdk_nvmf_tgt_conf->admin_passthru.identify_ctrlr);
+				   g_spdk_nvmf_tgt_conf.admin_passthru.identify_ctrlr);
 	spdk_json_write_object_end(w);
+	if (g_poll_groups_mask) {
+		spdk_json_write_named_string(w, "poll_groups_mask", spdk_cpuset_fmt(g_poll_groups_mask));
+	}
+	spdk_json_write_named_array_begin(w, "dhchap_digests");
+	for (i = 0; i < 32; ++i) {
+		if (g_spdk_nvmf_tgt_conf.opts.dhchap_digests & SPDK_BIT(i)) {
+			spdk_json_write_string(w, spdk_nvme_dhchap_get_digest_name(i));
+		}
+	}
+	spdk_json_write_array_end(w);
+	spdk_json_write_named_array_begin(w, "dhchap_dhgroups");
+	for (i = 0; i < 32; ++i) {
+		if (g_spdk_nvmf_tgt_conf.opts.dhchap_dhgroups & SPDK_BIT(i)) {
+			spdk_json_write_string(w, spdk_nvme_dhchap_get_dhgroup_name(i));
+		}
+	}
+	spdk_json_write_array_end(w);
 	spdk_json_write_object_end(w);
 	spdk_json_write_object_end(w);
 
@@ -473,4 +609,5 @@ static struct spdk_subsystem g_spdk_subsystem_nvmf = {
 
 SPDK_SUBSYSTEM_REGISTER(g_spdk_subsystem_nvmf)
 SPDK_SUBSYSTEM_DEPEND(nvmf, bdev)
+SPDK_SUBSYSTEM_DEPEND(nvmf, keyring)
 SPDK_SUBSYSTEM_DEPEND(nvmf, sock)

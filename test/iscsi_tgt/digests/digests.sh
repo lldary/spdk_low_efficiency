@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 
-# $1 = "iso" - triggers isolation mode (setting up required environment).
-# $2 = test type posix or vpp. defaults to posix.
-iscsitestinit $1 $2
+iscsitestinit
 
 function node_login_fio_logout() {
 	for arg in "$@"; do
-		iscsiadm -m node -p $TARGET_IP:$ISCSI_PORT -o update -n node.conn[0].iscsi.$arg
+		iscsiadm -m node -p $TARGET_IP:$ISCSI_PORT -o update -n "node.conn[0].iscsi".$arg
 	done
 	iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
 	waitforiscsidevices 1
@@ -48,8 +49,7 @@ function iscsi_header_data_digest_test() {
 MALLOC_BDEV_SIZE=64
 MALLOC_BLOCK_SIZE=512
 
-rpc_py="$rootdir/scripts/rpc.py"
-fio_py="$rootdir/scripts/fio.py"
+fio_py="$rootdir/scripts/fio-wrapper"
 
 timing_enter start_iscsi_tgt
 
@@ -57,7 +57,7 @@ timing_enter start_iscsi_tgt
 pid=$!
 echo "Process pid: $pid"
 
-trap 'killprocess $pid; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
+trap 'killprocess $pid; iscsitestfini; exit 1' SIGINT SIGTERM EXIT
 
 waitforlisten $pid
 $rpc_py iscsi_set_options -o 30 -a 16
@@ -80,7 +80,7 @@ iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$ISCSI_PORT
 
 # iscsiadm installed by some Fedora releases loses the ability to set DataDigest parameter.
 # Check and avoid setting DataDigest.
-DataDigestAbility=$(iscsiadm -m node -p $TARGET_IP:$ISCSI_PORT -o update -n node.conn[0].iscsi.DataDigest -v None 2>&1 || true)
+DataDigestAbility=$(iscsiadm -m node -p $TARGET_IP:$ISCSI_PORT -o update -n "node.conn[0].iscsi.DataDigest" -v None 2>&1 || true)
 if [ "$DataDigestAbility"x != x ]; then
 	run_test "iscsi_tgt_digest" iscsi_header_digest_test
 else
@@ -91,4 +91,4 @@ trap - SIGINT SIGTERM EXIT
 
 iscsicleanup
 killprocess $pid
-iscsitestfini $1 $2
+iscsitestfini

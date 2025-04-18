@@ -1,34 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
@@ -36,15 +9,16 @@
 #include "vbdev_delay.h"
 #include "spdk/rpc.h"
 #include "spdk/env.h"
-#include "spdk/conf.h"
 #include "spdk/endian.h"
 #include "spdk/string.h"
 #include "spdk/thread.h"
 #include "spdk/util.h"
 
 #include "spdk/bdev_module.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
+/* This namespace UUID was generated using uuid_generate() method. */
+#define BDEV_DELAY_NAMESPACE_UUID "4009b574-6430-4f1b-bc40-ace811091027"
 
 static int vbdev_delay_init(void);
 static int vbdev_delay_get_ctx_size(void);
@@ -55,7 +29,6 @@ static int vbdev_delay_config_json(struct spdk_json_write_ctx *w);
 static struct spdk_bdev_module delay_if = {
 	.name = "delay",
 	.module_init = vbdev_delay_init,
-	.config_text = NULL,
 	.get_ctx_size = vbdev_delay_get_ctx_size,
 	.examine_config = vbdev_delay_examine,
 	.module_fini = vbdev_delay_finish,
@@ -68,6 +41,7 @@ SPDK_BDEV_MODULE_REGISTER(delay, &delay_if)
 struct bdev_association {
 	char			*vbdev_name;
 	char			*bdev_name;
+	struct spdk_uuid	uuid;
 	uint64_t		avg_read_latency;
 	uint64_t		p99_read_latency;
 	uint64_t		avg_write_latency;
@@ -102,6 +76,8 @@ struct delay_bdev_io {
 
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 
+	struct spdk_bdev_io *zcopy_bdev_io;
+
 	STAILQ_ENTRY(delay_bdev_io) link;
 };
 
@@ -115,8 +91,7 @@ struct delay_io_channel {
 	unsigned int rand_seed;
 };
 
-static void
-vbdev_delay_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
+static void vbdev_delay_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
 
 
 /* Callback for unregistering the IO device. */
@@ -220,7 +195,14 @@ _delay_complete_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	struct delay_io_channel *delay_ch = spdk_io_channel_get_ctx(io_ctx->ch);
 
 	io_ctx->status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
-	spdk_bdev_free_io(bdev_io);
+
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_ZCOPY && bdev_io->u.bdev.zcopy.start && success) {
+		io_ctx->zcopy_bdev_io = bdev_io;
+	} else {
+		assert(io_ctx->zcopy_bdev_io == NULL || io_ctx->zcopy_bdev_io == bdev_io);
+		io_ctx->zcopy_bdev_io = NULL;
+		spdk_bdev_free_io(bdev_io);
+	}
 
 	/* Put the I/O into the proper list for processing by the channel poller. */
 	switch (io_ctx->type) {
@@ -275,11 +257,22 @@ vbdev_delay_queue_io(struct spdk_bdev_io *bdev_io)
 }
 
 static void
+delay_init_ext_io_opts(struct spdk_bdev_io *bdev_io, struct spdk_bdev_ext_io_opts *opts)
+{
+	memset(opts, 0, sizeof(*opts));
+	opts->size = sizeof(*opts);
+	opts->memory_domain = bdev_io->u.bdev.memory_domain;
+	opts->memory_domain_ctx = bdev_io->u.bdev.memory_domain_ctx;
+	opts->metadata = bdev_io->u.bdev.md_buf;
+}
+
+static void
 delay_read_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
 {
 	struct vbdev_delay *delay_node = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_delay,
 					 delay_bdev);
 	struct delay_io_channel *delay_ch = spdk_io_channel_get_ctx(ch);
+	struct spdk_bdev_ext_io_opts io_opts;
 	int rc;
 
 	if (!success) {
@@ -287,10 +280,11 @@ delay_read_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, 
 		return;
 	}
 
-	rc = spdk_bdev_readv_blocks(delay_node->base_desc, delay_ch->base_ch, bdev_io->u.bdev.iovs,
-				    bdev_io->u.bdev.iovcnt, bdev_io->u.bdev.offset_blocks,
-				    bdev_io->u.bdev.num_blocks, _delay_complete_io,
-				    bdev_io);
+	delay_init_ext_io_opts(bdev_io, &io_opts);
+	rc = spdk_bdev_readv_blocks_ext(delay_node->base_desc, delay_ch->base_ch, bdev_io->u.bdev.iovs,
+					bdev_io->u.bdev.iovcnt, bdev_io->u.bdev.offset_blocks,
+					bdev_io->u.bdev.num_blocks, _delay_complete_io,
+					bdev_io, &io_opts);
 
 	if (rc == -ENOMEM) {
 		SPDK_ERRLOG("No memory, start to queue io for delay.\n");
@@ -305,8 +299,8 @@ static void
 vbdev_delay_reset_dev(struct spdk_io_channel_iter *i, int status)
 {
 	struct spdk_bdev_io *bdev_io = spdk_io_channel_iter_get_ctx(i);
-	struct spdk_io_channel *ch = spdk_io_channel_iter_get_channel(i);
-	struct delay_io_channel *delay_ch = spdk_io_channel_get_ctx(ch);
+	struct delay_bdev_io *io_ctx = (struct delay_bdev_io *)bdev_io->driver_ctx;
+	struct delay_io_channel *delay_ch = spdk_io_channel_get_ctx(io_ctx->ch);
 	struct vbdev_delay *delay_node = spdk_io_channel_iter_get_io_device(i);
 	int rc;
 
@@ -323,6 +317,12 @@ vbdev_delay_reset_dev(struct spdk_io_channel_iter *i, int status)
 }
 
 static void
+abort_zcopy_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	spdk_bdev_free_io(bdev_io);
+}
+
+static void
 _abort_all_delayed_io(void *arg)
 {
 	STAILQ_HEAD(, delay_bdev_io) *head = arg;
@@ -330,6 +330,9 @@ _abort_all_delayed_io(void *arg)
 
 	STAILQ_FOREACH_SAFE(io_ctx, head, link, tmp) {
 		STAILQ_REMOVE(head, io_ctx, delay_bdev_io, link);
+		if (io_ctx->zcopy_bdev_io != NULL) {
+			spdk_bdev_zcopy_end(io_ctx->zcopy_bdev_io, false, abort_zcopy_io, NULL);
+		}
 		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(io_ctx), SPDK_BDEV_IO_STATUS_ABORTED);
 	}
 }
@@ -358,6 +361,9 @@ abort_delayed_io(void *_head, struct spdk_bdev_io *bio_to_abort)
 	STAILQ_FOREACH(io_ctx, head, link) {
 		if (io_ctx == io_ctx_to_abort) {
 			STAILQ_REMOVE(head, io_ctx_to_abort, delay_bdev_io, link);
+			if (io_ctx->zcopy_bdev_io != NULL) {
+				spdk_bdev_zcopy_end(io_ctx->zcopy_bdev_io, false, abort_zcopy_io, NULL);
+			}
 			spdk_bdev_io_complete(bio_to_abort, SPDK_BDEV_IO_STATUS_ABORTED);
 			return true;
 		}
@@ -390,6 +396,7 @@ vbdev_delay_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev
 	struct vbdev_delay *delay_node = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_delay, delay_bdev);
 	struct delay_io_channel *delay_ch = spdk_io_channel_get_ctx(ch);
 	struct delay_bdev_io *io_ctx = (struct delay_bdev_io *)bdev_io->driver_ctx;
+	struct spdk_bdev_ext_io_opts io_opts;
 	int rc = 0;
 	bool is_p99;
 
@@ -397,6 +404,9 @@ vbdev_delay_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev
 
 	io_ctx->ch = ch;
 	io_ctx->type = DELAY_NONE;
+	if (bdev_io->type != SPDK_BDEV_IO_TYPE_ZCOPY || bdev_io->u.bdev.zcopy.start) {
+		io_ctx->zcopy_bdev_io = NULL;
+	}
 
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
@@ -406,10 +416,11 @@ vbdev_delay_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev
 		break;
 	case SPDK_BDEV_IO_TYPE_WRITE:
 		io_ctx->type = is_p99 ? DELAY_P99_WRITE : DELAY_AVG_WRITE;
-		rc = spdk_bdev_writev_blocks(delay_node->base_desc, delay_ch->base_ch, bdev_io->u.bdev.iovs,
-					     bdev_io->u.bdev.iovcnt, bdev_io->u.bdev.offset_blocks,
-					     bdev_io->u.bdev.num_blocks, _delay_complete_io,
-					     bdev_io);
+		delay_init_ext_io_opts(bdev_io, &io_opts);
+		rc = spdk_bdev_writev_blocks_ext(delay_node->base_desc, delay_ch->base_ch, bdev_io->u.bdev.iovs,
+						 bdev_io->u.bdev.iovcnt, bdev_io->u.bdev.offset_blocks,
+						 bdev_io->u.bdev.num_blocks, _delay_complete_io,
+						 bdev_io, &io_opts);
 		break;
 	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
 		rc = spdk_bdev_write_zeroes_blocks(delay_node->base_desc, delay_ch->base_ch,
@@ -439,6 +450,24 @@ vbdev_delay_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev
 	case SPDK_BDEV_IO_TYPE_ABORT:
 		rc = vbdev_delay_abort(delay_node, delay_ch, bdev_io);
 		break;
+	case SPDK_BDEV_IO_TYPE_ZCOPY:
+		if (bdev_io->u.bdev.zcopy.commit) {
+			io_ctx->type = is_p99 ? DELAY_P99_WRITE : DELAY_AVG_WRITE;
+		} else if (bdev_io->u.bdev.zcopy.populate) {
+			io_ctx->type = is_p99 ? DELAY_P99_READ : DELAY_AVG_READ;
+		}
+		if (bdev_io->u.bdev.zcopy.start) {
+			rc = spdk_bdev_zcopy_start(delay_node->base_desc, delay_ch->base_ch,
+						   bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt,
+						   bdev_io->u.bdev.offset_blocks,
+						   bdev_io->u.bdev.num_blocks,
+						   bdev_io->u.bdev.zcopy.populate,
+						   _delay_complete_io, bdev_io);
+		} else {
+			rc = spdk_bdev_zcopy_end(io_ctx->zcopy_bdev_io, bdev_io->u.bdev.zcopy.commit,
+						 _delay_complete_io, bdev_io);
+		}
+		break;
 	default:
 		SPDK_ERRLOG("delay: unknown I/O type %d\n", bdev_io->type);
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
@@ -459,11 +488,7 @@ vbdev_delay_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 {
 	struct vbdev_delay *delay_node = (struct vbdev_delay *)ctx;
 
-	if (io_type == SPDK_BDEV_IO_TYPE_ZCOPY) {
-		return false;
-	} else {
-		return spdk_bdev_io_type_supported(delay_node->base_bdev, io_type);
-	}
+	return spdk_bdev_io_type_supported(delay_node->base_bdev, io_type);
 }
 
 static struct spdk_io_channel *
@@ -480,8 +505,13 @@ vbdev_delay_get_io_channel(void *ctx)
 static void
 _delay_write_conf_values(struct vbdev_delay *delay_node, struct spdk_json_write_ctx *w)
 {
+	struct spdk_uuid *uuid = &delay_node->delay_bdev.uuid;
+
 	spdk_json_write_named_string(w, "name", spdk_bdev_get_name(&delay_node->delay_bdev));
 	spdk_json_write_named_string(w, "base_bdev_name", spdk_bdev_get_name(delay_node->base_bdev));
+	if (!spdk_uuid_is_null(uuid)) {
+		spdk_json_write_named_uuid(w, "uuid", uuid);
+	}
 	spdk_json_write_named_int64(w, "avg_read_latency",
 				    delay_node->average_read_latency_ticks * SPDK_SEC_TO_USEC / spdk_get_ticks_hz());
 	spdk_json_write_named_int64(w, "p99_read_latency",
@@ -517,6 +547,7 @@ vbdev_delay_config_json(struct spdk_json_write_ctx *w)
 		spdk_json_write_named_object_begin(w, "params");
 		_delay_write_conf_values(delay_node, w);
 		spdk_json_write_object_end(w);
+		spdk_json_write_object_end(w);
 	}
 	return 0;
 }
@@ -547,7 +578,7 @@ delay_bdev_ch_create_cb(void *io_device, void *ctx_buf)
 
 /* We provide this callback for the SPDK channel code to destroy a channel
  * created with our create callback. We just need to undo anything we did
- * when we created. If this bdev used its own poller, we'd unregsiter it here.
+ * when we created. If this bdev used its own poller, we'd unregister it here.
  */
 static void
 delay_bdev_ch_destroy_cb(void *io_device, void *ctx_buf)
@@ -562,6 +593,7 @@ delay_bdev_ch_destroy_cb(void *io_device, void *ctx_buf)
  * on the global list. */
 static int
 vbdev_delay_insert_association(const char *bdev_name, const char *vbdev_name,
+			       struct spdk_uuid *uuid,
 			       uint64_t avg_read_latency, uint64_t p99_read_latency,
 			       uint64_t avg_write_latency, uint64_t p99_write_latency)
 {
@@ -599,6 +631,7 @@ vbdev_delay_insert_association(const char *bdev_name, const char *vbdev_name,
 	assoc->p99_read_latency = p99_read_latency;
 	assoc->avg_write_latency = avg_write_latency;
 	assoc->p99_write_latency = p99_write_latency;
+	spdk_uuid_copy(&assoc->uuid, uuid);
 
 	TAILQ_INSERT_TAIL(&g_bdev_associations, assoc, link);
 
@@ -608,18 +641,18 @@ vbdev_delay_insert_association(const char *bdev_name, const char *vbdev_name,
 int
 vbdev_delay_update_latency_value(char *delay_name, uint64_t latency_us, enum delay_io_type type)
 {
-	struct spdk_bdev *delay_bdev;
 	struct vbdev_delay *delay_node;
 	uint64_t ticks_mhz = spdk_get_ticks_hz() / SPDK_SEC_TO_USEC;
 
-	delay_bdev = spdk_bdev_get_by_name(delay_name);
-	if (delay_bdev == NULL) {
-		return -ENODEV;
-	} else if (delay_bdev->module != &delay_if) {
-		return -EINVAL;
+	TAILQ_FOREACH(delay_node, &g_delay_nodes, link) {
+		if (strcmp(delay_node->delay_bdev.name, delay_name) == 0) {
+			break;
+		}
 	}
 
-	delay_node = SPDK_CONTAINEROF(delay_bdev, struct vbdev_delay, delay_bdev);
+	if (delay_node == NULL) {
+		return -ENODEV;
+	}
 
 	switch (type) {
 	case DELAY_AVG_READ:
@@ -673,6 +706,15 @@ vbdev_delay_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx
 	/* No config per bdev needed */
 }
 
+static int
+vbdev_delay_get_memory_domains(void *ctx, struct spdk_memory_domain **domains, int array_size)
+{
+	struct vbdev_delay *delay_node = (struct vbdev_delay *)ctx;
+
+	/* Delay bdev doesn't work with data buffers, so it supports any memory domain used by base_bdev */
+	return spdk_bdev_get_memory_domains(delay_node->base_bdev, domains, array_size);
+}
+
 /* When we register our bdev this is how we specify our entry points. */
 static const struct spdk_bdev_fn_table vbdev_delay_fn_table = {
 	.destruct		= vbdev_delay_destruct,
@@ -681,14 +723,13 @@ static const struct spdk_bdev_fn_table vbdev_delay_fn_table = {
 	.get_io_channel		= vbdev_delay_get_io_channel,
 	.dump_info_json		= vbdev_delay_dump_info_json,
 	.write_config_json	= vbdev_delay_write_config_json,
+	.get_memory_domains	= vbdev_delay_get_memory_domains,
 };
 
-/* Called when the underlying base bdev goes away. */
 static void
-vbdev_delay_base_bdev_hotremove_cb(void *ctx)
+vbdev_delay_base_bdev_hotremove_cb(struct spdk_bdev *bdev_find)
 {
 	struct vbdev_delay *delay_node, *tmp;
-	struct spdk_bdev *bdev_find = ctx;
 
 	TAILQ_FOREACH_SAFE(delay_node, &g_delay_nodes, link, tmp) {
 		if (bdev_find == delay_node->base_bdev) {
@@ -697,22 +738,41 @@ vbdev_delay_base_bdev_hotremove_cb(void *ctx)
 	}
 }
 
+/* Called when the underlying base bdev triggers asynchronous event such as bdev removal. */
+static void
+vbdev_delay_base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+			       void *event_ctx)
+{
+	switch (type) {
+	case SPDK_BDEV_EVENT_REMOVE:
+		vbdev_delay_base_bdev_hotremove_cb(bdev);
+		break;
+	default:
+		SPDK_NOTICELOG("Unsupported bdev event: type %d\n", type);
+		break;
+	}
+}
+
 /* Create and register the delay vbdev if we find it in our list of bdev names.
  * This can be called either by the examine path or RPC method.
  */
 static int
-vbdev_delay_register(struct spdk_bdev *bdev)
+vbdev_delay_register(const char *bdev_name)
 {
 	struct bdev_association *assoc;
 	struct vbdev_delay *delay_node;
+	struct spdk_bdev *bdev;
 	uint64_t ticks_mhz = spdk_get_ticks_hz() / SPDK_SEC_TO_USEC;
+	struct spdk_uuid ns_uuid;
 	int rc = 0;
+
+	spdk_uuid_parse(&ns_uuid, BDEV_DELAY_NAMESPACE_UUID);
 
 	/* Check our list of names from config versus this bdev and if
 	 * there's a match, create the delay_node & bdev accordingly.
 	 */
 	TAILQ_FOREACH(assoc, &g_bdev_associations, link) {
-		if (strcmp(assoc->bdev_name, bdev->name) != 0) {
+		if (strcmp(assoc->bdev_name, bdev_name) != 0) {
 			continue;
 		}
 
@@ -722,9 +782,6 @@ vbdev_delay_register(struct spdk_bdev *bdev)
 			SPDK_ERRLOG("could not allocate delay_node\n");
 			break;
 		}
-
-		/* The base bdev that we're attaching to. */
-		delay_node->base_bdev = bdev;
 		delay_node->delay_bdev.name = strdup(assoc->vbdev_name);
 		if (!delay_node->delay_bdev.name) {
 			rc = -ENOMEM;
@@ -734,11 +791,33 @@ vbdev_delay_register(struct spdk_bdev *bdev)
 		}
 		delay_node->delay_bdev.product_name = "delay";
 
+		/* The base bdev that we're attaching to. */
+		rc = spdk_bdev_open_ext(bdev_name, true, vbdev_delay_base_bdev_event_cb,
+					NULL, &delay_node->base_desc);
+		if (rc) {
+			if (rc != -ENODEV) {
+				SPDK_ERRLOG("could not open bdev %s\n", bdev_name);
+			}
+			free(delay_node->delay_bdev.name);
+			free(delay_node);
+			break;
+		}
+
+		bdev = spdk_bdev_desc_get_bdev(delay_node->base_desc);
+		delay_node->base_bdev = bdev;
+
 		delay_node->delay_bdev.write_cache = bdev->write_cache;
 		delay_node->delay_bdev.required_alignment = bdev->required_alignment;
 		delay_node->delay_bdev.optimal_io_boundary = bdev->optimal_io_boundary;
 		delay_node->delay_bdev.blocklen = bdev->blocklen;
 		delay_node->delay_bdev.blockcnt = bdev->blockcnt;
+
+		delay_node->delay_bdev.md_interleave = bdev->md_interleave;
+		delay_node->delay_bdev.md_len = bdev->md_len;
+		delay_node->delay_bdev.dif_type = bdev->dif_type;
+		delay_node->delay_bdev.dif_is_head_of_md = bdev->dif_is_head_of_md;
+		delay_node->delay_bdev.dif_check_flags = bdev->dif_check_flags;
+		delay_node->delay_bdev.dif_pi_format = bdev->dif_pi_format;
 
 		delay_node->delay_bdev.ctxt = delay_node;
 		delay_node->delay_bdev.fn_table = &vbdev_delay_fn_table;
@@ -750,23 +829,30 @@ vbdev_delay_register(struct spdk_bdev *bdev)
 		delay_node->average_write_latency_ticks = ticks_mhz * assoc->avg_write_latency;
 		delay_node->p99_write_latency_ticks = ticks_mhz * assoc->p99_write_latency;
 
+		if (spdk_uuid_is_null(&assoc->uuid)) {
+			/* Generate UUID based on namespace UUID + base bdev UUID */
+			rc = spdk_uuid_generate_sha1(&delay_node->delay_bdev.uuid, &ns_uuid,
+						     (const char *)&bdev->uuid, sizeof(struct spdk_uuid));
+			if (rc) {
+				spdk_bdev_close(delay_node->base_desc);
+				free(delay_node->delay_bdev.name);
+				free(delay_node);
+				break;
+			}
+		} else {
+			spdk_uuid_copy(&delay_node->delay_bdev.uuid, &assoc->uuid);
+		}
+
 		spdk_io_device_register(delay_node, delay_bdev_ch_create_cb, delay_bdev_ch_destroy_cb,
 					sizeof(struct delay_io_channel),
 					assoc->vbdev_name);
-
-		rc = spdk_bdev_open(bdev, true, vbdev_delay_base_bdev_hotremove_cb,
-				    bdev, &delay_node->base_desc);
-		if (rc) {
-			SPDK_ERRLOG("could not open bdev %s\n", spdk_bdev_get_name(bdev));
-			goto error_unregister;
-		}
 
 		/* Save the thread where the base device is opened */
 		delay_node->thread = spdk_get_thread();
 
 		rc = spdk_bdev_module_claim_bdev(bdev, delay_node->base_desc, delay_node->delay_bdev.module);
 		if (rc) {
-			SPDK_ERRLOG("could not claim bdev %s\n", spdk_bdev_get_name(bdev));
+			SPDK_ERRLOG("could not claim bdev %s\n", bdev_name);
 			goto error_close;
 		}
 
@@ -784,7 +870,6 @@ vbdev_delay_register(struct spdk_bdev *bdev)
 
 error_close:
 	spdk_bdev_close(delay_node->base_desc);
-error_unregister:
 	spdk_io_device_unregister(delay_node, NULL);
 	free(delay_node->delay_bdev.name);
 	free(delay_node);
@@ -792,10 +877,10 @@ error_unregister:
 }
 
 int
-create_delay_disk(const char *bdev_name, const char *vbdev_name, uint64_t avg_read_latency,
+create_delay_disk(const char *bdev_name, const char *vbdev_name, struct spdk_uuid *uuid,
+		  uint64_t avg_read_latency,
 		  uint64_t p99_read_latency, uint64_t avg_write_latency, uint64_t p99_write_latency)
 {
-	struct spdk_bdev *bdev = NULL;
 	int rc = 0;
 
 	if (p99_read_latency < avg_read_latency || p99_write_latency < avg_write_latency) {
@@ -803,49 +888,52 @@ create_delay_disk(const char *bdev_name, const char *vbdev_name, uint64_t avg_re
 		return -EINVAL;
 	}
 
-	rc = vbdev_delay_insert_association(bdev_name, vbdev_name, avg_read_latency, p99_read_latency,
+	rc = vbdev_delay_insert_association(bdev_name, vbdev_name, uuid, avg_read_latency, p99_read_latency,
 					    avg_write_latency, p99_write_latency);
 	if (rc) {
 		return rc;
 	}
 
-	bdev = spdk_bdev_get_by_name(bdev_name);
-	if (!bdev) {
-		return 0;
+	rc = vbdev_delay_register(bdev_name);
+	if (rc == -ENODEV) {
+		/* This is not an error, we tracked the name above and it still
+		 * may show up later.
+		 */
+		SPDK_NOTICELOG("vbdev creation deferred pending base bdev arrival\n");
+		rc = 0;
 	}
 
-	return vbdev_delay_register(bdev);
+	return rc;
 }
 
 void
-delete_delay_disk(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn, void *cb_arg)
+delete_delay_disk(const char *vbdev_name, spdk_bdev_unregister_cb cb_fn, void *cb_arg)
 {
 	struct bdev_association *assoc;
+	int rc;
 
-	if (!bdev || bdev->module != &delay_if) {
-		cb_fn(cb_arg, -ENODEV);
-		return;
-	}
-
-	TAILQ_FOREACH(assoc, &g_bdev_associations, link) {
-		if (strcmp(assoc->vbdev_name, bdev->name) == 0) {
-			TAILQ_REMOVE(&g_bdev_associations, assoc, link);
-			free(assoc->bdev_name);
-			free(assoc->vbdev_name);
-			free(assoc);
-			break;
+	rc = spdk_bdev_unregister_by_name(vbdev_name, &delay_if, cb_fn, cb_arg);
+	if (rc == 0) {
+		TAILQ_FOREACH(assoc, &g_bdev_associations, link) {
+			if (strcmp(assoc->vbdev_name, vbdev_name) == 0) {
+				TAILQ_REMOVE(&g_bdev_associations, assoc, link);
+				free(assoc->bdev_name);
+				free(assoc->vbdev_name);
+				free(assoc);
+				break;
+			}
 		}
+	} else {
+		cb_fn(cb_arg, rc);
 	}
-
-	spdk_bdev_unregister(bdev, cb_fn, cb_arg);
 }
 
 static void
 vbdev_delay_examine(struct spdk_bdev *bdev)
 {
-	vbdev_delay_register(bdev);
+	vbdev_delay_register(bdev->name);
 
 	spdk_bdev_module_examine_done(&delay_if);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("vbdev_delay", SPDK_LOG_VBDEV_DELAY)
+SPDK_LOG_REGISTER_COMPONENT(vbdev_delay)

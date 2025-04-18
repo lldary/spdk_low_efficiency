@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -36,11 +8,10 @@
 #include "spdk/blobfs.h"
 #include "spdk/env.h"
 #include "spdk/log.h"
-#include "spdk/thread.h"
 #include "spdk/barrier.h"
-#include "spdk_internal/thread.h"
+#include "thread/thread_internal.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "unit/lib/blob/bs_dev_common.c"
 #include "common/lib/test_env.c"
 #include "blobfs/blobfs.c"
@@ -50,34 +21,17 @@ struct spdk_filesystem *g_fs;
 struct spdk_file *g_file;
 int g_fserrno;
 struct spdk_thread *g_dispatch_thread = NULL;
-struct spdk_trace_histories *g_trace_histories;
-DEFINE_STUB_V(spdk_trace_add_register_fn, (struct spdk_trace_register_fn *reg_fn));
-DEFINE_STUB_V(spdk_trace_register_description, (const char *name,
-		uint16_t tpoint_id, uint8_t owner_type,
-		uint8_t object_type, uint8_t new_object,
-		uint8_t arg1_is_ptr, const char *arg1_name));
-DEFINE_STUB_V(_spdk_trace_record, (uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id,
-				   uint32_t size, uint64_t object_id, uint64_t arg1));
-
-/* Return NULL to test hardcoded defaults. */
-struct spdk_conf_section *
-spdk_conf_find_section(struct spdk_conf *cp, const char *name)
-{
-	return NULL;
-}
-
-/* Return -1 to test hardcoded defaults. */
-int
-spdk_conf_section_get_intval(struct spdk_conf_section *sp, const char *key)
-{
-	return -1;
-}
 
 struct ut_request {
 	fs_request_fn fn;
 	void *arg;
 	volatile int done;
 };
+
+DEFINE_STUB(spdk_memory_domain_memzero, int, (struct spdk_memory_domain *src_domain,
+		void *src_domain_ctx, struct iovec *iov, uint32_t iovcnt, void (*cpl_cb)(void *, int),
+		void *cpl_cb_arg), 0);
+DEFINE_STUB(spdk_mempool_lookup, struct spdk_mempool *, (const char *name), NULL);
 
 static void
 send_request(fs_request_fn fn, void *arg)
@@ -638,14 +592,14 @@ spdk_thread(void *arg)
 	return NULL;
 }
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
 	struct spdk_thread *thread;
 	CU_pSuite	suite = NULL;
 	pthread_t	spdk_tid;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("blobfs_sync_ut", NULL, NULL);
@@ -670,9 +624,7 @@ int main(int argc, char **argv)
 
 	g_dev_buffer = calloc(1, DEV_BUFFER_SIZE);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 
 	free(g_dev_buffer);

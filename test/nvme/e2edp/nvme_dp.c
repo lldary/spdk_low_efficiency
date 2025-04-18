@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /*
@@ -54,6 +26,7 @@ struct dev {
 
 static struct dev devs[MAX_DEVS];
 static int num_devs = 0;
+static struct spdk_nvme_transport_id g_trid = {};
 
 #define foreach_dev(iter) \
 	for (iter = devs; iter - devs < num_devs; iter++)
@@ -105,7 +78,8 @@ ns_data_buffer_reset(struct spdk_nvme_ns *ns, struct io_request *req, uint8_t da
 	}
 }
 
-static void nvme_req_reset_sgl(void *cb_arg, uint32_t sgl_offset)
+static void
+nvme_req_reset_sgl(void *cb_arg, uint32_t sgl_offset)
 {
 	struct io_request *req = (struct io_request *)cb_arg;
 
@@ -113,7 +87,8 @@ static void nvme_req_reset_sgl(void *cb_arg, uint32_t sgl_offset)
 	return;
 }
 
-static int nvme_req_next_sge(void *cb_arg, void **address, uint32_t *length)
+static int
+nvme_req_next_sge(void *cb_arg, void **address, uint32_t *length)
 {
 	struct io_request *req = (struct io_request *)cb_arg;
 	void *payload;
@@ -127,11 +102,12 @@ static int nvme_req_next_sge(void *cb_arg, void **address, uint32_t *length)
 }
 
 /* CRC-16 Guard checked for extended lba format */
-static uint32_t dp_guard_check_extended_lba_test(struct spdk_nvme_ns *ns, struct io_request *req,
-		uint32_t *io_flags)
+static uint32_t
+dp_guard_check_extended_lba_test(struct spdk_nvme_ns *ns, struct io_request *req,
+				 uint32_t *io_flags)
 {
 	struct spdk_nvme_protection_info *pi;
-	uint32_t md_size, sector_size;
+	uint32_t md_size, sector_size, chksum_size;
 
 	req->lba_count = 2;
 
@@ -142,6 +118,7 @@ static uint32_t dp_guard_check_extended_lba_test(struct spdk_nvme_ns *ns, struct
 
 	sector_size = spdk_nvme_ns_get_sector_size(ns);
 	md_size = spdk_nvme_ns_get_md_size(ns);
+	chksum_size = sector_size + md_size - 8;
 	req->contig = spdk_zmalloc((sector_size + md_size) * req->lba_count, 0x1000, NULL,
 				   SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	assert(req->contig);
@@ -152,12 +129,12 @@ static uint32_t dp_guard_check_extended_lba_test(struct spdk_nvme_ns *ns, struct
 	req->buf_size = (sector_size + md_size) * req->lba_count;
 	req->metadata = NULL;
 	ns_data_buffer_reset(ns, req, DATA_PATTERN);
-	pi = (struct spdk_nvme_protection_info *)(req->contig + sector_size + md_size - 8);
+	pi = (struct spdk_nvme_protection_info *)(req->contig + chksum_size);
 	/* big-endian for guard */
-	to_be16(&pi->guard, spdk_crc16_t10dif(0, req->contig, sector_size));
+	to_be16(&pi->guard, spdk_crc16_t10dif(0, req->contig, chksum_size));
 
 	pi = (struct spdk_nvme_protection_info *)(req->contig + (sector_size + md_size) * 2 - 8);
-	to_be16(&pi->guard, spdk_crc16_t10dif(0, req->contig + sector_size + md_size, sector_size));
+	to_be16(&pi->guard, spdk_crc16_t10dif(0, req->contig + sector_size + md_size, chksum_size));
 
 	*io_flags = SPDK_NVME_IO_FLAGS_PRCHK_GUARD;
 
@@ -169,18 +146,21 @@ static uint32_t dp_guard_check_extended_lba_test(struct spdk_nvme_ns *ns, struct
  *  both extended LBA format and separate metadata can
  *  run the test case.
  */
-static uint32_t dp_with_pract_test(struct spdk_nvme_ns *ns, struct io_request *req,
-				   uint32_t *io_flags)
+static uint32_t
+dp_with_pract_test(struct spdk_nvme_ns *ns, struct io_request *req,
+		   uint32_t *io_flags)
 {
 	uint32_t md_size, sector_size, data_len;
 
 	req->lba_count = 8;
+	req->use_extended_lba = spdk_nvme_ns_supports_extended_lba(ns) ? true : false;
 
 	sector_size = spdk_nvme_ns_get_sector_size(ns);
 	md_size = spdk_nvme_ns_get_md_size(ns);
 	if (md_size == 8) {
 		/* No additional metadata buffer provided */
 		data_len = sector_size * req->lba_count;
+		req->use_extended_lba = false;
 	} else {
 		data_len = (sector_size + md_size) * req->lba_count;
 	}
@@ -207,14 +187,14 @@ static uint32_t dp_with_pract_test(struct spdk_nvme_ns *ns, struct io_request *r
 	}
 
 	req->lba = 0;
-	req->use_extended_lba = false;
 
 	return req->lba_count;
 }
 
 /* Block Reference Tag checked for TYPE1 and TYPE2 with PRACT setting to 0 */
-static uint32_t dp_without_pract_extended_lba_test(struct spdk_nvme_ns *ns, struct io_request *req,
-		uint32_t *io_flags)
+static uint32_t
+dp_without_pract_extended_lba_test(struct spdk_nvme_ns *ns, struct io_request *req,
+				   uint32_t *io_flags)
 {
 	struct spdk_nvme_protection_info *pi;
 	uint32_t md_size, sector_size;
@@ -256,8 +236,9 @@ static uint32_t dp_without_pract_extended_lba_test(struct spdk_nvme_ns *ns, stru
 }
 
 /* LBA + Metadata without data protection bits setting */
-static uint32_t dp_without_flags_extended_lba_test(struct spdk_nvme_ns *ns, struct io_request *req,
-		uint32_t *io_flags)
+static uint32_t
+dp_without_flags_extended_lba_test(struct spdk_nvme_ns *ns, struct io_request *req,
+				   uint32_t *io_flags)
 {
 	uint32_t md_size, sector_size;
 
@@ -283,8 +264,9 @@ static uint32_t dp_without_flags_extended_lba_test(struct spdk_nvme_ns *ns, stru
 }
 
 /* Block Reference Tag checked for TYPE1 and TYPE2 with PRACT setting to 0 */
-static uint32_t dp_without_pract_separate_meta_test(struct spdk_nvme_ns *ns, struct io_request *req,
-		uint32_t *io_flags)
+static uint32_t
+dp_without_pract_separate_meta_test(struct spdk_nvme_ns *ns, struct io_request *req,
+				    uint32_t *io_flags)
 {
 	struct spdk_nvme_protection_info *pi;
 	uint32_t md_size, sector_size;
@@ -331,7 +313,8 @@ static uint32_t dp_without_pract_separate_meta_test(struct spdk_nvme_ns *ns, str
 }
 
 /* Application Tag checked with PRACT setting to 0 */
-static uint32_t dp_without_pract_separate_meta_apptag_test(struct spdk_nvme_ns *ns,
+static uint32_t
+dp_without_pract_separate_meta_apptag_test(struct spdk_nvme_ns *ns,
 		struct io_request *req,
 		uint32_t *io_flags)
 {
@@ -373,8 +356,9 @@ static uint32_t dp_without_pract_separate_meta_apptag_test(struct spdk_nvme_ns *
  * LBA + Metadata without data protection bits setting,
  *  separate metadata payload for the test case.
  */
-static uint32_t dp_without_flags_separate_meta_test(struct spdk_nvme_ns *ns, struct io_request *req,
-		uint32_t *io_flags)
+static uint32_t
+dp_without_flags_separate_meta_test(struct spdk_nvme_ns *ns, struct io_request *req,
+				    uint32_t *io_flags)
 {
 	uint32_t md_size, sector_size;
 
@@ -586,8 +570,7 @@ probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 }
 
 static void
-attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
-	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
+add_ctrlr(struct spdk_nvme_ctrlr *ctrlr)
 {
 	struct dev *dev;
 
@@ -597,17 +580,53 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	dev->ctrlr = ctrlr;
 
 	snprintf(dev->name, sizeof(dev->name), "%s",
-		 trid->traddr);
+		 spdk_nvme_ctrlr_get_transport_id(ctrlr)->traddr);
 
 	printf("Attached to %s\n", dev->name);
 }
 
-int main(int argc, char **argv)
+static void
+attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
+	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
+{
+	add_ctrlr(ctrlr);
+}
+
+static int
+parse_args(int argc, char **argv)
+{
+	int op;
+
+	spdk_nvme_trid_populate_transport(&g_trid, SPDK_NVME_TRANSPORT_PCIE);
+	snprintf(g_trid.subnqn, sizeof(g_trid.subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
+
+	while ((op = getopt(argc, argv, "r:")) != -1) {
+		switch (op) {
+		case 'r':
+			if (spdk_nvme_transport_id_parse(&g_trid, optarg) != 0) {
+				fprintf(stderr, "Error parsing transport address\n");
+				return -EINVAL;
+			}
+			break;
+		default:
+			fprintf(stderr, "Usage: %s [-r trid]\n", argv[0]);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+int
+main(int argc, char **argv)
 {
 	struct dev		*iter;
-	int			rc, i;
+	int			rc;
 	struct spdk_env_opts	opts;
+	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
+	struct spdk_nvme_ctrlr	*ctrlr;
 
+	opts.opts_size = sizeof(opts);
 	spdk_env_opts_init(&opts);
 	opts.name = "nvme_dp";
 	opts.core_mask = "0x1";
@@ -617,11 +636,28 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	if (parse_args(argc, argv) != 0) {
+		return 1;
+	}
+
 	printf("NVMe Write/Read with End-to-End data protection test\n");
 
-	if (spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL) != 0) {
+	if (g_trid.traddr[0] != '\0') {
+		ctrlr = spdk_nvme_connect(&g_trid, NULL, 0);
+		if (ctrlr == NULL) {
+			fprintf(stderr, "nvme_connect() failed\n");
+			return 1;
+		}
+
+		add_ctrlr(ctrlr);
+	} else if (spdk_nvme_probe(&g_trid, NULL, probe_cb, attach_cb, NULL) != 0) {
 		fprintf(stderr, "nvme_probe() failed\n");
 		exit(1);
+	}
+
+	if (num_devs == 0) {
+		fprintf(stderr, "No valid NVMe controllers found\n");
+		return 1;
 	}
 
 	rc = 0;
@@ -642,10 +678,12 @@ int main(int argc, char **argv)
 
 	printf("Cleaning up...\n");
 
-	for (i = 0; i < num_devs; i++) {
-		struct dev *dev = &devs[i];
+	foreach_dev(iter) {
+		spdk_nvme_detach_async(iter->ctrlr, &detach_ctx);
+	}
 
-		spdk_nvme_detach(dev->ctrlr);
+	if (detach_ctx) {
+		spdk_nvme_detach_poll(detach_ctx);
 	}
 
 	return rc;

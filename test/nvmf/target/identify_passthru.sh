@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2020 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/nvmf/common.sh
 source $rootdir/scripts/common.sh
-
-rpc_py="$rootdir/scripts/rpc.py"
 
 nvmftestinit
 
@@ -19,8 +20,8 @@ if [ -z "${bdf}" ]; then
 fi
 
 # Expected values
-nvme_serial_number=$($SPDK_EXAMPLE_DIR/identify -r "trtype:PCIe traddr:${bdf}" -i 0 | grep "Serial Number:" | awk '{print $3}')
-nvme_model_number=$($SPDK_EXAMPLE_DIR/identify -r "trtype:PCIe traddr:${bdf}" -i 0 | grep "Model Number:" | awk '{print $3}')
+nvme_serial_number=$($SPDK_BIN_DIR/spdk_nvme_identify -r "trtype:PCIe traddr:${bdf}" -i 0 | grep "Serial Number:" | awk '{print $3}')
+nvme_model_number=$($SPDK_BIN_DIR/spdk_nvme_identify -r "trtype:PCIe traddr:${bdf}" -i 0 | grep "Model Number:" | awk '{print $3}')
 
 timing_exit nvme_identify
 
@@ -38,21 +39,21 @@ $rpc_py nvmf_create_transport $NVMF_TRANSPORT_OPTS -u 8192
 timing_exit start_nvmf_tgt
 
 $rpc_py bdev_nvme_attach_controller -b Nvme0 -t PCIe -a ${bdf}
-$rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+$rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001 -m 1
 $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Nvme0n1
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
 $rpc_py nvmf_get_subsystems
 
 # Discovered values
-nvmf_serial_number=$($SPDK_EXAMPLE_DIR/identify -r "\
+nvmf_serial_number=$($SPDK_BIN_DIR/spdk_nvme_identify -r "\
         trtype:$TEST_TRANSPORT \
         adrfam:IPv4 \
         traddr:$NVMF_FIRST_TARGET_IP \
         trsvcid:$NVMF_PORT \
         subnqn:nqn.2016-06.io.spdk:cnode1" | grep "Serial Number:" | awk '{print $3}')
 
-nvmf_model_number=$($SPDK_EXAMPLE_DIR/identify -r "\
+nvmf_model_number=$($SPDK_BIN_DIR/spdk_nvme_identify -r "\
         trtype:$TEST_TRANSPORT \
         adrfam:IPv4 \
         traddr:$NVMF_FIRST_TARGET_IP \

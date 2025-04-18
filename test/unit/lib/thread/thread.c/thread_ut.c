@@ -1,41 +1,14 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
-#include "spdk_internal/thread.h"
+#include "thread/thread_internal.h"
 
 #include "thread/thread.c"
 #include "common/lib/ut_multithread.c"
@@ -109,7 +82,8 @@ thread_alloc(void)
 	spdk_thread_lib_fini();
 
 	/* Scheduling callback exists with extended thread library initialization. */
-	spdk_thread_lib_init_ext(_thread_op, _thread_op_supported, 0);
+	spdk_thread_lib_init_ext(_thread_op, _thread_op_supported, 0,
+				 SPDK_DEFAULT_MSG_MEMPOOL_SIZE);
 
 	/* Scheduling succeeds */
 	g_sched_rc = 0;
@@ -244,6 +218,23 @@ poller_run_pause(void *ctx)
 	return 0;
 }
 
+/* Verify the same poller can be switched multiple times between
+ * pause and resume while it runs.
+ */
+static int
+poller_run_pause_resume_pause(void *ctx)
+{
+	struct poller_ctx *poller_ctx = ctx;
+
+	poller_ctx->run = true;
+
+	spdk_poller_pause(poller_ctx->poller);
+	spdk_poller_resume(poller_ctx->poller);
+	spdk_poller_pause(poller_ctx->poller);
+
+	return 0;
+}
+
 static void
 poller_msg_pause_cb(void *ctx)
 {
@@ -272,6 +263,21 @@ poller_pause(void)
 
 	/* Register a poller that pauses itself */
 	poller_ctx.poller = spdk_poller_register(poller_run_pause, &poller_ctx, 0);
+	CU_ASSERT_PTR_NOT_NULL(poller_ctx.poller);
+
+	poller_ctx.run = false;
+	poll_threads();
+	CU_ASSERT_EQUAL(poller_ctx.run, true);
+
+	poller_ctx.run = false;
+	poll_threads();
+	CU_ASSERT_EQUAL(poller_ctx.run, false);
+
+	spdk_poller_unregister(&poller_ctx.poller);
+	CU_ASSERT_PTR_NULL(poller_ctx.poller);
+
+	/* Register a poller that switches between pause and resume itself */
+	poller_ctx.poller = spdk_poller_register(poller_run_pause_resume_pause, &poller_ctx, 0);
 	CU_ASSERT_PTR_NOT_NULL(poller_ctx.poller);
 
 	poller_ctx.run = false;
@@ -382,6 +388,55 @@ poller_pause(void)
 			spdk_delay_us(delay[i]);
 			poll_threads();
 		}
+		CU_ASSERT_EQUAL(poller_ctx.run, true);
+
+		spdk_poller_unregister(&poller_ctx.poller);
+		CU_ASSERT_PTR_NULL(poller_ctx.poller);
+
+		/* Register a timed poller that pauses itself */
+		poller_ctx.poller = spdk_poller_register(poller_run_pause, &poller_ctx, delay[i]);
+		CU_ASSERT_PTR_NOT_NULL(poller_ctx.poller);
+
+		spdk_delay_us(delay[i]);
+		poller_ctx.run = false;
+		poll_threads();
+		CU_ASSERT_EQUAL(poller_ctx.run, true);
+
+		poller_ctx.run = false;
+		spdk_delay_us(delay[i]);
+		poll_threads();
+		CU_ASSERT_EQUAL(poller_ctx.run, false);
+
+		spdk_poller_resume(poller_ctx.poller);
+
+		CU_ASSERT_EQUAL(poller_ctx.run, false);
+		spdk_delay_us(delay[i]);
+		poll_threads();
+		CU_ASSERT_EQUAL(poller_ctx.run, true);
+
+		spdk_poller_unregister(&poller_ctx.poller);
+		CU_ASSERT_PTR_NULL(poller_ctx.poller);
+
+		/* Register a timed poller that switches between pause and resume itself */
+		poller_ctx.poller = spdk_poller_register(poller_run_pause_resume_pause,
+				    &poller_ctx, delay[i]);
+		CU_ASSERT_PTR_NOT_NULL(poller_ctx.poller);
+
+		spdk_delay_us(delay[i]);
+		poller_ctx.run = false;
+		poll_threads();
+		CU_ASSERT_EQUAL(poller_ctx.run, true);
+
+		poller_ctx.run = false;
+		spdk_delay_us(delay[i]);
+		poll_threads();
+		CU_ASSERT_EQUAL(poller_ctx.run, false);
+
+		spdk_poller_resume(poller_ctx.poller);
+
+		CU_ASSERT_EQUAL(poller_ctx.run, false);
+		spdk_delay_us(delay[i]);
+		poll_threads();
 		CU_ASSERT_EQUAL(poller_ctx.run, true);
 
 		spdk_poller_unregister(&poller_ctx.poller);
@@ -563,38 +618,40 @@ for_each_channel_unreg(void)
 
 	allocate_threads(1);
 	set_thread(0);
-	CU_ASSERT(TAILQ_EMPTY(&g_io_devices));
+	CU_ASSERT(RB_EMPTY(&g_io_devices));
 	spdk_io_device_register(&io_target, channel_create, channel_destroy, sizeof(int), NULL);
-	CU_ASSERT(!TAILQ_EMPTY(&g_io_devices));
-	dev = TAILQ_FIRST(&g_io_devices);
+	CU_ASSERT(!RB_EMPTY(&g_io_devices));
+	dev = RB_MIN(io_device_tree, &g_io_devices);
 	SPDK_CU_ASSERT_FATAL(dev != NULL);
-	CU_ASSERT(TAILQ_NEXT(dev, tailq) == NULL);
+	CU_ASSERT(RB_NEXT(io_device_tree, &g_io_devices, dev) == NULL);
 	ch0 = spdk_get_io_channel(&io_target);
-	spdk_for_each_channel(&io_target, unreg_ch_done, &ctx, unreg_foreach_done);
 
-	spdk_io_device_unregister(&io_target, NULL);
-	/*
-	 * There is an outstanding foreach call on the io_device, so the unregister should not
-	 *  have removed the device.
-	 */
-	CU_ASSERT(dev == TAILQ_FIRST(&g_io_devices));
 	spdk_io_device_register(&io_target, channel_create, channel_destroy, sizeof(int), NULL);
+
 	/*
 	 * There is already a device registered at &io_target, so a new io_device should not
 	 *  have been added to g_io_devices.
 	 */
-	CU_ASSERT(dev == TAILQ_FIRST(&g_io_devices));
-	CU_ASSERT(TAILQ_NEXT(dev, tailq) == NULL);
+	CU_ASSERT(dev == RB_MIN(io_device_tree, &g_io_devices));
+	CU_ASSERT(RB_NEXT(io_device_tree, &g_io_devices, dev) == NULL);
+
+	spdk_for_each_channel(&io_target, unreg_ch_done, &ctx, unreg_foreach_done);
+	spdk_io_device_unregister(&io_target, NULL);
+	/*
+	 * There is an outstanding foreach call on the io_device, so the unregister should not
+	 *  have immediately removed the device.
+	 */
+	CU_ASSERT(dev == RB_MIN(io_device_tree, &g_io_devices));
 
 	poll_thread(0);
 	CU_ASSERT(ctx.ch_done == true);
 	CU_ASSERT(ctx.foreach_done == true);
+
 	/*
-	 * There are no more foreach operations outstanding, so we can unregister the device,
-	 *  even though a channel still exists for the device.
+	 * There are no more foreach operations outstanding, so the device should be
+	 * unregistered.
 	 */
-	spdk_io_device_unregister(&io_target, NULL);
-	CU_ASSERT(TAILQ_EMPTY(&g_io_devices));
+	CU_ASSERT(RB_EMPTY(&g_io_devices));
 
 	set_thread(0);
 	spdk_put_io_channel(ch0);
@@ -702,12 +759,14 @@ channel(void)
 	ch1 = spdk_get_io_channel(&g_device1);
 	CU_ASSERT(g_create_cb_calls == 1);
 	SPDK_CU_ASSERT_FATAL(ch1 != NULL);
+	CU_ASSERT(spdk_io_channel_get_io_device(ch1) == &g_device1);
 
 	g_create_cb_calls = 0;
 	ch2 = spdk_get_io_channel(&g_device1);
 	CU_ASSERT(g_create_cb_calls == 0);
 	CU_ASSERT(ch1 == ch2);
 	SPDK_CU_ASSERT_FATAL(ch2 != NULL);
+	CU_ASSERT(spdk_io_channel_get_io_device(ch2) == &g_device1);
 
 	g_destroy_cb_calls = 0;
 	spdk_put_io_channel(ch2);
@@ -719,6 +778,7 @@ channel(void)
 	CU_ASSERT(g_create_cb_calls == 1);
 	CU_ASSERT(ch1 != ch2);
 	SPDK_CU_ASSERT_FATAL(ch2 != NULL);
+	CU_ASSERT(spdk_io_channel_get_io_device(ch2) == &g_device2);
 
 	ctx = spdk_io_channel_get_ctx(ch2);
 	CU_ASSERT(*(uint64_t *)ctx == g_ctx2);
@@ -740,7 +800,7 @@ channel(void)
 	poll_threads();
 	spdk_io_device_unregister(&g_device2, NULL);
 	poll_threads();
-	CU_ASSERT(TAILQ_EMPTY(&g_io_devices));
+	CU_ASSERT(RB_EMPTY(&g_io_devices));
 	free_threads();
 	CU_ASSERT(TAILQ_EMPTY(&g_threads));
 }
@@ -795,7 +855,7 @@ channel_destroy_races(void)
 	spdk_io_device_unregister(&device, NULL);
 	poll_threads();
 
-	CU_ASSERT(TAILQ_EMPTY(&g_io_devices));
+	CU_ASSERT(RB_EMPTY(&g_io_devices));
 	free_threads();
 	CU_ASSERT(TAILQ_EMPTY(&g_threads));
 }
@@ -1051,24 +1111,24 @@ struct ut_nested_dev {
 	struct ut_nested_dev *child;
 };
 
-static struct io_device *
-ut_get_io_device(void *dev)
-{
-	struct io_device *tmp;
-
-	TAILQ_FOREACH(tmp, &g_io_devices, tailq) {
-		if (tmp->io_device == dev) {
-			return tmp;
-		}
-	}
-
-	return NULL;
-}
-
 static int
 ut_null_poll(void *ctx)
 {
-	return -1;
+	return SPDK_POLLER_IDLE;
+}
+
+static int
+ut_assert_poller_state_running(void *ctx)
+{
+	struct spdk_poller *poller = ctx;
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "running");
+	return SPDK_POLLER_IDLE;
+}
+
+static int
+ut_busy_poll(void *ctx)
+{
+	return SPDK_POLLER_BUSY;
 }
 
 static int
@@ -1162,11 +1222,11 @@ nested_channel(void)
 	spdk_io_device_register(&_dev3, ut_nested_ch_create_cb, ut_nested_ch_destroy_cb,
 				sizeof(struct ut_nested_ch), "dev3");
 
-	dev1 = ut_get_io_device(&_dev1);
+	dev1 = io_device_get(&_dev1);
 	SPDK_CU_ASSERT_FATAL(dev1 != NULL);
-	dev2 = ut_get_io_device(&_dev2);
+	dev2 = io_device_get(&_dev2);
 	SPDK_CU_ASSERT_FATAL(dev2 != NULL);
-	dev3 = ut_get_io_device(&_dev3);
+	dev3 = io_device_get(&_dev3);
 	SPDK_CU_ASSERT_FATAL(dev3 != NULL);
 
 	/* A single call spdk_get_io_channel() to dev1 will also create channels
@@ -1231,11 +1291,884 @@ nested_channel(void)
 	spdk_io_device_unregister(&_dev1, NULL);
 	spdk_io_device_unregister(&_dev2, NULL);
 	spdk_io_device_unregister(&_dev3, NULL);
-	CU_ASSERT(TAILQ_EMPTY(&g_io_devices));
+	CU_ASSERT(RB_EMPTY(&g_io_devices));
 
 	free_threads();
 	CU_ASSERT(TAILQ_EMPTY(&g_threads));
 }
+
+static int
+create_cb2(void *io_device, void *ctx_buf)
+{
+	uint64_t *devcnt = (uint64_t *)io_device;
+
+	*devcnt += 1;
+
+	return 0;
+}
+
+static void
+destroy_cb2(void *io_device, void *ctx_buf)
+{
+	uint64_t *devcnt = (uint64_t *)io_device;
+
+	CU_ASSERT(*devcnt > 0);
+	*devcnt -= 1;
+}
+
+static void
+unregister_cb2(void *io_device)
+{
+	uint64_t *devcnt = (uint64_t *)io_device;
+
+	CU_ASSERT(*devcnt == 0);
+}
+
+static void
+device_unregister_and_thread_exit_race(void)
+{
+	uint64_t device = 0;
+	struct spdk_io_channel *ch1, *ch2;
+	struct spdk_thread *thread1, *thread2;
+
+	/* Create two threads and each thread gets a channel from the same device. */
+	allocate_threads(2);
+	set_thread(0);
+
+	thread1 = spdk_get_thread();
+	SPDK_CU_ASSERT_FATAL(thread1 != NULL);
+
+	spdk_io_device_register(&device, create_cb2, destroy_cb2, sizeof(uint64_t), NULL);
+
+	ch1 = spdk_get_io_channel(&device);
+	SPDK_CU_ASSERT_FATAL(ch1 != NULL);
+
+	set_thread(1);
+
+	thread2 = spdk_get_thread();
+	SPDK_CU_ASSERT_FATAL(thread2 != NULL);
+
+	ch2 = spdk_get_io_channel(&device);
+	SPDK_CU_ASSERT_FATAL(ch2 != NULL);
+
+	set_thread(0);
+
+	/* Move thread 0 to the exiting state, but it should keep exiting until two channels
+	 * and a device are released.
+	 */
+	spdk_thread_exit(thread1);
+	poll_thread(0);
+
+	spdk_put_io_channel(ch1);
+
+	spdk_io_device_unregister(&device, unregister_cb2);
+	poll_thread(0);
+
+	CU_ASSERT(spdk_thread_is_exited(thread1) == false);
+
+	set_thread(1);
+
+	/* Move thread 1 to the exiting state, but it should keep exiting until its channel
+	 * is released.
+	 */
+	spdk_thread_exit(thread2);
+	poll_thread(1);
+
+	CU_ASSERT(spdk_thread_is_exited(thread2) == false);
+
+	spdk_put_io_channel(ch2);
+	poll_thread(1);
+
+	CU_ASSERT(spdk_thread_is_exited(thread1) == false);
+	CU_ASSERT(spdk_thread_is_exited(thread2) == true);
+
+	poll_thread(0);
+
+	CU_ASSERT(spdk_thread_is_exited(thread1) == true);
+
+	free_threads();
+}
+
+static int
+dummy_poller(void *arg)
+{
+	return SPDK_POLLER_IDLE;
+}
+
+static void
+cache_closest_timed_poller(void)
+{
+	struct spdk_thread *thread;
+	struct spdk_poller *poller1, *poller2, *poller3, *tmp;
+
+	allocate_threads(1);
+	set_thread(0);
+
+	thread = spdk_get_thread();
+	SPDK_CU_ASSERT_FATAL(thread != NULL);
+
+	poller1 = spdk_poller_register(dummy_poller, NULL, 1000);
+	SPDK_CU_ASSERT_FATAL(poller1 != NULL);
+
+	poller2 = spdk_poller_register(dummy_poller, NULL, 1500);
+	SPDK_CU_ASSERT_FATAL(poller2 != NULL);
+
+	poller3 = spdk_poller_register(dummy_poller, NULL, 1800);
+	SPDK_CU_ASSERT_FATAL(poller3 != NULL);
+
+	poll_threads();
+
+	/* When multiple timed pollers are inserted, the cache should
+	 * have the closest timed poller.
+	 */
+	CU_ASSERT(thread->first_timed_poller == poller1);
+	CU_ASSERT(RB_MIN(timed_pollers_tree, &thread->timed_pollers) == poller1);
+
+	spdk_delay_us(1000);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == poller2);
+	CU_ASSERT(RB_MIN(timed_pollers_tree, &thread->timed_pollers) == poller2);
+
+	/* If we unregister a timed poller by spdk_poller_unregister()
+	 * when it is waiting, it is marked as being unregistered and
+	 * is actually unregistered when it is expired.
+	 *
+	 * Hence if we unregister the closest timed poller when it is waiting,
+	 * the cache is not updated to the next timed poller until it is expired.
+	 */
+	tmp = poller2;
+
+	spdk_poller_unregister(&poller2);
+	CU_ASSERT(poller2 == NULL);
+
+	spdk_delay_us(499);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == tmp);
+	CU_ASSERT(RB_MIN(timed_pollers_tree, &thread->timed_pollers) == tmp);
+
+	spdk_delay_us(1);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == poller3);
+	CU_ASSERT(RB_MIN(timed_pollers_tree, &thread->timed_pollers) == poller3);
+
+	/* If we pause a timed poller by spdk_poller_pause() when it is waiting,
+	 * it is marked as being paused and is actually paused when it is expired.
+	 *
+	 * Hence if we pause the closest timed poller when it is waiting, the cache
+	 * is not updated to the next timed poller until it is expired.
+	 */
+	spdk_poller_pause(poller3);
+
+	spdk_delay_us(299);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == poller3);
+	CU_ASSERT(RB_MIN(timed_pollers_tree, &thread->timed_pollers) == poller3);
+
+	spdk_delay_us(1);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == poller1);
+	CU_ASSERT(RB_MIN(timed_pollers_tree, &thread->timed_pollers) == poller1);
+
+	/* After unregistering all timed pollers, the cache should
+	 * be NULL.
+	 */
+	spdk_poller_unregister(&poller1);
+	spdk_poller_unregister(&poller3);
+
+	spdk_delay_us(200);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == NULL);
+	CU_ASSERT(RB_EMPTY(&thread->timed_pollers));
+
+	free_threads();
+}
+
+static void
+multi_timed_pollers_have_same_expiration(void)
+{
+	struct spdk_thread *thread;
+	struct spdk_poller *poller1, *poller2, *poller3, *poller4, *tmp;
+	uint64_t start_ticks;
+
+	allocate_threads(1);
+	set_thread(0);
+
+	thread = spdk_get_thread();
+	SPDK_CU_ASSERT_FATAL(thread != NULL);
+
+	/*
+	 * case 1: multiple timed pollers have the same next_run_tick.
+	 */
+	start_ticks = spdk_get_ticks();
+
+	poller1 = spdk_poller_register(dummy_poller, NULL, 500);
+	SPDK_CU_ASSERT_FATAL(poller1 != NULL);
+
+	poller2 = spdk_poller_register(dummy_poller, NULL, 500);
+	SPDK_CU_ASSERT_FATAL(poller2 != NULL);
+
+	poller3 = spdk_poller_register(dummy_poller, NULL, 1000);
+	SPDK_CU_ASSERT_FATAL(poller3 != NULL);
+
+	poller4 = spdk_poller_register(dummy_poller, NULL, 1500);
+	SPDK_CU_ASSERT_FATAL(poller4 != NULL);
+
+	/* poller1 and poller2 have the same next_run_tick but cache has poller1
+	 * because poller1 is registered earlier than poller2.
+	 */
+	CU_ASSERT(thread->first_timed_poller == poller1);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 500);
+	CU_ASSERT(poller2->next_run_tick == start_ticks + 500);
+	CU_ASSERT(poller3->next_run_tick == start_ticks + 1000);
+	CU_ASSERT(poller4->next_run_tick == start_ticks + 1500);
+
+	/* after 500 usec, poller1 and poller2 are expired. */
+	spdk_delay_us(500);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 500);
+	poll_threads();
+
+	/* poller1, poller2, and poller3 have the same next_run_tick but cache
+	 * has poller3 because poller3 is not expired yet.
+	 */
+	CU_ASSERT(thread->first_timed_poller == poller3);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 1000);
+	CU_ASSERT(poller2->next_run_tick == start_ticks + 1000);
+	CU_ASSERT(poller3->next_run_tick == start_ticks + 1000);
+	CU_ASSERT(poller4->next_run_tick == start_ticks + 1500);
+
+	/* after 500 usec, poller1, poller2, and poller3 are expired. */
+	spdk_delay_us(500);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 1000);
+	poll_threads();
+
+	/* poller1, poller2, and poller4 have the same next_run_tick but cache
+	 * has poller4 because poller4 is not expired yet.
+	 */
+	CU_ASSERT(thread->first_timed_poller == poller4);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 1500);
+	CU_ASSERT(poller2->next_run_tick == start_ticks + 1500);
+	CU_ASSERT(poller3->next_run_tick == start_ticks + 2000);
+	CU_ASSERT(poller4->next_run_tick == start_ticks + 1500);
+
+	/* after 500 usec, poller1, poller2, and poller4 are expired. */
+	spdk_delay_us(500);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 1500);
+	poll_threads();
+
+	/* poller1, poller2, and poller3 have the same next_run_tick but cache
+	 * has poller3 because poller3 is updated earlier than poller1 and poller2.
+	 */
+	CU_ASSERT(thread->first_timed_poller == poller3);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 2000);
+	CU_ASSERT(poller2->next_run_tick == start_ticks + 2000);
+	CU_ASSERT(poller3->next_run_tick == start_ticks + 2000);
+	CU_ASSERT(poller4->next_run_tick == start_ticks + 3000);
+
+	spdk_poller_unregister(&poller1);
+	spdk_poller_unregister(&poller2);
+	spdk_poller_unregister(&poller3);
+	spdk_poller_unregister(&poller4);
+
+	spdk_delay_us(1500);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 3000);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == NULL);
+	CU_ASSERT(RB_EMPTY(&thread->timed_pollers));
+
+	/*
+	 * case 2: unregister timed pollers while multiple timed pollers are registered.
+	 */
+	start_ticks = spdk_get_ticks();
+
+	poller1 = spdk_poller_register(dummy_poller, NULL, 500);
+	SPDK_CU_ASSERT_FATAL(poller1 != NULL);
+
+	CU_ASSERT(thread->first_timed_poller == poller1);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 500);
+
+	/* after 250 usec, register poller2 and poller3. */
+	spdk_delay_us(250);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 250);
+
+	poller2 = spdk_poller_register(dummy_poller, NULL, 500);
+	SPDK_CU_ASSERT_FATAL(poller2 != NULL);
+
+	poller3 = spdk_poller_register(dummy_poller, NULL, 750);
+	SPDK_CU_ASSERT_FATAL(poller3 != NULL);
+
+	CU_ASSERT(thread->first_timed_poller == poller1);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 500);
+	CU_ASSERT(poller2->next_run_tick == start_ticks + 750);
+	CU_ASSERT(poller3->next_run_tick == start_ticks + 1000);
+
+	/* unregister poller2 which is not the closest. */
+	tmp = poller2;
+	spdk_poller_unregister(&poller2);
+
+	/* after 250 usec, poller1 is expired. */
+	spdk_delay_us(250);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 500);
+	poll_threads();
+
+	/* poller2 is not unregistered yet because it is not expired. */
+	CU_ASSERT(thread->first_timed_poller == tmp);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 1000);
+	CU_ASSERT(tmp->next_run_tick == start_ticks + 750);
+	CU_ASSERT(poller3->next_run_tick == start_ticks + 1000);
+
+	spdk_delay_us(250);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 750);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == poller3);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 1000);
+	CU_ASSERT(poller3->next_run_tick == start_ticks + 1000);
+
+	spdk_poller_unregister(&poller3);
+
+	spdk_delay_us(250);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 1000);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == poller1);
+	CU_ASSERT(poller1->next_run_tick == start_ticks + 1500);
+
+	spdk_poller_unregister(&poller1);
+
+	spdk_delay_us(500);
+	CU_ASSERT(spdk_get_ticks() == start_ticks + 1500);
+	poll_threads();
+
+	CU_ASSERT(thread->first_timed_poller == NULL);
+	CU_ASSERT(RB_EMPTY(&thread->timed_pollers));
+
+	free_threads();
+}
+
+static int
+dummy_create_cb(void *io_device, void *ctx_buf)
+{
+	return 0;
+}
+
+static void
+dummy_destroy_cb(void *io_device, void *ctx_buf)
+{
+}
+
+/* We had a bug that the compare function for the io_device tree
+ * did not work as expected because subtraction caused overflow
+ * when the difference between two keys was more than 32 bits.
+ * This test case verifies the fix for the bug.
+ */
+static void
+io_device_lookup(void)
+{
+	struct io_device dev1, dev2, *dev;
+	struct spdk_io_channel *ch;
+
+	/* The compare function io_device_cmp() had a overflow bug.
+	 * Verify the fix first.
+	 */
+	dev1.io_device = (void *)0x7FFFFFFF;
+	dev2.io_device = NULL;
+	CU_ASSERT(io_device_cmp(&dev1, &dev2) > 0);
+	CU_ASSERT(io_device_cmp(&dev2, &dev1) < 0);
+
+	/* Check if overflow due to 32 bits does not occur. */
+	dev1.io_device = (void *)0x80000000;
+	CU_ASSERT(io_device_cmp(&dev1, &dev2) > 0);
+	CU_ASSERT(io_device_cmp(&dev2, &dev1) < 0);
+
+	dev1.io_device = (void *)0x100000000;
+	CU_ASSERT(io_device_cmp(&dev1, &dev2) > 0);
+	CU_ASSERT(io_device_cmp(&dev2, &dev1) < 0);
+
+	dev1.io_device = (void *)0x8000000000000000;
+	CU_ASSERT(io_device_cmp(&dev1, &dev2) > 0);
+	CU_ASSERT(io_device_cmp(&dev2, &dev1) < 0);
+
+	allocate_threads(1);
+	set_thread(0);
+
+	spdk_io_device_register((void *)0x1, dummy_create_cb, dummy_destroy_cb, 0, NULL);
+	spdk_io_device_register((void *)0x7FFFFFFF, dummy_create_cb, dummy_destroy_cb, 0, NULL);
+	spdk_io_device_register((void *)0x80000000, dummy_create_cb, dummy_destroy_cb, 0, NULL);
+	spdk_io_device_register((void *)0x100000000, dummy_create_cb, dummy_destroy_cb, 0, NULL);
+	spdk_io_device_register((void *)0x8000000000000000, dummy_create_cb, dummy_destroy_cb, 0, NULL);
+	spdk_io_device_register((void *)0x8000000100000000, dummy_create_cb, dummy_destroy_cb, 0, NULL);
+	spdk_io_device_register((void *)UINT64_MAX, dummy_create_cb, dummy_destroy_cb, 0, NULL);
+
+	/* RB_MIN and RB_NEXT should return devs in ascending order by addresses.
+	 * RB_FOREACH uses RB_MIN and RB_NEXT internally.
+	 */
+	dev = RB_MIN(io_device_tree, &g_io_devices);
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+	CU_ASSERT(dev->io_device == (void *)0x1);
+
+	dev = RB_NEXT(io_device_tree, &g_io_devices, dev);
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+	CU_ASSERT(dev->io_device == (void *)0x7FFFFFFF);
+
+	dev = RB_NEXT(io_device_tree, &g_io_devices, dev);
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+	CU_ASSERT(dev->io_device == (void *)0x80000000);
+
+	dev = RB_NEXT(io_device_tree, &g_io_devices, dev);
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+	CU_ASSERT(dev->io_device == (void *)0x100000000);
+
+	dev = RB_NEXT(io_device_tree, &g_io_devices, dev);
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+	CU_ASSERT(dev->io_device == (void *)0x8000000000000000);
+
+	dev = RB_NEXT(io_device_tree, &g_io_devices, dev);
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+	CU_ASSERT(dev->io_device == (void *)0x8000000100000000);
+
+	dev = RB_NEXT(io_device_tree, &g_io_devices, dev);
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+	CU_ASSERT(dev->io_device == (void *)UINT64_MAX);
+
+	/* Verify spdk_get_io_channel() creates io_channels associated with the
+	 * correct io_devices.
+	 */
+	ch = spdk_get_io_channel((void *)0x1);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+	CU_ASSERT(ch->dev->io_device == (void *)0x1);
+	spdk_put_io_channel(ch);
+
+	ch = spdk_get_io_channel((void *)0x7FFFFFFF);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+	CU_ASSERT(ch->dev->io_device == (void *)0x7FFFFFFF);
+	spdk_put_io_channel(ch);
+
+	ch = spdk_get_io_channel((void *)0x80000000);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+	CU_ASSERT(ch->dev->io_device == (void *)0x80000000);
+	spdk_put_io_channel(ch);
+
+	ch = spdk_get_io_channel((void *)0x100000000);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+	CU_ASSERT(ch->dev->io_device == (void *)0x100000000);
+	spdk_put_io_channel(ch);
+
+	ch = spdk_get_io_channel((void *)0x8000000000000000);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+	CU_ASSERT(ch->dev->io_device == (void *)0x8000000000000000);
+	spdk_put_io_channel(ch);
+
+	ch = spdk_get_io_channel((void *)0x8000000100000000);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+	CU_ASSERT(ch->dev->io_device == (void *)0x8000000100000000);
+	spdk_put_io_channel(ch);
+
+	ch = spdk_get_io_channel((void *)UINT64_MAX);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+	CU_ASSERT(ch->dev->io_device == (void *)UINT64_MAX);
+	spdk_put_io_channel(ch);
+
+	poll_threads();
+
+	spdk_io_device_unregister((void *)0x1, NULL);
+	spdk_io_device_unregister((void *)0x7FFFFFFF, NULL);
+	spdk_io_device_unregister((void *)0x80000000, NULL);
+	spdk_io_device_unregister((void *)0x100000000, NULL);
+	spdk_io_device_unregister((void *)0x8000000000000000, NULL);
+	spdk_io_device_unregister((void *)0x8000000100000000, NULL);
+	spdk_io_device_unregister((void *)UINT64_MAX, NULL);
+
+	poll_threads();
+
+	CU_ASSERT(RB_EMPTY(&g_io_devices));
+
+	free_threads();
+}
+
+static enum spin_error g_spin_err;
+static uint32_t g_spin_err_count = 0;
+
+static void
+ut_track_abort(enum spin_error err)
+{
+	g_spin_err = err;
+	g_spin_err_count++;
+}
+
+static void
+spdk_spin(void)
+{
+	struct spdk_spinlock lock;
+
+	g_spin_abort_fn = ut_track_abort;
+
+	/* Do not need to be on an SPDK thread to initialize an spdk_spinlock */
+	g_spin_err_count = 0;
+	spdk_spin_init(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* Trying to take a lock while not on an SPDK thread is an error */
+	g_spin_err_count = 0;
+	spdk_spin_lock(&lock);
+	CU_ASSERT(g_spin_err_count == 1);
+	CU_ASSERT(g_spin_err == SPIN_ERR_NOT_SPDK_THREAD);
+
+	/* Trying to check if a lock is held while not on an SPDK thread is an error */
+	g_spin_err_count = 0;
+	spdk_spin_held(&lock);
+	CU_ASSERT(g_spin_err_count == 1);
+	CU_ASSERT(g_spin_err == SPIN_ERR_NOT_SPDK_THREAD);
+
+	/* Do not need to be on an SPDK thread to destroy an spdk_spinlock */
+	g_spin_err_count = 0;
+	spdk_spin_destroy(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+
+	allocate_threads(2);
+	set_thread(0);
+
+	/* Can initialize an spdk_spinlock on an SPDK thread */
+	g_spin_err_count = 0;
+	spdk_spin_init(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* Can take spinlock */
+	g_spin_err_count = 0;
+	spdk_spin_lock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* Can release spinlock */
+	g_spin_err_count = 0;
+	spdk_spin_unlock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* Deadlock detected */
+	g_spin_err_count = 0;
+	g_spin_err = SPIN_ERR_NONE;
+	spdk_spin_lock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+	spdk_spin_lock(&lock);
+	CU_ASSERT(g_spin_err_count == 1);
+	CU_ASSERT(g_spin_err == SPIN_ERR_DEADLOCK);
+
+	/* Cannot unlock from wrong thread */
+	set_thread(1);
+	g_spin_err_count = 0;
+	spdk_spin_unlock(&lock);
+	CU_ASSERT(g_spin_err_count == 1);
+	CU_ASSERT(g_spin_err == SPIN_ERR_WRONG_THREAD);
+
+	/* Get back to a known good state */
+	set_thread(0);
+	g_spin_err_count = 0;
+	spdk_spin_unlock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* Cannot release the same lock twice */
+	g_spin_err_count = 0;
+	spdk_spin_lock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+	spdk_spin_unlock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+	spdk_spin_unlock(&lock);
+	CU_ASSERT(g_spin_err_count == 1);
+	CU_ASSERT(g_spin_err == SPIN_ERR_WRONG_THREAD);
+
+	/* A lock that is not held is properly recognized */
+	g_spin_err_count = 0;
+	CU_ASSERT(!spdk_spin_held(&lock));
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* A lock that is held is recognized as held by only the thread that holds it. */
+	set_thread(1);
+	g_spin_err_count = 0;
+	spdk_spin_lock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+	CU_ASSERT(spdk_spin_held(&lock));
+	CU_ASSERT(g_spin_err_count == 0);
+	set_thread(0);
+	CU_ASSERT(!spdk_spin_held(&lock));
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* After releasing, no one thinks it is held */
+	set_thread(1);
+	spdk_spin_unlock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+	CU_ASSERT(!spdk_spin_held(&lock));
+	CU_ASSERT(g_spin_err_count == 0);
+	set_thread(0);
+	CU_ASSERT(!spdk_spin_held(&lock));
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* Destroying a lock that is held is an error. */
+	set_thread(0);
+	g_spin_err_count = 0;
+	spdk_spin_lock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+	spdk_spin_destroy(&lock);
+	CU_ASSERT(g_spin_err_count == 1);
+	CU_ASSERT(g_spin_err == SPIN_ERR_LOCK_HELD);
+	g_spin_err_count = 0;
+	spdk_spin_unlock(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+
+	/* Clean up */
+	g_spin_err_count = 0;
+	spdk_spin_destroy(&lock);
+	CU_ASSERT(g_spin_err_count == 0);
+	free_threads();
+	g_spin_abort_fn = __posix_abort;
+}
+
+static void
+for_each_channel_and_thread_exit_race(void)
+{
+	struct spdk_io_channel *ch1, *ch2;
+	struct spdk_thread *thread0;
+	int ch_count = 0;
+	int msg_count = 0;
+
+	allocate_threads(3);
+	set_thread(0);
+	spdk_io_device_register(&ch_count, channel_create, channel_destroy, sizeof(int), NULL);
+	set_thread(1);
+	ch1 = spdk_get_io_channel(&ch_count);
+	set_thread(2);
+	ch2 = spdk_get_io_channel(&ch_count);
+	CU_ASSERT(ch_count == 2);
+
+	/*
+	 * Test one race condition between spdk_thread_exit() and spdk_for_each_channel().
+	 *
+	 * thread 0 does not have io_channel and calls spdk_thread_exit() immediately
+	 * after spdk_for_each_channel(). In this case, thread 0 should exit after
+	 * spdk_for_each_channel() completes.
+	 */
+
+	set_thread(0);
+	thread0 = spdk_get_thread();
+
+	CU_ASSERT(thread0->for_each_count == 0);
+
+	spdk_for_each_channel(&ch_count, channel_msg, &msg_count, channel_cpl);
+	CU_ASSERT(msg_count == 0);
+	CU_ASSERT(thread0->for_each_count == 1);
+	CU_ASSERT(thread0->state == SPDK_THREAD_STATE_RUNNING);
+
+	spdk_thread_exit(thread0);
+	CU_ASSERT(thread0->state == SPDK_THREAD_STATE_EXITING);
+
+	poll_threads();
+	CU_ASSERT(msg_count == 3);
+	CU_ASSERT(thread0->for_each_count == 0);
+	CU_ASSERT(thread0->state == SPDK_THREAD_STATE_EXITED);
+
+	set_thread(1);
+	spdk_put_io_channel(ch1);
+	CU_ASSERT(ch_count == 2);
+	set_thread(2);
+	spdk_put_io_channel(ch2);
+	CU_ASSERT(ch_count == 2);
+	poll_threads();
+	CU_ASSERT(ch_count == 0);
+
+	spdk_io_device_unregister(&ch_count, NULL);
+	poll_threads();
+
+	free_threads();
+}
+
+static void
+for_each_thread_and_thread_exit_race(void)
+{
+	struct spdk_thread *thread0;
+	int count = 0;
+	int i;
+
+	allocate_threads(3);
+	set_thread(0);
+	thread0 = spdk_get_thread();
+
+	/* Even if thread 0 starts exiting, spdk_for_each_thread() should complete normally
+	 * and then thread 0 should be moved to EXITED.
+	 */
+
+	spdk_for_each_thread(for_each_cb, &count, for_each_cb);
+	CU_ASSERT(thread0->for_each_count == 1);
+	CU_ASSERT(thread0->state == SPDK_THREAD_STATE_RUNNING);
+
+	spdk_thread_exit(thread0);
+	CU_ASSERT(thread0->state == SPDK_THREAD_STATE_EXITING);
+
+	/* We have not polled thread 0 yet, so count should be 0 */
+	CU_ASSERT(count == 0);
+
+	/* Poll each thread to verify the message is passed to each */
+	for (i = 0; i < 3; i++) {
+		poll_thread(i);
+		CU_ASSERT(count == (i + 1));
+	}
+
+	/*
+	 * After each thread is called, the completion calls it
+	 * one more time.
+	 */
+	poll_thread(0);
+	CU_ASSERT(count == 4);
+
+	CU_ASSERT(thread0->for_each_count == 0);
+	CU_ASSERT(thread0->state == SPDK_THREAD_STATE_EXITED);
+
+	free_threads();
+}
+
+static void
+poller_get_name(void)
+{
+	struct spdk_poller *named_poller = NULL;
+	struct spdk_poller *unnamed_poller = NULL;
+	char ut_null_poll_addr[15];
+
+	allocate_threads(1);
+	set_thread(0);
+
+	/* Register a named and unnamed poller */
+	named_poller = spdk_poller_register_named(ut_null_poll, NULL, 0, "name");
+	unnamed_poller = spdk_poller_register(ut_null_poll, NULL, 0);
+
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_name(named_poller), "name");
+
+	snprintf(ut_null_poll_addr, sizeof(ut_null_poll_addr), "%p", ut_null_poll);
+
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_name(unnamed_poller), ut_null_poll_addr);
+
+	spdk_poller_unregister(&named_poller);
+	spdk_poller_unregister(&unnamed_poller);
+	free_threads();
+}
+
+static void
+poller_get_id(void)
+{
+	struct spdk_poller *pollers[3];
+	uint64_t poller_expected_id[3] = {1, 2, 3};
+	int i;
+
+	allocate_threads(1);
+	set_thread(0);
+
+	for (i = 0; i < 3; i++) {
+		pollers[i] = spdk_poller_register(ut_null_poll, NULL, 0);
+	}
+
+	for (i = 0; i < 3; i++) {
+		CU_ASSERT_EQUAL(spdk_poller_get_id(pollers[i]), poller_expected_id[i]);
+		spdk_poller_unregister(&pollers[i]);
+	}
+
+	free_threads();
+}
+
+static void
+poller_get_state_str(void)
+{
+	struct spdk_poller *poller = NULL;
+
+	allocate_threads(1);
+	set_thread(0);
+
+	poller = spdk_poller_register(ut_assert_poller_state_running, NULL, 0);
+	poller->arg = poller;
+
+	/* Assert poller begins in "waiting" state */
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "waiting");
+
+	/* Assert poller state changes to "running" while being polled and returns to "waiting" */
+	poll_thread(0);
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "waiting");
+
+	/* Assert poller state changes to "paused" and remains "paused" */
+	spdk_poller_pause(poller);
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "pausing");
+	poll_thread(0);
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "paused");
+	poll_thread(0);
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "paused");
+
+	/* Assert poller state changes after being resumed  */
+	spdk_poller_resume(poller);
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "waiting");
+	poll_thread(0);
+	CU_ASSERT_STRING_EQUAL(spdk_poller_get_state_str(poller), "waiting");
+
+	spdk_poller_unregister(&poller);
+	free_threads();
+}
+
+static void
+poller_get_period_ticks(void)
+{
+	struct spdk_poller *poller_1 = NULL;
+	struct spdk_poller *poller_2 = NULL;
+	uint64_t period_1 = 0;
+	uint64_t period_2 = 10;
+
+	allocate_threads(1);
+	set_thread(0);
+
+	/* Register poller_1 with 0 us period and poller_2 with non-zero period */
+	poller_1 = spdk_poller_register(ut_null_poll, NULL, period_1);
+	poller_2 = spdk_poller_register(ut_null_poll, NULL, period_2);
+
+	CU_ASSERT_EQUAL(spdk_poller_get_period_ticks(poller_1), period_1);
+	CU_ASSERT_EQUAL(spdk_poller_get_period_ticks(poller_2), period_2);
+
+	spdk_poller_unregister(&poller_1);
+	spdk_poller_unregister(&poller_2);
+	free_threads();
+}
+
+static void
+poller_get_stats(void)
+{
+	struct spdk_poller *idle_poller = NULL;
+	struct spdk_poller *busy_poller = NULL;
+	struct spdk_poller_stats stats;
+	int period = 5;
+
+	allocate_threads(1);
+	set_thread(0);
+
+	/* Register a "busy" and "idle" poller */
+	idle_poller = spdk_poller_register(ut_null_poll, NULL, period);
+	busy_poller = spdk_poller_register(ut_busy_poll, NULL, period);
+
+	spdk_delay_us(period);
+	poll_thread(0);
+
+	/* Check busy poller stats */
+	spdk_poller_get_stats(busy_poller, &stats);
+	CU_ASSERT_EQUAL(stats.run_count, 1);
+	CU_ASSERT_EQUAL(stats.busy_count, 1);
+
+	memset(&stats, 0, sizeof(stats));
+	/* Check idle poller stats */
+	spdk_poller_get_stats(idle_poller, &stats);
+	CU_ASSERT_EQUAL(stats.run_count, 1);
+	CU_ASSERT_EQUAL(stats.busy_count, 0);
+
+	spdk_poller_unregister(&idle_poller);
+	spdk_poller_unregister(&busy_poller);
+	free_threads();
+}
+
 
 int
 main(int argc, char **argv)
@@ -1243,7 +2176,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("io_channel", NULL, NULL);
@@ -1261,10 +2193,20 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, thread_exit_test);
 	CU_ADD_TEST(suite, thread_update_stats_test);
 	CU_ADD_TEST(suite, nested_channel);
+	CU_ADD_TEST(suite, device_unregister_and_thread_exit_race);
+	CU_ADD_TEST(suite, cache_closest_timed_poller);
+	CU_ADD_TEST(suite, multi_timed_pollers_have_same_expiration);
+	CU_ADD_TEST(suite, io_device_lookup);
+	CU_ADD_TEST(suite, spdk_spin);
+	CU_ADD_TEST(suite, for_each_channel_and_thread_exit_race);
+	CU_ADD_TEST(suite, for_each_thread_and_thread_exit_race);
+	CU_ADD_TEST(suite, poller_get_name);
+	CU_ADD_TEST(suite, poller_get_id);
+	CU_ADD_TEST(suite, poller_get_state_str);
+	CU_ADD_TEST(suite, poller_get_period_ticks);
+	CU_ADD_TEST(suite, poller_get_stats);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
 	return num_failures;
 }

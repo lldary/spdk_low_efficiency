@@ -1,38 +1,9 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
-#include "spdk/conf.h"
 #include "spdk/event.h"
 #include "spdk/util.h"
 #include "spdk/string.h"
@@ -60,10 +31,7 @@ int			g_num_active_threads;
 bool			g_run = true;
 bool			g_is_valid_opcode = true;
 
-struct spdk_log_flag SPDK_LOG_ISCSI = {
-	.name = "iscsi",
-	.enabled = false,
-};
+SPDK_LOG_REGISTER_COMPONENT(iscsi)
 
 /* Global resources */
 TAILQ_HEAD(, spdk_iscsi_pdu)		g_get_pdu_list;
@@ -237,7 +205,7 @@ cleanup(void)
 	struct fuzz_iscsi_dev_ctx *dev_ctx, *tmp;
 
 	TAILQ_FOREACH_SAFE(dev_ctx, &g_dev_list, link, tmp) {
-		printf("device %p stats: Sent %lu valid opcode PDUs, %lu invalid opcode PDUs.\n",
+		printf("device %p stats: Sent %" PRIu64 " valid opcode PDUs, %" PRIu64 " invalid opcode PDUs.\n",
 		       dev_ctx, dev_ctx->num_valid_pdus,
 		       dev_ctx->num_sent_pdus - dev_ctx->num_valid_pdus);
 		free(dev_ctx);
@@ -483,17 +451,18 @@ iscsi_fuzz_read_pdu(struct spdk_iscsi_conn *conn)
 			break;
 		case ISCSI_PDU_RECV_STATE_AWAIT_PDU_PAYLOAD:
 			data_len = pdu->data_segment_len;
-			if (data_len != 0 && pdu->data_buf == NULL) {
-				pdu->data_buf = calloc(1, data_len);
-				if (pdu->data_buf == NULL) {
+			if (data_len != 0 && pdu->data == NULL) {
+				pdu->data = calloc(1, data_len);
+				if (pdu->data == NULL) {
 					return 0;
 				}
-				pdu->data = pdu->data_buf;
 			}
 
 			/* copy the actual data into local buffer */
 			if (pdu->data_valid_bytes < data_len) {
-				rc = iscsi_conn_read_data_segment(conn, pdu, data_len);
+				rc = iscsi_conn_read_data_segment(conn, pdu,
+								  pdu->data_valid_bytes,
+								  data_len - pdu->data_valid_bytes);
 				if (rc < 0) {
 					conn->pdu_recv_state = ISCSI_PDU_RECV_STATE_ERROR;
 					break;
@@ -504,17 +473,13 @@ iscsi_fuzz_read_pdu(struct spdk_iscsi_conn *conn)
 				}
 			}
 
-			/* All data for this PDU has now been read from the socket. */
-			spdk_trace_record(TRACE_ISCSI_READ_PDU, conn->id, pdu->data_valid_bytes,
-					  (uintptr_t)pdu, pdu->bhs.opcode);
-
 			if (!pdu->is_rejected) {
 				rc = iscsi_fuzz_pdu_payload_handle(conn, pdu);
 			} else {
 				rc = 0;
 			}
 			if (rc == 0) {
-				spdk_trace_record(TRACE_ISCSI_TASK_EXECUTED, 0, 0, (uintptr_t)pdu, 0);
+				spdk_trace_record(TRACE_ISCSI_TASK_EXECUTED, 0, 0, (uintptr_t)pdu);
 				conn->pdu_in_progress = NULL;
 				conn->pdu_recv_state = ISCSI_PDU_RECV_STATE_AWAIT_PDU_READY;
 				return 1;
@@ -597,54 +562,54 @@ fuzz_iscsi_send_login_request(struct fuzz_iscsi_dev_ctx *dev_ctx, uint8_t sessio
 	req_pdu->bhs.flags = ISCSI_LOGIN_TRANSIT | (ISCSI_OPERATIONAL_NEGOTIATION_PHASE << 2) |
 			     ISCSI_FULL_FEATURE_PHASE;
 
-	req_pdu->data_segment_len = iscsi_append_text(conn, "InitiatorName", g_init_name,
+	req_pdu->data_segment_len = iscsi_append_text("InitiatorName", g_init_name,
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-	req_pdu->data_segment_len = iscsi_append_text(conn, "HeaderDigest", "None",
+	req_pdu->data_segment_len = iscsi_append_text("HeaderDigest", "None",
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-	req_pdu->data_segment_len = iscsi_append_text(conn, "DataDigest", "None",
+	req_pdu->data_segment_len = iscsi_append_text("DataDigest", "None",
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-	req_pdu->data_segment_len = iscsi_append_text(conn, "DefaultTime2Wait", "2",
+	req_pdu->data_segment_len = iscsi_append_text("DefaultTime2Wait", "2",
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-	req_pdu->data_segment_len = iscsi_append_text(conn, "DefaultTime2Retain", "0",
+	req_pdu->data_segment_len = iscsi_append_text("DefaultTime2Retain", "0",
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-	req_pdu->data_segment_len = iscsi_append_text(conn, "IFMarker", "No",
+	req_pdu->data_segment_len = iscsi_append_text("IFMarker", "No",
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-	req_pdu->data_segment_len = iscsi_append_text(conn, "OFMarker", "No",
+	req_pdu->data_segment_len = iscsi_append_text("OFMarker", "No",
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-	req_pdu->data_segment_len = iscsi_append_text(conn, "ErrorRecoveryLevel", "0",
+	req_pdu->data_segment_len = iscsi_append_text("ErrorRecoveryLevel", "0",
 				    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
 
 	if (session_type == SESSION_TYPE_DISCOVERY) {
 		/* Discovery PDU */
 		conn->sess->session_type = SESSION_TYPE_DISCOVERY;
-		req_pdu->data_segment_len = iscsi_append_text(conn, "SessionType", "Discovery",
+		req_pdu->data_segment_len = iscsi_append_text("SessionType", "Discovery",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "MaxRecvDataSegmentLength", "32768",
+		req_pdu->data_segment_len = iscsi_append_text("MaxRecvDataSegmentLength", "32768",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
 	} else {
 		/* Login PDU */
 		conn->sess->session_type = SESSION_TYPE_NORMAL;
-		req_pdu->data_segment_len = iscsi_append_text(conn, "SessionType", "Normal",
+		req_pdu->data_segment_len = iscsi_append_text("SessionType", "Normal",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "TargetName", g_tgt_name,
+		req_pdu->data_segment_len = iscsi_append_text("TargetName", g_tgt_name,
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "InitialR2T", "No",
+		req_pdu->data_segment_len = iscsi_append_text("InitialR2T", "No",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "ImmediateData", "Yes",
+		req_pdu->data_segment_len = iscsi_append_text("ImmediateData", "Yes",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "MaxBurstLength", "16776192",
+		req_pdu->data_segment_len = iscsi_append_text("MaxBurstLength", "16776192",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "FirstBurstLength", "262144",
+		req_pdu->data_segment_len = iscsi_append_text("FirstBurstLength", "262144",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "MaxOutstandingR2T", "1",
+		req_pdu->data_segment_len = iscsi_append_text("MaxOutstandingR2T", "1",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "MaxConnections", "1",
+		req_pdu->data_segment_len = iscsi_append_text("MaxConnections", "1",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "DataPDUInOrder", "Yes",
+		req_pdu->data_segment_len = iscsi_append_text("DataPDUInOrder", "Yes",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "DataSequenceInOrder", "Yes",
+		req_pdu->data_segment_len = iscsi_append_text("DataSequenceInOrder", "Yes",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
-		req_pdu->data_segment_len = iscsi_append_text(conn, "MaxRecvDataSegmentLength", "262144",
+		req_pdu->data_segment_len = iscsi_append_text("MaxRecvDataSegmentLength", "262144",
 					    req_pdu->data, req_pdu->data_buf_len, req_pdu->data_segment_len);
 	}
 
@@ -1078,8 +1043,9 @@ main(int argc, char **argv)
 
 	TAILQ_INIT(&g_get_pdu_list);
 
-	spdk_app_opts_init(&opts);
+	spdk_app_opts_init(&opts, sizeof(opts));
 	opts.name = "iscsi_fuzz";
+	opts.rpc_addr = NULL;
 
 	if ((rc = spdk_app_parse_args(argc, argv, &opts, "T:S:t:", NULL, iscsi_fuzz_parse,
 				      iscsi_fuzz_usage) != SPDK_APP_PARSE_ARGS_SUCCESS)) {
@@ -1088,5 +1054,6 @@ main(int argc, char **argv)
 
 	rc = spdk_app_start(&opts, begin_iscsi_fuzz, NULL);
 
+	spdk_app_fini();
 	return rc;
 }

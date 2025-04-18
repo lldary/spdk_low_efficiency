@@ -1,42 +1,14 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/json.h"
 
 #include "spdk_internal/utf.h"
-#include "spdk_internal/log.h"
+#include "spdk/log.h"
 
-#define SPDK_JSON_DEBUG(...) SPDK_DEBUGLOG(SPDK_LOG_JSON, __VA_ARGS__)
+#define SPDK_JSON_DEBUG(...) SPDK_DEBUGLOG(json_util, __VA_ARGS__)
 
 size_t
 spdk_json_val_len(const struct spdk_json_val *val)
@@ -205,6 +177,28 @@ json_number_split(const struct spdk_json_val *val, struct spdk_json_num *num)
 }
 
 int
+spdk_json_number_to_uint8(const struct spdk_json_val *val, uint8_t *num)
+{
+	struct spdk_json_num split_num;
+	int rc;
+
+	rc = json_number_split(val, &split_num);
+	if (rc) {
+		return rc;
+	}
+
+	if (split_num.exponent || split_num.negative) {
+		return -ERANGE;
+	}
+
+	if (split_num.significand > UINT8_MAX) {
+		return -ERANGE;
+	}
+	*num = (uint8_t)split_num.significand;
+	return 0;
+}
+
+int
 spdk_json_number_to_uint16(const struct spdk_json_val *val, uint16_t *num)
 {
 	struct spdk_json_num split_num;
@@ -298,9 +292,9 @@ spdk_json_number_to_uint64(const struct spdk_json_val *val, uint64_t *num)
 	return 0;
 }
 
-int
-spdk_json_decode_object(const struct spdk_json_val *values,
-			const struct spdk_json_object_decoder *decoders, size_t num_decoders, void *out)
+static int
+_json_decode_object(const struct spdk_json_val *values,
+		    const struct spdk_json_object_decoder *decoders, size_t num_decoders, void *out, bool relaxed)
 {
 	uint32_t i;
 	bool invalid = false;
@@ -344,7 +338,7 @@ spdk_json_decode_object(const struct spdk_json_val *values,
 			}
 		}
 
-		if (!found) {
+		if (!relaxed && !found) {
 			invalid = true;
 			SPDK_JSON_DEBUG("Decoder not found for key '%.*s'\n", name->len, (char *)name->start);
 		}
@@ -364,13 +358,49 @@ spdk_json_decode_object(const struct spdk_json_val *values,
 	return invalid ? -1 : 0;
 }
 
+void
+spdk_json_free_object(const struct spdk_json_object_decoder *decoders, size_t num_decoders,
+		      void *obj)
+{
+	struct spdk_json_val invalid_val = {
+		.start = "",
+		.len = 0,
+		.type = SPDK_JSON_VAL_INVALID
+	};
+	size_t decidx;
+
+	for (decidx = 0; decidx < num_decoders; decidx++) {
+		const struct spdk_json_object_decoder *dec = &decoders[decidx];
+		void *field = (void *)((uintptr_t)obj + dec->offset);
+
+		/* decoding an invalid value will free the
+		 * previous memory without allocating it again.
+		 */
+		dec->decode_func(&invalid_val, field);
+	}
+}
+
+
+int
+spdk_json_decode_object(const struct spdk_json_val *values,
+			const struct spdk_json_object_decoder *decoders, size_t num_decoders, void *out)
+{
+	return _json_decode_object(values, decoders, num_decoders, out, false);
+}
+
+int
+spdk_json_decode_object_relaxed(const struct spdk_json_val *values,
+				const struct spdk_json_object_decoder *decoders, size_t num_decoders, void *out)
+{
+	return _json_decode_object(values, decoders, num_decoders, out, true);
+}
+
 int
 spdk_json_decode_array(const struct spdk_json_val *values, spdk_json_decode_fn decode_func,
 		       void *out, size_t max_size, size_t *out_size, size_t stride)
 {
 	uint32_t i;
 	char *field;
-	char *out_end;
 
 	if (values == NULL || values->type != SPDK_JSON_VAL_ARRAY_BEGIN) {
 		return -1;
@@ -378,11 +408,10 @@ spdk_json_decode_array(const struct spdk_json_val *values, spdk_json_decode_fn d
 
 	*out_size = 0;
 	field = out;
-	out_end = field + max_size * stride;
 	for (i = 0; i < values->len;) {
 		const struct spdk_json_val *v = &values[i + 1];
 
-		if (field == out_end) {
+		if (*out_size == max_size) {
 			return -1;
 		}
 
@@ -409,6 +438,14 @@ spdk_json_decode_bool(const struct spdk_json_val *val, void *out)
 
 	*f = val->type == SPDK_JSON_VAL_TRUE;
 	return 0;
+}
+
+int
+spdk_json_decode_uint8(const struct spdk_json_val *val, void *out)
+{
+	uint8_t *i = out;
+
+	return spdk_json_number_to_uint8(val, i);
 }
 
 int
@@ -459,6 +496,24 @@ spdk_json_decode_string(const struct spdk_json_val *val, void *out)
 	}
 }
 
+int
+spdk_json_decode_uuid(const struct spdk_json_val *val, void *out)
+{
+	struct spdk_uuid *uuid = out;
+	char *str = NULL;
+	int rc;
+
+	rc = spdk_json_decode_string(val, &str);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = spdk_uuid_parse(uuid, str);
+	free(str);
+
+	return rc == 0 ? 0 : -1;
+}
+
 static struct spdk_json_val *
 json_first(struct spdk_json_val *object, enum spdk_json_val_type type)
 {
@@ -491,11 +546,17 @@ spdk_json_find(struct spdk_json_val *object, const char *key_name, struct spdk_j
 {
 	struct spdk_json_val *_key = NULL;
 	struct spdk_json_val *_val = NULL;
-	struct spdk_json_val *it;
+	struct spdk_json_val *it_first, *it;
 
 	assert(object != NULL);
 
-	for (it = json_first(object, SPDK_JSON_VAL_ARRAY_BEGIN | SPDK_JSON_VAL_OBJECT_BEGIN);
+	it_first = json_first(object, SPDK_JSON_VAL_OBJECT_BEGIN);
+	if (!it_first) {
+		SPDK_JSON_DEBUG("Not enclosed in {}\n");
+		return -EPROTOTYPE;
+	}
+
+	for (it = it_first;
 	     it != NULL;
 	     it = spdk_json_next(it)) {
 		if (it->type != SPDK_JSON_VAL_NAME) {
@@ -514,7 +575,7 @@ spdk_json_find(struct spdk_json_val *object, const char *key_name, struct spdk_j
 		_key = it;
 		_val = json_value(_key);
 
-		if (type != SPDK_JSON_VAL_INVALID && (_val->type & type) == 0) {
+		if (type != SPDK_JSON_VAL_ANY && (_val->type & type) == 0) {
 			SPDK_JSON_DEBUG("key '%s' type is %#x but expected one of %#x\n", key_name, _val->type, type);
 			return -EDOM;
 		}
@@ -650,4 +711,4 @@ spdk_json_next(struct spdk_json_val *it)
 	}
 }
 
-SPDK_LOG_REGISTER_COMPONENT("json_util", SPDK_LOG_JSON)
+SPDK_LOG_REGISTER_COMPONENT(json_util)

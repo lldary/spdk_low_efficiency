@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "nvme_internal.h"
@@ -82,9 +54,18 @@ nvme_io_msg_process(struct spdk_nvme_ctrlr *ctrlr)
 	struct spdk_nvme_io_msg *io;
 	void *requests[SPDK_NVME_MSG_IO_PROCESS_SIZE];
 
-	if (!ctrlr->external_io_msgs || !ctrlr->external_io_msgs_qpair) {
+	if (!spdk_process_is_primary()) {
+		return 0;
+	}
+
+	if (!ctrlr->external_io_msgs || !ctrlr->external_io_msgs_qpair || ctrlr->prepare_for_reset) {
 		/* Not ready or pending reset */
 		return 0;
+	}
+
+	if (ctrlr->needs_io_msg_update) {
+		ctrlr->needs_io_msg_update = false;
+		nvme_io_msg_ctrlr_update(ctrlr);
 	}
 
 	spdk_nvme_qpair_process_completions(ctrlr->external_io_msgs_qpair, 0);
@@ -130,13 +111,16 @@ nvme_io_msg_ctrlr_register(struct spdk_nvme_ctrlr *ctrlr,
 		return -EINVAL;
 	}
 
+	nvme_ctrlr_lock(ctrlr);
 	if (nvme_io_msg_is_producer_registered(ctrlr, io_msg_producer)) {
+		nvme_ctrlr_unlock(ctrlr);
 		return -EEXIST;
 	}
 
 	if (!STAILQ_EMPTY(&ctrlr->io_producers) || ctrlr->is_resetting) {
 		/* There are registered producers - IO messaging already started */
 		STAILQ_INSERT_TAIL(&ctrlr->io_producers, io_msg_producer, link);
+		nvme_ctrlr_unlock(ctrlr);
 		return 0;
 	}
 
@@ -145,9 +129,10 @@ nvme_io_msg_ctrlr_register(struct spdk_nvme_ctrlr *ctrlr,
 	/**
 	 * Initialize ring and qpair for controller
 	 */
-	ctrlr->external_io_msgs = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536, SPDK_ENV_SOCKET_ID_ANY);
+	ctrlr->external_io_msgs = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536, SPDK_ENV_NUMA_ID_ANY);
 	if (!ctrlr->external_io_msgs) {
 		SPDK_ERRLOG("Unable to allocate memory for message ring\n");
+		nvme_ctrlr_unlock(ctrlr);
 		return -ENOMEM;
 	}
 
@@ -156,10 +141,12 @@ nvme_io_msg_ctrlr_register(struct spdk_nvme_ctrlr *ctrlr,
 		SPDK_ERRLOG("spdk_nvme_ctrlr_alloc_io_qpair() failed\n");
 		spdk_ring_free(ctrlr->external_io_msgs);
 		ctrlr->external_io_msgs = NULL;
+		nvme_ctrlr_unlock(ctrlr);
 		return -ENOMEM;
 	}
 
 	STAILQ_INSERT_TAIL(&ctrlr->io_producers, io_msg_producer, link);
+	nvme_ctrlr_unlock(ctrlr);
 
 	return 0;
 }
@@ -169,16 +156,27 @@ nvme_io_msg_ctrlr_update(struct spdk_nvme_ctrlr *ctrlr)
 {
 	struct nvme_io_msg_producer *io_msg_producer;
 
+	if (!spdk_process_is_primary()) {
+		ctrlr->needs_io_msg_update = true;
+		return;
+	}
+
 	/* Update all producers */
+	nvme_ctrlr_lock(ctrlr);
 	STAILQ_FOREACH(io_msg_producer, &ctrlr->io_producers, link) {
 		io_msg_producer->update(ctrlr);
 	}
+	nvme_ctrlr_unlock(ctrlr);
 }
 
 void
 nvme_io_msg_ctrlr_detach(struct spdk_nvme_ctrlr *ctrlr)
 {
 	struct nvme_io_msg_producer *io_msg_producer, *tmp;
+
+	if (!spdk_process_is_primary()) {
+		return;
+	}
 
 	/* Stop all producers */
 	STAILQ_FOREACH_SAFE(io_msg_producer, &ctrlr->io_producers, link, tmp) {
@@ -205,7 +203,9 @@ nvme_io_msg_ctrlr_unregister(struct spdk_nvme_ctrlr *ctrlr,
 {
 	assert(io_msg_producer != NULL);
 
+	nvme_ctrlr_lock(ctrlr);
 	if (!nvme_io_msg_is_producer_registered(ctrlr, io_msg_producer)) {
+		nvme_ctrlr_unlock(ctrlr);
 		return;
 	}
 
@@ -213,4 +213,5 @@ nvme_io_msg_ctrlr_unregister(struct spdk_nvme_ctrlr *ctrlr,
 	if (STAILQ_EMPTY(&ctrlr->io_producers)) {
 		nvme_io_msg_ctrlr_detach(ctrlr);
 	}
+	nvme_ctrlr_unlock(ctrlr);
 }

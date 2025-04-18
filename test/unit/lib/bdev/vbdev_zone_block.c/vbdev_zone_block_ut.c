@@ -1,46 +1,19 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
 #include "spdk/stdinc.h"
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 #include "spdk/env.h"
 #include "spdk_internal/mock.h"
-#include "spdk/thread.h"
+#include "thread/thread_internal.h"
 #include "common/lib/test_env.c"
 #include "bdev/zone_block/vbdev_zone_block.c"
 #include "bdev/zone_block/vbdev_zone_block_rpc.c"
 
-#define BLOCK_CNT (1024ul * 1024ul * 1024ul * 1024ul)
+#define BLOCK_CNT ((uint64_t)1024ul * 1024ul * 1024ul * 1024ul)
 #define BLOCK_SIZE 4096
 
 /* Globals */
@@ -84,6 +57,8 @@ DEFINE_STUB_V(spdk_rpc_register_method, (const char *method, spdk_rpc_method_han
 		uint32_t state_mask));
 DEFINE_STUB_V(spdk_jsonrpc_end_result, (struct spdk_jsonrpc_request *request,
 					struct spdk_json_write_ctx *w));
+DEFINE_STUB_V(spdk_jsonrpc_send_bool_response, (struct spdk_jsonrpc_request *request,
+		bool value));
 DEFINE_STUB(spdk_bdev_get_io_channel, struct spdk_io_channel *, (struct spdk_bdev_desc *desc),
 	    (void *)0);
 
@@ -116,11 +91,19 @@ spdk_bdev_free_io(struct spdk_bdev_io *bdev_io)
 }
 
 int
-spdk_bdev_open(struct spdk_bdev *bdev, bool write, spdk_bdev_remove_cb_t remove_cb,
-	       void *remove_ctx, struct spdk_bdev_desc **_desc)
+spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
+		   void *event_ctx, struct spdk_bdev_desc **_desc)
 {
-	*_desc = (void *)bdev;
-	return 0;
+	struct spdk_bdev *bdev;
+
+	TAILQ_FOREACH(bdev, &g_bdev_list, internal.link) {
+		if (strcmp(bdev_name, bdev->name) == 0) {
+			*_desc = (void *)bdev;
+			return 0;
+		}
+	}
+
+	return -ENODEV;
 }
 
 struct spdk_bdev *
@@ -151,7 +134,24 @@ spdk_bdev_unregister(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn, void
 	}
 }
 
-int spdk_json_write_named_uint64(struct spdk_json_write_ctx *w, const char *name, uint64_t val)
+int
+spdk_bdev_unregister_by_name(const char *bdev_name, struct spdk_bdev_module *module,
+			     spdk_bdev_unregister_cb cb_fn, void *cb_arg)
+{
+	struct spdk_bdev *bdev;
+
+	CU_ASSERT(module == &bdev_zoned_if);
+
+	bdev = spdk_bdev_get_by_name(bdev_name);
+	SPDK_CU_ASSERT_FATAL(bdev != NULL);
+
+	spdk_bdev_unregister(bdev, cb_fn, cb_arg);
+
+	return 0;
+}
+
+int
+spdk_json_write_named_uint64(struct spdk_json_write_ctx *w, const char *name, uint64_t val)
 {
 	struct rpc_construct_zone_block *req = g_rpc_req;
 	if (strcmp(name, "zone_capacity") == 0) {
@@ -185,18 +185,23 @@ int
 spdk_bdev_module_claim_bdev(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
 			    struct spdk_bdev_module *module)
 {
-	if (bdev->internal.claim_module != NULL) {
+	if (bdev->internal.claim_type != SPDK_BDEV_CLAIM_NONE) {
+		CU_ASSERT(bdev->internal.claim.v1.module != NULL);
 		return -1;
 	}
-	bdev->internal.claim_module = module;
+	CU_ASSERT(bdev->internal.claim.v1.module == NULL);
+	bdev->internal.claim_type = SPDK_BDEV_CLAIM_EXCL_WRITE;
+	bdev->internal.claim.v1.module = module;
 	return 0;
 }
 
 void
 spdk_bdev_module_release_bdev(struct spdk_bdev *bdev)
 {
-	CU_ASSERT(bdev->internal.claim_module != NULL);
-	bdev->internal.claim_module = NULL;
+	CU_ASSERT(bdev->internal.claim_type == SPDK_BDEV_CLAIM_EXCL_WRITE);
+	CU_ASSERT(bdev->internal.claim.v1.module != NULL);
+	bdev->internal.claim_type = SPDK_BDEV_CLAIM_NONE;
+	bdev->internal.claim.v1.module = NULL;
 }
 
 void
@@ -992,7 +997,7 @@ test_reset_zone(void)
 	zone_id = num_zones * bdev->bdev.zone_size;
 	send_reset_zone(bdev, ch, zone_id, output_index, false);
 
-	/* Send reset to already resetted zone */
+	/* Send reset to already reset zone */
 	zone_id = 0;
 	send_reset_zone(bdev, ch, zone_id, output_index, true);
 	send_zone_info(bdev, ch, zone_id, zone_id, SPDK_BDEV_ZONE_STATE_EMPTY, output_index, true);
@@ -1460,12 +1465,12 @@ test_append_zone(void)
 	test_cleanup();
 }
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
 	CU_pSuite       suite = NULL;
 	unsigned int    num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("zone_block", NULL, NULL);
@@ -1485,10 +1490,8 @@ int main(int argc, char **argv)
 	g_thread = spdk_thread_create("test", NULL);
 	spdk_set_thread(g_thread);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 	set_test_opts();
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 
 	spdk_thread_exit(g_thread);
 	while (!spdk_thread_is_exited(g_thread)) {

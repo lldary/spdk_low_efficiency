@@ -1,36 +1,81 @@
 # NVMe-oF Target Tracepoints {#nvmf_tgt_tracepoints}
 
-# Introduction {#tracepoints_intro}
+## Introduction {#tracepoints_intro}
 
 SPDK has a tracing framework for capturing low-level event information at runtime.
 Tracepoints provide a high-performance tracing mechanism that is accessible at runtime.
 They are implemented as a circular buffer in shared memory that is accessible from other
 processes. The NVMe-oF target is instrumented with tracepoints to enable analysis of
-both performance and application crashes. (Note: the SPDK tracing framework should still
-be considered experimental.  Work to formalize and document the framework is in progress.)
+both performance and application crashes and it has to be configured beforehand using
+this [guide](https://spdk.io/doc/nvmf.html).
+(Note: the SPDK tracing framework should still be considered experimental.
+Work to formalize and document the framework is in progress.)
 
-# Enabling Tracepoints {#enable_tracepoints}
+## Enabling Tracepoints {#enable_tracepoints}
 
-Tracepoints are placed in groups. They are enabled and disabled as a group. To enable
-the instrumentation of all the tracepoints group in an SPDK target application, start the
-target with -e parameter set to 0xFFFF:
+Tracepoints are placed in groups. They are enabled and disabled as a group or individually
+inside a group.
 
-~~~
+### Enabling Tracepoints in Groups
+
+To enable the instrumentation of all the tracepoints groups in an SPDK target
+application, start the target with `-e` parameter set to `0xFFFF` or `all`:
+
+~~~bash
 build/bin/nvmf_tgt -e 0xFFFF
 ~~~
 
-To enable the instrumentation of just the NVMe-oF RDMA tracepoints in an SPDK target
-application, start the target with the -e parameter set to 0x10:
+or
 
+~~~bash
+build/bin/nvmf_tgt -e all
 ~~~
+
+To enable the instrumentation of just the `NVMe-oF RDMA` tracepoints in an SPDK target
+application, start the target with the `-e` parameter set to `0x10`:
+
+~~~bash
 build/bin/nvmf_tgt -e 0x10
 ~~~
+
+### Enabling Individual Tracepoints
+
+To enable individual tracepoints inside a group:
+
+~~~bash
+build/bin/nvmf_tgt -e 0x10:B
+~~~
+
+or
+
+~~~bash
+build/bin/nvmf_tgt -e nvmf_rdma:B
+~~~
+
+where `:` is a separator and `B` is the tracepoint mask. This will enable only the first, second and fourth (binary: 1011) tracepoint inside `NVMe-oF RDMA` group.
+
+### Combining Tracepoint Masks
+
+It is also possible to combine enabling whole groups of tpoints and individual ones:
+
+~~~bash
+build/bin/nvmf_tgt -e 0x10:2,0x400
+~~~
+
+This will enable the second tracepoint inside `NVMe-oF RDMA` group (0x10) and all of the tracepoints defined by the `thread` group (0x400).
+
+### Tracepoint Group Values
+
+iscsi (0x2), scsi (0x4), bdev (0x8), nvmf_rdma (0x10), nvmf_tcp (0x20), ftl (0x40), blobfs (0x80), nvmf_fc (0x100),
+idxd (0x200), thread (0x400), nvme_pcie (0x800)
+
+### Starting the SPDK Target
 
 When the target starts, a message is logged with the information you need to view
 the tracepoints in a human-readable format using the spdk_trace application. The target
 will also log information about the shared memory file.
 
-~~~{.sh}
+~~~bash
 app.c: 527:spdk_app_setup_trace: *NOTICE*: Tracepoint Group Mask 0xFFFF specified.
 app.c: 531:spdk_app_setup_trace: *NOTICE*: Use 'spdk_trace -s nvmf -p 24147' to capture a snapshot of events at runtime.
 app.c: 533:spdk_app_setup_trace: *NOTICE*: Or copy /dev/shm/nvmf_trace.pid24147 for offline analysis/debug.
@@ -41,20 +86,20 @@ exits.  This ensures the file can be used for analysis after the application exi
 shared memory files are in /dev/shm, and can be deleted manually to free shm space if needed.  A system
 reboot will also free all of the /dev/shm files.
 
-# Capturing a snapshot of events {#capture_tracepoints}
+## Capturing a snapshot of events {#capture_tracepoints}
 
 Send I/Os to the SPDK target application to generate events. The following is
-an example usage of perf to send I/Os to the NVMe-oF target over an RDMA network
+an example usage of spdk_nvme_perf to send I/Os to the NVMe-oF target over an RDMA network
 interface for 10 minutes.
 
-~~~
-./perf -q 128 -s 4096 -w randread -t 600 -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.2 trsvcid:4420'
+~~~bash
+spdk_nvme_perf -q 128 -o 4096 -w randread -t 600 -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.2 trsvcid:4420'
 ~~~
 
 The spdk_trace program can be found in the app/trace directory.  To analyze the tracepoints on the same
 system running the NVMe-oF target, simply execute the command line shown in the log:
 
-~~~{.sh}
+~~~bash
 build/bin/spdk_trace -s nvmf -p 24147
 ~~~
 
@@ -62,13 +107,13 @@ To analyze the tracepoints on a different system, first prepare the tracepoint f
 tracepoint file can be large, but usually compresses very well.  This step can also be used to prepare
 a tracepoint file to attach to a GitHub issue for debugging NVMe-oF application crashes.
 
-~~~{.sh}
+~~~bash
 bzip2 -c /dev/shm/nvmf_trace.pid24147 > /tmp/trace.bz2
 ~~~
 
 After transferring the /tmp/trace.bz2 tracepoint file to a different system:
 
-~~~{.sh}
+~~~bash
 bunzip2 /tmp/trace.bz2
 build/bin/spdk_trace -f /tmp/trace
 ~~~
@@ -77,7 +122,7 @@ The following is sample trace capture showing the cumulative time that each
 I/O spends at each RDMA state. All the trace captures with the same id are for
 the same I/O.
 
-~~~
+~~~bash
 28:   6026.658 ( 12656064)     RDMA_REQ_NEED_BUFFER                                      id:    r3622            time:  0.019
 28:   6026.694 ( 12656140)     RDMA_REQ_RDY_TO_EXECUTE                                   id:    r3622            time:  0.055
 28:   6026.820 ( 12656406)     RDMA_REQ_EXECUTING                                        id:    r3622            time:  0.182
@@ -124,7 +169,7 @@ the same I/O.
 28:   6033.056 ( 12669500)     RDMA_REQ_COMPLETED                                        id:    r3564            time:  100.211
 ~~~
 
-# Capturing sufficient trace events {#capture_trace_events}
+## Capturing sufficient trace events {#capture_trace_events}
 
 Since the tracepoint file generated directly by SPDK application is a circular buffer in shared memory,
 the trace events captured by it may be insufficient for further analysis.
@@ -133,33 +178,34 @@ spdk_trace_record is used to poll the spdk tracepoint shared memory, record new 
 and store all entries into specified output file at its shutdown on SIGINT or SIGTERM.
 After SPDK nvmf target is launched, simply execute the command line shown in the log:
 
-~~~{.sh}
+~~~bash
 build/bin/spdk_trace_record -q -s nvmf -p 24147 -f /tmp/spdk_nvmf_record.trace
 ~~~
 
 Also send I/Os to the SPDK target application to generate events by previous perf example for 10 minutes.
 
-~~~{.sh}
-./perf -q 128 -s 4096 -w randread -t 600 -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.2 trsvcid:4420'
+~~~bash
+spdk_nvme_perf -q 128 -o 4096 -w randread -t 600 -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.2 trsvcid:4420'
 ~~~
 
 After the completion of perf example, shut down spdk_trace_record by signal SIGINT (Ctrl + C).
 To analyze the tracepoints output file from spdk_trace_record, simply run spdk_trace program by:
 
-~~~{.sh}
+~~~bash
 build/bin/spdk_trace -f /tmp/spdk_nvmf_record.trace
 ~~~
 
-# Adding New Tracepoints {#add_tracepoints}
+## Adding New Tracepoints {#add_tracepoints}
 
 SPDK applications and libraries provide several trace points. You can add new
 tracepoints to the existing trace groups. For example, to add a new tracepoints
 to the SPDK RDMA library (lib/nvmf/rdma.c) trace group TRACE_GROUP_NVMF_RDMA,
 define the tracepoints and assigning them a unique ID using the SPDK_TPOINT_ID macro:
 
-~~~
+~~~c
 #define	TRACE_GROUP_NVMF_RDMA	0x4
 #define TRACE_RDMA_REQUEST_STATE_NEW	SPDK_TPOINT_ID(TRACE_GROUP_NVMF_RDMA, 0x0)
+#define TRACE_RDMA_REQUEST_STATE_NEED_BUFFER	SPDK_TPOINT_ID(TRACE_GROUP_NVMF_RDMA, 0x1)
 ...
 #define NEW_TRACE_POINT_NAME	SPDK_TPOINT_ID(TRACE_GROUP_NVMF_RDMA, UNIQUE_ID)
 ~~~
@@ -168,18 +214,20 @@ You also need to register the new trace points in the SPDK_TRACE_REGISTER_FN mac
 within the application/library using the spdk_trace_register_description function
 as shown below:
 
-~~~
-SPDK_TRACE_REGISTER_FN(nvmf_trace)
+~~~c
+static void
+nvmf_trace(void)
 {
 	spdk_trace_register_object(OBJECT_NVMF_RDMA_IO, 'r');
-	spdk_trace_register_description("RDMA_REQ_NEW", "",
-					TRACE_RDMA_REQUEST_STATE_NEW,
-					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 1, 1, "cmid:	");
+	spdk_trace_register_description("RDMA_REQ_NEW", TRACE_RDMA_REQUEST_STATE_NEW,
+					OWNER_TYPE_NONE, OBJECT_NVMF_RDMA_IO, 1,
+					SPDK_TRACE_ARG_TYPE_PTR, "qpair");
+	spdk_trace_register_description("RDMA_REQ_NEED_BUFFER", TRACE_RDMA_REQUEST_STATE_NEED_BUFFER,
+					OWNER_TYPE_NONE, OBJECT_NVMF_RDMA_IO, 0,
+					SPDK_TRACE_ARG_TYPE_PTR, "qpair");
 	...
-	spdk_trace_register_description("NEW_RDMA_REQ_NAME", "",
-					NEW_TRACE_POINT_NAME,
-					OWNER_NONE, OBJECT_NVMF_RDMA_IO, 0, 1, "cmid:	");
 }
+SPDK_TRACE_REGISTER_FN(nvmf_trace, "nvmf_rdma", TRACE_GROUP_NVMF_RDMA)
 ~~~
 
 Finally, use the spdk_trace_record function at the appropriate point in the
@@ -187,19 +235,19 @@ application/library to record the current trace state for the new trace points.
 The following example shows the usage of the spdk_trace_record function to
 record the current trace state of several tracepoints.
 
-~~~
+~~~c
 	case RDMA_REQUEST_STATE_NEW:
-		spdk_trace_record(TRACE_RDMA_REQUEST_STATE_NEW, 0, 0, (uintptr_t)rdma_req, (uintptr_t)rqpair->cm_id);
+		spdk_trace_record(TRACE_RDMA_REQUEST_STATE_NEW, 0, 0, (uintptr_t)rdma_req, (uintptr_t)rqpair);
 		...
 		break;
 	case RDMA_REQUEST_STATE_NEED_BUFFER:
-		spdk_trace_record(TRACE_RDMA_REQUEST_STATE_NEED_BUFFER, 0, 0, (uintptr_t)rdma_req, (uintptr_t)rqpair->cm_id);
+		spdk_trace_record(TRACE_RDMA_REQUEST_STATE_NEED_BUFFER, 0, 0, (uintptr_t)rdma_req, (uintptr_t)rqpair);
 		...
 		break;
-	case RDMA_REQUEST_STATE_TRANSFER_PENDING_HOST_TO_CONTROLLER:
-		spdk_trace_record(TRACE_RDMA_REQUEST_STATE_TRANSFER_PENDING_HOST_TO_CONTROLLER, 0, 0,
-			(uintptr_t)rdma_req, (uintptr_t)rqpair->cm_id);
+	case RDMA_REQUEST_STATE_DATA_TRANSFER_TO_CONTROLLER_PENDING:
+		spdk_trace_record(RDMA_REQUEST_STATE_DATA_TRANSFER_TO_CONTROLLER_PENDING, 0, 0,
+			(uintptr_t)rdma_req, (uintptr_t)rqpair);
 		...
 ~~~
 
-All the tracing functions are documented in the [Tracepoint library documentation](https://www.spdk.io/doc/trace_8h.html)
+All the tracing functions are documented in the [Tracepoint library documentation](https://spdk.io/doc/trace_8h.html)

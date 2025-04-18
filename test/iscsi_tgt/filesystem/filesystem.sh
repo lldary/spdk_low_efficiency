@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2016 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
+source $rootdir/test/setup/common.sh
 source $rootdir/test/iscsi_tgt/common.sh
 source $rootdir/scripts/common.sh
 
-# $1 = "iso" - triggers isolation mode (setting up required environment).
-# $2 = test type posix or vpp. defaults to posix.
-iscsitestinit $1 $2
+iscsitestinit
 
-rpc_py="$rootdir/scripts/rpc.py"
 # Remove lvol bdevs and stores.
 function remove_backends() {
 	echo "INFO: Removing lvol bdev"
@@ -31,7 +32,7 @@ timing_enter start_iscsi_tgt
 pid=$!
 echo "Process pid: $pid"
 
-trap 'killprocess $pid; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
+trap 'killprocess $pid; iscsitestfini; exit 1' SIGINT SIGTERM EXIT
 
 waitforlisten $pid
 $rpc_py iscsi_set_options -o 30 -a 16
@@ -57,23 +58,32 @@ fi
 # "1:2" ==> map PortalGroup1 to InitiatorGroup2
 # "256" ==> iSCSI queue depth 256
 # "-d" ==> disable CHAP authentication
-$rpc_py iscsi_create_target_node Target1 Target1_alias 'lvs_0/lbd_0:0' $PORTAL_TAG:$INITIATOR_TAG 256 -d
+lvol_name="lvs_0/lbd_0"
+$rpc_py iscsi_create_target_node Target1 Target1_alias ${lvol_name}:0 $PORTAL_TAG:$INITIATOR_TAG 256 -d
 sleep 1
 
 iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$ISCSI_PORT
 iscsiadm -m node --login -p $TARGET_IP:$ISCSI_PORT
 waitforiscsidevices 1
 
-trap 'iscsicleanup; remove_backends; umount /mnt/device; rm -rf /mnt/device; killprocess $pid; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
+lvol_size=$(($(get_bdev_size $lvol_name) * 1024 * 1024))
+trap 'iscsicleanup; remove_backends; umount /mnt/device; rm -rf /mnt/device; killprocess $pid; iscsitestfini; exit 1' SIGINT SIGTERM EXIT
 
 mkdir -p /mnt/device
 
 dev=$(iscsiadm -m session -P 3 | grep "Attached scsi disk" | awk '{print $4}')
 
 waitforfile /dev/$dev
-parted -s /dev/$dev mklabel msdos
-parted -s /dev/$dev mkpart primary '0%' '100%'
-sleep 1
+
+dev_size=$(sec_size_to_bytes $dev)
+
+if ((lvol_size == dev_size)); then
+	parted -s /dev/$dev mklabel gpt mkpart SPDK_TEST '0%' '100%'
+	sleep 1
+else
+	echo "ERR: device size is not as expected"
+	exit 1
+fi
 
 function filesystem_test() {
 	fstype=$1
@@ -142,4 +152,4 @@ trap - SIGINT SIGTERM EXIT
 iscsicleanup
 remove_backends
 killprocess $pid
-iscsitestfini $1 $2
+iscsitestfini

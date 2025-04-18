@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
@@ -7,54 +11,12 @@ if [ ! $(uname -s) = Linux ]; then
 	exit 0
 fi
 
-source $rootdir/test/nvmf/common.sh
+run_test "nvmf_target_core" $rootdir/test/nvmf/nvmf_target_core.sh --transport=$SPDK_TEST_NVMF_TRANSPORT
+run_test "nvmf_target_extra" $rootdir/test/nvmf/nvmf_target_extra.sh --transport=$SPDK_TEST_NVMF_TRANSPORT
+run_test "nvmf_host" $rootdir/test/nvmf/nvmf_host.sh --transport=$SPDK_TEST_NVMF_TRANSPORT
 
-trap "exit 1" SIGINT SIGTERM EXIT
-
-TEST_ARGS=("$@")
-
-run_test "nvmf_example" test/nvmf/target/nvmf_example.sh "${TEST_ARGS[@]}"
-run_test "nvmf_filesystem" test/nvmf/target/filesystem.sh "${TEST_ARGS[@]}"
-run_test "nvmf_discovery" test/nvmf/target/discovery.sh "${TEST_ARGS[@]}"
-run_test "nvmf_connect_disconnect" test/nvmf/target/connect_disconnect.sh "${TEST_ARGS[@]}"
-if [ $SPDK_TEST_NVME_CLI -eq 1 ]; then
-	run_test "nvmf_nvme_cli" test/nvmf/target/nvme_cli.sh "${TEST_ARGS[@]}"
+# Interrupt mode for now is supported only on the target, with the TCP transport and posix or ssl socket implementations.
+if [[ "$SPDK_TEST_NVMF_TRANSPORT" = "tcp" && $SPDK_TEST_URING -eq 0 ]]; then
+	run_test "nvmf_target_core_interrupt_mode" $rootdir/test/nvmf/nvmf_target_core.sh --transport=$SPDK_TEST_NVMF_TRANSPORT --interrupt-mode
+	run_test "nvmf_interrupt" $rootdir/test/nvmf/target/interrupt.sh --transport=$SPDK_TEST_NVMF_TRANSPORT --interrupt-mode
 fi
-run_test "nvmf_lvol" test/nvmf/target/nvmf_lvol.sh "${TEST_ARGS[@]}"
-#TODO: disabled due to intermittent failures. Need to triage.
-# run_test "nvmf_srq_overwhelm" test/nvmf/target/srq_overwhelm.sh $TEST_ARGS
-run_test "nvmf_vhost" test/nvmf/target/nvmf_vhost.sh "${TEST_ARGS[@]}"
-run_test "nvmf_bdev_io_wait" test/nvmf/target/bdev_io_wait.sh "${TEST_ARGS[@]}"
-run_test "nvmf_create_transport." test/nvmf/target/create_transport.sh "${TEST_ARGS[@]}"
-run_test "nvmf_multitarget" test/nvmf/target/multitarget.sh "${TEST_ARGS[@]}"
-
-if [ $RUN_NIGHTLY -eq 1 ]; then
-	run_test "nvmf_fuzz" test/nvmf/target/fuzz.sh "${TEST_ARGS[@]}"
-	run_test "nvmf_multiconnection" test/nvmf/target/multiconnection.sh "${TEST_ARGS[@]}"
-	run_test "nvmf_initiator_timeout" test/nvmf/target/initiator_timeout.sh "${TEST_ARGS[@]}"
-fi
-
-run_test "nvmf_nmic" test/nvmf/target/nmic.sh "${TEST_ARGS[@]}"
-run_test "nvmf_rpc" test/nvmf/target/rpc.sh "${TEST_ARGS[@]}"
-run_test "nvmf_fio" test/nvmf/target/fio.sh "${TEST_ARGS[@]}"
-run_test "nvmf_shutdown" test/nvmf/target/shutdown.sh "${TEST_ARGS[@]}"
-run_test "nvmf_bdevio" test/nvmf/target/bdevio.sh "${TEST_ARGS[@]}"
-run_test "nvmf_invalid" test/nvmf/target/invalid.sh "${TEST_ARGS[@]}"
-run_test "nvmf_abort" test/nvmf/target/abort.sh "${TEST_ARGS[@]}"
-
-timing_enter host
-
-run_test "nvmf_bdevperf" test/nvmf/host/bdevperf.sh "${TEST_ARGS[@]}"
-run_test "nvmf_identify" test/nvmf/host/identify.sh "${TEST_ARGS[@]}"
-run_test "nvmf_perf" test/nvmf/host/perf.sh "${TEST_ARGS[@]}"
-
-# TODO: disabled due to intermittent failures (RDMA_CM_EVENT_UNREACHABLE/ETIMEDOUT)
-#run_test test/nvmf/host/identify_kernel_nvmf.sh $TEST_ARGS
-run_test "nvmf_aer" test/nvmf/host/aer.sh "${TEST_ARGS[@]}"
-run_test "nvmf_fio" test/nvmf/host/fio.sh "${TEST_ARGS[@]}"
-run_test "nvmf_target_disconnect" test/nvmf/host/target_disconnect.sh "${TEST_ARGS[@]}"
-
-timing_exit host
-
-trap - SIGINT SIGTERM EXIT
-revert_soft_roce

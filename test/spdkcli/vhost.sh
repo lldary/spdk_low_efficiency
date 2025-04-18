@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2018 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
@@ -11,7 +14,7 @@ SPDKCLI_BRANCH="/"
 sample_aio=$SPDK_TEST_STORAGE/sample_aio
 sample_aio2=$SPDK_TEST_STORAGE/sample_aio2
 
-trap 'on_error_exit' ERR
+trap 'cleanup' EXIT
 timing_enter run_vhost_tgt
 run_vhost_tgt
 timing_exit run_vhost_tgt
@@ -33,8 +36,8 @@ dd if=/dev/zero of="$sample_aio2" bs=2048 count=5000
 $spdkcli_job "'/bdevs/aio create sample0 $sample_aio 512' 'sample0' True
 '/bdevs/aio create sample1 $sample_aio2 512' 'sample1' True
 "
-trtype=$($rootdir/scripts/gen_nvme.sh --json | jq -r '.config[].params | select(.name=="Nvme0").trtype')
-traddr=$($rootdir/scripts/gen_nvme.sh --json | jq -r '.config[].params | select(.name=="Nvme0").traddr')
+trtype=$($rootdir/scripts/gen_nvme.sh | jq -r '.config[].params | select(.name=="Nvme0").trtype')
+traddr=$($rootdir/scripts/gen_nvme.sh | jq -r '.config[].params | select(.name=="Nvme0").traddr')
 $spdkcli_job "'/bdevs/nvme create Nvme0 $trtype $traddr' 'Nvme0' True
 '/bdevs/split_disk bdev_split_create Nvme0n1 4' 'Nvme0n1p0' True
 "
@@ -57,13 +60,14 @@ timing_exit spdkcli_check_match_details
 timing_enter spdkcli_create_vhosts_config
 $spdkcli_job "'vhost/block create vhost_blk1 Nvme0n1p0' 'Nvme0n1p0' True
 'vhost/block create vhost_blk2 Nvme0n1p1 0x1 readonly' 'Nvme0n1p1' True
-'vhost/scsi create vhost_scsi1' 'vhost_scsi1' True
-'vhost/scsi create vhost_scsi2' 'vhost_scsi2' True
+'vhost/scsi create vhost_scsi1 False' 'vhost_scsi1' True
+'vhost/scsi create vhost_scsi2 True' 'vhost_scsi2' True
 'vhost/scsi/vhost_scsi1 add_lun 0 Malloc2' 'Malloc2' True
 'vhost/scsi/vhost_scsi2 add_lun 0 Malloc3' 'Malloc3' True
 'vhost/scsi/vhost_scsi2 add_lun 1 Nvme0n1p2' 'Nvme0n1p2' True
 'vhost/scsi/vhost_scsi2 add_lun 2 Nvme0n1p3' 'Nvme0n1p3' True
 'vhost/scsi/vhost_scsi1 set_coalescing 20 1000000' '' True
+'vhost/scsi/vhost_scsi2 start vhost_scsi2' 'vhost_scsi2' True
 "
 timing_exit spdkcli_create_vhosts_config
 
@@ -74,7 +78,8 @@ timing_exit spdkcli_check_match
 timing_enter spdkcli_save_config
 $spdkcli_job "'save_config $testdir/config.json'
 'save_subsystem_config $testdir/config_bdev.json bdev'
-'save_subsystem_config $testdir/config_vhost.json vhost'
+'save_subsystem_config $testdir/config_vhost_scsi.json vhost_scsi'
+'save_subsystem_config $testdir/config_vhost_blk.json vhost_blk'
 "
 timing_exit spdkcli_save_config
 
@@ -118,6 +123,10 @@ $spdkcli_job "'vhost/scsi/vhost_scsi2 remove_target 2' 'Nvme0n1p3'
 "
 timing_exit spdkcli_clear_config
 
+# Make sure we wait long enough for the nvme ctrl to disappear, otherwise
+# we are at risk of hitting -EPERM while loading bdev configuration.
+xtrace_disable_per_cmd wait_for_all_nvme_ctrls_to_detach
+
 timing_enter spdkcli_load_config
 $spdkcli_job "'load_config $testdir/config.json'
 '/lvol_stores create lvs0 Malloc0' 'lvs0' True
@@ -127,10 +136,14 @@ $spdkcli_job "'load_config $testdir/config.json'
 "
 check_match
 $spdk_clear_config_py clear_config
-# FIXME: remove this sleep when NVMe driver will be fixed to wait for reset to complete
-sleep 2
+
+# Make sure we wait long enough for the nvme ctrl to disappear, otherwise
+# we are at risk of hitting -EPERM while loading bdev configuration.
+xtrace_disable_per_cmd wait_for_all_nvme_ctrls_to_detach
+
 $spdkcli_job "'load_subsystem_config $testdir/config_bdev.json'
-'load_subsystem_config $testdir/config_vhost.json'
+'load_subsystem_config $testdir/config_vhost_scsi.json'
+'load_subsystem_config $testdir/config_vhost_blk.json'
 '/lvol_stores create lvs0 Malloc0' 'lvs0' True
 '/lvol_stores create lvs1 Malloc5' 'lvs1' True
 '/bdevs/logical_volume create lvol0 16 lvs0' 'lvs0/lvol0' True
@@ -140,7 +153,8 @@ check_match
 $spdk_clear_config_py clear_config
 rm -f $testdir/config.json
 rm -f $testdir/config_bdev.json
-rm -f $testdir/config_vhost.json
+rm -f $testdir/config_vhost_scsi.json
+rm -f $testdir/config_vhost_blk.json
 rm -f "$sample_aio" "$sample_aio2"
 timing_exit spdkcli_load_config
 

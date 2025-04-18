@@ -1,39 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 
-#include "spdk_cunit.h"
+#include "spdk_internal/cunit.h"
 
 #include "scsi/task.c"
 #include "scsi/lun.c"
@@ -49,19 +21,15 @@ struct spdk_bdev {
 	int x;
 };
 
-SPDK_LOG_REGISTER_COMPONENT("scsi", SPDK_LOG_SCSI)
-
-struct spdk_scsi_globals g_spdk_scsi;
+SPDK_LOG_REGISTER_COMPONENT(scsi)
 
 static bool g_lun_execute_fail = false;
 static int g_lun_execute_status = SPDK_SCSI_TASK_PENDING;
 static uint32_t g_task_count = 0;
 
-struct spdk_trace_histories *g_trace_histories;
-
-DEFINE_STUB_V(_spdk_trace_record,
-	      (uint64_t tsc, uint16_t tpoint_id, uint16_t poller_id,
-	       uint32_t size, uint64_t object_id, uint64_t arg1));
+DEFINE_STUB(bdev_scsi_get_dif_ctx, bool,
+	    (struct spdk_bdev *bdev, struct spdk_scsi_task *task,
+	     struct spdk_dif_ctx *dif_ctx), false);
 
 static void
 spdk_lun_ut_cpl_task(struct spdk_scsi_task *task)
@@ -90,15 +58,18 @@ spdk_bdev_free_io(struct spdk_bdev_io *bdev_io)
 	CU_ASSERT(0);
 }
 
-DEFINE_STUB(spdk_bdev_open, int,
-	    (struct spdk_bdev *bdev, bool write, spdk_bdev_remove_cb_t remove_cb,
-	     void *remove_ctx, struct spdk_bdev_desc **desc),
+DEFINE_STUB(spdk_bdev_open_ext, int,
+	    (const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
+	     void *event_ctx, struct spdk_bdev_desc **desc),
 	    0);
 
 DEFINE_STUB_V(spdk_bdev_close, (struct spdk_bdev_desc *desc));
 
 DEFINE_STUB(spdk_bdev_get_name, const char *,
 	    (const struct spdk_bdev *bdev), "test");
+
+DEFINE_STUB(spdk_bdev_desc_get_bdev, struct spdk_bdev *,
+	    (struct spdk_bdev_desc *bdev_desc), NULL);
 
 DEFINE_STUB_V(spdk_scsi_dev_queue_mgmt_task,
 	      (struct spdk_scsi_dev *dev, struct spdk_scsi_task *task));
@@ -139,12 +110,12 @@ bdev_scsi_execute(struct spdk_scsi_task *task)
 DEFINE_STUB(spdk_bdev_get_io_channel, struct spdk_io_channel *,
 	    (struct spdk_bdev_desc *desc), NULL);
 
-static struct spdk_scsi_lun *lun_construct(void)
+static struct spdk_scsi_lun *
+	lun_construct(void)
 {
 	struct spdk_scsi_lun		*lun;
-	struct spdk_bdev		bdev;
 
-	lun = scsi_lun_construct(&bdev, NULL, NULL);
+	lun = scsi_lun_construct("ut_bdev", NULL, NULL, NULL, NULL);
 
 	SPDK_CU_ASSERT_FATAL(lun != NULL);
 	return lun;
@@ -271,6 +242,31 @@ lun_task_mgmt_execute_lun_reset(void)
 }
 
 static void
+lun_task_mgmt_execute_target_reset(void)
+{
+	struct spdk_scsi_lun *lun;
+	struct spdk_scsi_task mgmt_task = { 0 };
+	struct spdk_scsi_dev dev = { 0 };
+
+	lun = lun_construct();
+	lun->dev = &dev;
+
+	ut_init_task(&mgmt_task);
+	mgmt_task.lun = lun;
+	mgmt_task.function = SPDK_SCSI_TASK_FUNC_TARGET_RESET;
+
+	scsi_lun_execute_mgmt_task(lun, &mgmt_task);
+
+	/* Returns success */
+	CU_ASSERT_EQUAL(mgmt_task.status, SPDK_SCSI_STATUS_GOOD);
+	CU_ASSERT_EQUAL(mgmt_task.response, SPDK_SCSI_TASK_MGMT_RESP_SUCCESS);
+
+	lun_destruct(lun);
+
+	CU_ASSERT_EQUAL(g_task_count, 0);
+}
+
+static void
 lun_task_mgmt_execute_invalid_case(void)
 {
 	struct spdk_scsi_lun *lun;
@@ -281,7 +277,7 @@ lun_task_mgmt_execute_invalid_case(void)
 	lun->dev = &dev;
 
 	ut_init_task(&mgmt_task);
-	mgmt_task.function = 5;
+	mgmt_task.function = 6;
 
 	/* Pass an invalid value to the switch statement */
 	scsi_lun_execute_mgmt_task(lun, &mgmt_task);
@@ -434,6 +430,44 @@ lun_execute_scsi_task_complete(void)
 }
 
 static void
+lun_execute_scsi_task_resize(void)
+{
+	struct spdk_scsi_lun *lun;
+	struct spdk_scsi_task task = { 0 };
+	struct spdk_scsi_dev dev = { 0 };
+	uint8_t cdb = SPDK_SBC_READ_16;
+
+	lun = lun_construct();
+
+	ut_init_task(&task);
+	task.lun = lun;
+	task.cdb = &cdb;
+	lun->dev = &dev;
+	lun->resizing = true;
+
+	/* the tasks list should still be empty since it has not been
+	   executed yet
+	 */
+	CU_ASSERT(TAILQ_EMPTY(&lun->tasks));
+
+	scsi_lun_execute_task(lun, &task);
+	CU_ASSERT_EQUAL(task.status, SPDK_SCSI_STATUS_CHECK_CONDITION);
+	/* SENSE KEY */
+	CU_ASSERT_EQUAL(task.sense_data[2], SPDK_SCSI_SENSE_UNIT_ATTENTION);
+	/* SCSI_SENSE_ASCQ_CAPACITY_DATA_HAS_CHANGED: 0x2a09 */
+	CU_ASSERT_EQUAL(task.sense_data[12], SPDK_SCSI_ASC_CAPACITY_DATA_HAS_CHANGED);
+	CU_ASSERT_EQUAL(task.sense_data[13], SPDK_SCSI_ASCQ_CAPACITY_DATA_HAS_CHANGED);
+	CU_ASSERT(lun->resizing == false);
+
+	/* Assert the task has not been added to the tasks queue */
+	CU_ASSERT(TAILQ_EMPTY(&lun->tasks));
+
+	lun_destruct(lun);
+
+	CU_ASSERT_EQUAL(g_task_count, 0);
+}
+
+static void
 lun_destruct_success(void)
 {
 	struct spdk_scsi_lun *lun;
@@ -450,7 +484,7 @@ lun_construct_null_ctx(void)
 {
 	struct spdk_scsi_lun		*lun;
 
-	lun = scsi_lun_construct(NULL, NULL, NULL);
+	lun = scsi_lun_construct(NULL, NULL, NULL, NULL, NULL);
 
 	/* lun should be NULL since we passed NULL for the ctx pointer. */
 	CU_ASSERT(lun == NULL);
@@ -577,7 +611,6 @@ lun_reset_task_suspend_scsi_task(void)
 static void
 lun_check_pending_tasks_only_for_specific_initiator(void)
 {
-	struct spdk_bdev bdev = {};
 	struct spdk_scsi_lun *lun;
 	struct spdk_scsi_task task1 = {};
 	struct spdk_scsi_task task2 = {};
@@ -585,7 +618,7 @@ lun_check_pending_tasks_only_for_specific_initiator(void)
 	struct spdk_scsi_port initiator_port2 = {};
 	struct spdk_scsi_port initiator_port3 = {};
 
-	lun = scsi_lun_construct(&bdev, NULL, NULL);
+	lun = scsi_lun_construct("ut_bdev", NULL, NULL, NULL, NULL);
 
 	task1.initiator_port = &initiator_port1;
 	task2.initiator_port = &initiator_port2;
@@ -647,11 +680,10 @@ lun_check_pending_tasks_only_for_specific_initiator(void)
 static void
 abort_pending_mgmt_tasks_when_lun_is_removed(void)
 {
-	struct spdk_bdev bdev = {};
 	struct spdk_scsi_lun *lun;
 	struct spdk_scsi_task task1, task2, task3;
 
-	lun = scsi_lun_construct(&bdev, NULL, NULL);
+	lun = scsi_lun_construct("ut_bdev", NULL, NULL, NULL, NULL);
 
 	/* Normal case */
 	ut_init_task(&task1);
@@ -717,7 +749,6 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
 	suite = CU_add_suite("lun_suite", NULL, NULL);
@@ -725,12 +756,14 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_abort_task_not_supported);
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_abort_task_all_not_supported);
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_lun_reset);
+	CU_ADD_TEST(suite, lun_task_mgmt_execute_target_reset);
 	CU_ADD_TEST(suite, lun_task_mgmt_execute_invalid_case);
 	CU_ADD_TEST(suite, lun_append_task_null_lun_task_cdb_spc_inquiry);
 	CU_ADD_TEST(suite, lun_append_task_null_lun_alloc_len_lt_4096);
 	CU_ADD_TEST(suite, lun_append_task_null_lun_not_supported);
 	CU_ADD_TEST(suite, lun_execute_scsi_task_pending);
 	CU_ADD_TEST(suite, lun_execute_scsi_task_complete);
+	CU_ADD_TEST(suite, lun_execute_scsi_task_resize);
 	CU_ADD_TEST(suite, lun_destruct_success);
 	CU_ADD_TEST(suite, lun_construct_null_ctx);
 	CU_ADD_TEST(suite, lun_construct_success);
@@ -739,12 +772,10 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, lun_check_pending_tasks_only_for_specific_initiator);
 	CU_ADD_TEST(suite, abort_pending_mgmt_tasks_when_lun_is_removed);
 
-	CU_basic_set_mode(CU_BRM_VERBOSE);
 	allocate_threads(1);
 	set_thread(0);
-	CU_basic_run_tests();
+	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	free_threads();
-	num_failures = CU_get_number_of_failures();
 	CU_cleanup_registry();
 	return num_failures;
 }

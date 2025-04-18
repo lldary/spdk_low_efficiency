@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
 source $rootdir/test/common/autotest_common.sh
@@ -9,7 +12,7 @@ source $rootdir/test/vhost/common.sh
 # and OS Version: 6.3.9600 N/A Build 9600
 # In order to run this test with windows vm
 # windows virtio scsi driver must be installed
-WINDOWS_IMG="/home/sys_sgsw/windows_scsi_compliance/windows_vm_image.qcow2"
+WINDOWS_IMG="$DEPENDENCY_DIR/storage/windows_scsi_compliance/windows_vm_image.qcow2"
 aio_file="$SPDK_TEST_STORAGE/aio_disk"
 ssh_pass=""
 vm_num=1
@@ -52,7 +55,7 @@ mkdir -p $testdir/results
 dd if=/dev/zero of=$aio_file bs=1M count=512
 
 timing_enter vhost_run
-vhost_run 0
+vhost_run -n 0
 $rpc_py bdev_nvme_set_hotplug -e
 $rpc_py bdev_malloc_create 256 4096 -b Malloc0
 $rpc_py bdev_aio_create $aio_file Aio0 512
@@ -73,7 +76,7 @@ timing_exit start_vm
 
 vm_scp "$vm_num" $testdir/windows_scsi_compliance.ps1 127.0.0.1:/cygdrive/c/SCSI/
 vm_sshpass "$vm_num" "$ssh_pass" "cd /cygdrive/c/SCSI; powershell.exe -file windows_scsi_compliance.ps1"
-vm_scp "$vm_num" 127.0.0.1:/cygdrive/c/SCSI/WIN_SCSI_* $testdir/results/
+vm_scp "$vm_num" "127.0.0.1:/cygdrive/c/SCSI/WIN_SCSI_*" $testdir/results/
 dos2unix $testdir/results/WIN_SCSI_*.log
 
 notice "Kill vm 1"

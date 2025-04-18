@@ -2,7 +2,9 @@
 
 The following is an attempt to explain why all data buffers passed to SPDK must
 be allocated using spdk_dma_malloc() or its siblings, and why SPDK relies on
-DPDK's proven base functionality to implement memory management.
+DPDK's proven base functionality to implement memory management. (Note: DPDK
+mbufs are also safe to use in applications combining SPDK and DPDK
+functionality.)
 
 Computing platforms generally carve physical memory up into 4KiB segments
 called pages. They number the pages from 0 to N starting from the beginning of
@@ -92,7 +94,7 @@ SPDK must be allocated using spdk_dma_malloc() or its siblings. The buffers
 must be allocated specifically so that they are pinned and so that physical
 addresses are known.
 
-# IOMMU Support
+## IOMMU Support
 
 Many platforms contain an extra piece of hardware called an I/O Memory
 Management Unit (IOMMU). An IOMMU is much like a regular MMU, except it

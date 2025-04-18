@@ -1,8 +1,8 @@
 # BlobFS (Blobstore Filesystem) {#blobfs}
 
-# BlobFS Getting Started Guide {#blobfs_getting_started}
+## BlobFS Getting Started Guide {#blobfs_getting_started}
 
-# RocksDB Integration {#blobfs_rocksdb}
+## RocksDB Integration {#blobfs_rocksdb}
 
 Clone and build the SPDK repository as per https://github.com/spdk/spdk
 
@@ -14,30 +14,30 @@ make
 ~~~
 
 Clone the RocksDB repository from the SPDK GitHub fork into a separate directory.
-Make sure you check out the `spdk-v5.14.3` branch.
+Make sure you check out the `6.15.fb` branch.
 
 ~~~{.sh}
 cd ..
-git clone -b spdk-v5.14.3 https://github.com/spdk/rocksdb.git
+git clone -b 6.15.fb https://github.com/spdk/rocksdb.git
 ~~~
 
 Build RocksDB.  Only the `db_bench` benchmarking tool is integrated with BlobFS.
 
 ~~~{.sh}
 cd rocksdb
-make db_bench SPDK_DIR=path/to/spdk
+make db_bench SPDK_DIR=relative_path/to/spdk
 ~~~
 
 Or you can also add `DEBUG_LEVEL=0` for a release build (need to turn on `USE_RTTI`).
 
 ~~~{.sh}
-export USE_RTTI=1 && make db_bench DEBUG_LEVEL=0 SPDK_DIR=path/to/spdk
+export USE_RTTI=1 && make db_bench DEBUG_LEVEL=0 SPDK_DIR=relative_path/to/spdk
 ~~~
 
 Create an NVMe section in the configuration file using SPDK's `gen_nvme.sh` script.
 
 ~~~{.sh}
-scripts/gen_nvme.sh > /usr/local/etc/spdk/rocksdb.conf
+scripts/gen_nvme.sh --json-with-subsystems > /usr/local/etc/spdk/rocksdb.json
 ~~~
 
 Verify the configuration file has specified the correct NVMe SSD.
@@ -54,7 +54,7 @@ HUGEMEM=5120 scripts/setup.sh
 Create an empty SPDK blobfs for testing.
 
 ~~~{.sh}
-test/blobfs/mkfs/mkfs /usr/local/etc/spdk/rocksdb.conf Nvme0n1
+test/blobfs/mkfs/mkfs /usr/local/etc/spdk/rocksdb.json Nvme0n1
 ~~~
 
 At this point, RocksDB is ready for testing with SPDK.  Three `db_bench` parameters are used to configure SPDK:
@@ -68,18 +68,18 @@ At this point, RocksDB is ready for testing with SPDK.  Three `db_bench` paramet
 SPDK has a set of scripts which will run `db_bench` against a variety of workloads and capture performance and profiling
 data.  The primary script is `test/blobfs/rocksdb/rocksdb.sh`.
 
-# FUSE
+## FUSE
 
 BlobFS provides a FUSE plug-in to mount an SPDK BlobFS as a kernel filesystem for inspection or debug purposes.
 The FUSE plug-in requires fuse3 and will be built automatically when fuse3 is detected on the system.
 
 ~~~{.sh}
-test/blobfs/fuse/fuse /usr/local/etc/spdk/rocksdb.conf Nvme0n1 /mnt/fuse
+test/blobfs/fuse/fuse /usr/local/etc/spdk/rocksdb.json Nvme0n1 /mnt/fuse
 ~~~
 
 Note that the FUSE plug-in has some limitations - see the list below.
 
-# Limitations
+## Limitations
 
 * BlobFS has primarily been tested with RocksDB so far, so any use cases different from how RocksDB uses a filesystem
   may run into issues.  BlobFS will be tested in a broader range of use cases after this initial release.

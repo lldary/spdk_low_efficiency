@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 if [ ! "$USER" = "root" ]; then
 	echo
 	echo Error: must be run as root!
@@ -91,7 +94,7 @@ else
 		yum check-update
 		yum update -y
 		"$SPDK_DIR"/scripts/pkgdep.sh --all
-		sudo -u vagrant "$SPDK_DIR"/test/common/config/vm_setup.sh -i
+		sudo -u vagrant "$SPDK_DIR"/test/common/config/autotest_setup.sh -i
 		yum clean all
 	fi
 	cat /dev/null > ~/.bash_history && history -c

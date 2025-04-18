@@ -1,5 +1,6 @@
 /*-
  * Copyright (c) 1991, 1993
+ * Copyright (C) 2015 Intel Corporation.
  *	The Regents of the University of California.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,6 +33,10 @@
 
 #ifndef SPDK_QUEUE_EXTRAS_H
 #define SPDK_QUEUE_EXTRAS_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * This file defines four types of data structures: singly-linked lists,
@@ -105,7 +110,17 @@
  *
  */
 
-#include "spdk/util.h"
+/* gcc-13 reports bogus Wdangling-pointer warnings on some of the macros below (see issue #3030) */
+#if defined(__GNUC__) && (__GNUC__ >= 13)
+#define SPDK_QE_SUPPRESS_WARNINGS() do {				\
+	_Pragma("GCC diagnostic push")					\
+	_Pragma("GCC diagnostic ignored \"-Wdangling-pointer\"")	\
+} while (0)
+#define SPDK_QE_UNSUPPRESS_WARNINGS() _Pragma("GCC diagnostic pop")
+#else
+#define SPDK_QE_SUPPRESS_WARNINGS()
+#define SPDK_QE_UNSUPPRESS_WARNINGS()
+#endif
 
 /*
  * Singly-linked Tail queue declarations.
@@ -248,6 +263,20 @@ struct {								\
 } while (0)
 
 /*
+ * Singly-linked List functions.
+ */
+#define	SLIST_SWAP(head1, head2, type) do {			\
+	struct type *swap_tmp = SLIST_FIRST((head1));			\
+	SLIST_FIRST((head1)) = SLIST_FIRST((head2));			\
+	SLIST_FIRST((head2)) = swap_tmp;				\
+} while (0)
+
+#define	SLIST_FOREACH_SAFE(var, head, field, tvar)		\
+	for ((var) = SLIST_FIRST((head));				\
+	    (var) && ((tvar) = SLIST_NEXT((var), field), 1);		\
+	    (var) = (tvar))
+
+/*
  * Tail queue functions.
  */
 #if (defined(_KERNEL) && defined(INVARIANTS))
@@ -324,6 +353,7 @@ struct {								\
 	(*(((struct headname *)((elm)->field.tqe_prev))->tqh_last))
 
 #define TAILQ_SWAP(head1, head2, type, field) do {			\
+	SPDK_QE_SUPPRESS_WARNINGS();					\
 	struct type *swap_first = (head1)->tqh_first;			\
 	struct type **swap_last = (head1)->tqh_last;			\
 	(head1)->tqh_first = (head2)->tqh_first;			\
@@ -338,6 +368,11 @@ struct {								\
 		swap_first->field.tqe_prev = &(head2)->tqh_first;	\
 	else								\
 		(head2)->tqh_last = &(head2)->tqh_first;		\
+	SPDK_QE_UNSUPPRESS_WARNINGS();					\
 } while (0)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

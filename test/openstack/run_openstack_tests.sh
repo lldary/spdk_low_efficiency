@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
-rpc_py=$rootdir/scripts/rpc.py
+
+set -- "--iso" "--transport=tcp" "$@"
+
 source $rootdir/test/common/autotest_common.sh
 source $rootdir/test/nvmf/common.sh
-TEST_TRANSPORT='rdma'
 
-nvmftestinit
+rpc_py=$rootdir/scripts/rpc.py
+
+HUGEMEM=1024 nvmftestinit
 
 function finish_test() {
 	{
@@ -17,11 +23,11 @@ function finish_test() {
 	} || :
 }
 
-cat <<- JSON > "$testdir/conf.json"
-	{"subsystems":[
-	$("$rootdir/scripts/gen_nvme.sh" --json)
-	]}
-JSON
+function tox() {
+	source /opt/stack/devstack/openrc "$(type -P tox)" "$@"
+}
+
+$rootdir/scripts/gen_nvme.sh --json-with-subsystems > $testdir/conf.json
 
 nvmfappstart -m 0x3 -p 0 -s 1024 --json $testdir/conf.json
 
@@ -41,9 +47,11 @@ $rpc_py bdev_get_bdevs
 timing_exit configure_spdk
 
 timing_enter restart_cinder
-sudo systemctl restart devstack@c-*
-sleep 10
+sudo systemctl restart devstack@*
+sleep 20
 timing_exit restart_cinder
+
+rxe_cfg status
 
 # Start testing spdk with openstack using tempest (openstack tool that allow testing an openstack functionalities)
 # In this tests is checked if spdk can correctly cooperate with openstack spdk driver

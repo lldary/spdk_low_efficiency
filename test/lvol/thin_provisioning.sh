@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
@@ -203,7 +206,7 @@ function test_thin_overprovisioning() {
 	run_fio_test /dev/nbd1 0 $fill_size "write" "0xcc"
 
 	# Fill rest of second bdev
-	# Check that error message occured while filling second bdev with data
+	# Check that error message occurred while filling second bdev with data
 	offset=$fill_size
 	fill_size_rest=$((lvol_size - fill_size))
 	run_fio_test /dev/nbd1 "$offset" "$fill_size_rest" "write" "0xcc" && false

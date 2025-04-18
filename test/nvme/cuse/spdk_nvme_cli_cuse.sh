@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2019 Intel Corporation
+#  All rights reserved.
+#
 testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../../..)
-source $rootdir/scripts/common.sh
-source $rootdir/test/common/autotest_common.sh
+source "$testdir/common.sh"
 
 rm -Rf $testdir/match_files
 mkdir $testdir/match_files
@@ -14,25 +16,28 @@ CUSE_OUT=$testdir/match_files/cuse.out
 NVME_CMD=/usr/local/src/nvme-cli/nvme
 rpc_py=$rootdir/scripts/rpc.py
 
-bdf=$(get_first_nvme_bdf)
+"$rootdir/scripts/setup.sh" reset
+scan_nvme_ctrls
 
-PCI_WHITELIST="${bdf}" $rootdir/scripts/setup.sh reset
-sleep 1
-nvme_name=$(get_nvme_ctrlr_from_bdf ${bdf})
-if [[ -z "$nvme_name" ]]; then
-	echo "setup.sh failed bind kernel driver to ${bdf}"
-	return 1
+if ! nvme_name=$(get_nvme_with_ns_management); then
+	echo "Failed to find suitable nvme for the test" >&2
+	exit 1
+fi
+
+sel_cmd=()
+# sel depends on ONCS.4 so make sure it's set
+if (($(get_oncs "$nvme_name") & 1 << 4)); then
+	sel_cmd=(-s 1) # return default attribute value
 fi
 
 ctrlr="/dev/${nvme_name}"
 ns="/dev/${nvme_name}n1"
+bdf=${bdfs["$nvme_name"]}
 
 waitforblk "${nvme_name}n1"
 
 oacs=$(${NVME_CMD} id-ctrl $ctrlr | grep oacs | cut -d: -f2)
 oacs_firmware=$((oacs & 0x4))
-
-set +e
 
 ${NVME_CMD} get-ns-id $ns > ${KERNEL_OUT}.1
 ${NVME_CMD} id-ns $ns > ${KERNEL_OUT}.2
@@ -45,11 +50,13 @@ if [ "$oacs_firmware" -ne "0" ]; then
 fi
 ${NVME_CMD} smart-log $ctrlr
 ${NVME_CMD} error-log $ctrlr > ${KERNEL_OUT}.7
-${NVME_CMD} get-feature $ctrlr -f 1 -s 1 -l 100 > ${KERNEL_OUT}.8
+${NVME_CMD} get-feature $ctrlr -f 1 "${sel_cmd[@]}" -l 100 > ${KERNEL_OUT}.8
 ${NVME_CMD} get-log $ctrlr -i 1 -l 100 > ${KERNEL_OUT}.9
 ${NVME_CMD} reset $ctrlr > ${KERNEL_OUT}.10
-
-set -e
+# Negative test to make sure status message is the same on failures
+# FID 2 is power management. It should be constrained to the whole system
+# Attempting to apply it to a namespace should result in a failure
+${NVME_CMD} set-feature $ctrlr -n 1 -f 2 -v 0 2> ${KERNEL_OUT}.11 || true
 
 $rootdir/scripts/setup.sh
 
@@ -62,23 +69,17 @@ waitforlisten $spdk_tgt_pid
 $rpc_py bdev_nvme_attach_controller -b Nvme0 -t PCIe -a ${bdf}
 $rpc_py bdev_nvme_cuse_register -n Nvme0
 
-sleep 5
-
-if [ ! -c /dev/spdk/nvme0 ]; then
-	return 1
-fi
+ctrlr="/dev/spdk/nvme0"
+ns="${ctrlr}n1"
+waitforfile "$ns"
 
 $rpc_py bdev_get_bdevs
 $rpc_py bdev_nvme_get_controllers
 
-set +e
-
-ns="/dev/spdk/nvme0n1"
 ${NVME_CMD} get-ns-id $ns > ${CUSE_OUT}.1
 ${NVME_CMD} id-ns $ns > ${CUSE_OUT}.2
 ${NVME_CMD} list-ns $ns > ${CUSE_OUT}.3
 
-ctrlr="/dev/spdk/nvme0"
 ${NVME_CMD} id-ctrl $ctrlr > ${CUSE_OUT}.4
 ${NVME_CMD} list-ctrl $ctrlr > ${CUSE_OUT}.5
 if [ "$oacs_firmware" -ne "0" ]; then
@@ -86,13 +87,12 @@ if [ "$oacs_firmware" -ne "0" ]; then
 fi
 ${NVME_CMD} smart-log $ctrlr
 ${NVME_CMD} error-log $ctrlr > ${CUSE_OUT}.7
-${NVME_CMD} get-feature $ctrlr -f 1 -s 1 -l 100 > ${CUSE_OUT}.8
+${NVME_CMD} get-feature $ctrlr -f 1 "${sel_cmd[@]}" -l 100 > ${CUSE_OUT}.8
 ${NVME_CMD} get-log $ctrlr -i 1 -l 100 > ${CUSE_OUT}.9
 ${NVME_CMD} reset $ctrlr > ${CUSE_OUT}.10
+${NVME_CMD} set-feature $ctrlr -n 1 -f 2 -v 0 2> ${CUSE_OUT}.11 || true
 
-set -e
-
-for i in {1..10}; do
+for i in {1..11}; do
 	if [ -f "${KERNEL_OUT}.${i}" ] && [ -f "${CUSE_OUT}.${i}" ]; then
 		sed -i "s/${nvme_name}/nvme0/g" ${KERNEL_OUT}.${i}
 		diff --suppress-common-lines ${KERNEL_OUT}.${i} ${CUSE_OUT}.${i}
@@ -101,9 +101,21 @@ done
 
 rm -Rf $testdir/match_files
 
-if [ ! -c "$ctrlr" ]; then
-	return 1
-fi
+# Verify read/write path
+bs=$($rpc_py bdev_get_bdevs | jq '.[].block_size')
+head -c"$bs" /dev/urandom > "$testdir/write_file"
+${NVME_CMD} write $ns --data-size="$bs" --data=$testdir/write_file
+${NVME_CMD} read $ns --data-size="$bs" --data=$testdir/read_file
+cmp "$testdir/write_file" "$testdir/read_file"
+rm -f $testdir/write_file $testdir/read_file
+
+# Verify admin cmd when no data is transferred,
+# by creating and deleting completion queue.
+${NVME_CMD} admin-passthru $ctrlr -o 5 --cdw10=0x3ff0003 --cdw11=0x1 -r
+${NVME_CMD} admin-passthru $ctrlr -o 4 --cdw10=0x3
+
+[[ -c "$ctrlr" ]]
+[[ -c "$ns" ]]
 
 trap - SIGINT SIGTERM EXIT
 killprocess $spdk_tgt_pid

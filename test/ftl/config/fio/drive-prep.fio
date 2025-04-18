@@ -9,7 +9,7 @@ buffered=0
 size=100%
 randrepeat=0
 norandommap
-bs=4k
+bs=128k
 iodepth=128
 numjobs=1
 rw=write

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
 SYSTEM=$(uname -s)
 size="1024M"
 nvme_disk="/var/lib/libvirt/images/nvme_disk.img"
-type="nvme"
+preallocation="falloc"
 
 function usage() {
 	echo "Usage: ${0##*/} [-s <disk_size>] [-n <backing file name>]"
@@ -10,10 +14,11 @@ function usage() {
 	echo "                                    for OCSSD default: 9G"
 	echo "-n <backing file name>        backing file path with name"
 	echo "           default: /var/lib/libvirt/images/nvme_disk.img"
-	echo "-t <type>                  default: nvme available: ocssd"
+	echo "-p <mode>              allowed values:[off, falloc, full]"
+	echo "                                          default: falloc"
 }
 
-while getopts "s:n:t:h-:" opt; do
+while getopts "s:n:p:t:h-:" opt; do
 	case "${opt}" in
 		-)
 			echo "  Invalid argument: $OPTARG"
@@ -26,8 +31,8 @@ while getopts "s:n:t:h-:" opt; do
 		n)
 			nvme_disk=$OPTARG
 			;;
-		t)
-			type=$OPTARG
+		p)
+			preallocation=$OPTARG
 			;;
 		h)
 			usage
@@ -41,37 +46,26 @@ while getopts "s:n:t:h-:" opt; do
 	esac
 done
 
-if [ ! "${SYSTEM}" = "FreeBSD" ]; then
-	WHICH_OS=$(lsb_release -i | awk '{print $3}')
-	case $type in
-		"nvme")
-			qemu-img create -f raw $nvme_disk $size
-			;;
-		"ocssd")
-			if [ $size == "1024M" ]; then
-				size="9G"
-			fi
-			fallocate -l $size $nvme_disk
-			touch ${nvme_disk}_ocssd_md
-			;;
-		*)
-			echo "We support only nvme and ocssd disks types"
-			exit 1
-			;;
-	esac
-	#Change SE Policy on Fedora
-	if [ $WHICH_OS == "Fedora" ]; then
-		sudo chcon -t svirt_image_t $nvme_disk
-	fi
-
-	chmod 777 $nvme_disk
-	if [ $WHICH_OS == "Fedora" ]; then
-		chown qemu:qemu $nvme_disk
-	elif [ $WHICH_OS == "Ubuntu" ]; then
-		chown libvirt-qemu:kvm $nvme_disk
-	else
-		# That's just a wild guess for now
-		# TODO: needs improvement for other distros
-		chown libvirt-qemu:kvm $nvme_disk
-	fi
+if [ "${SYSTEM}" != "Linux" ]; then
+	echo "This script supports only Linux OS" >&2
+	exit 2
 fi
+
+source /etc/os-release
+qemu-img create -f raw "$nvme_disk" -o preallocation="$preallocation" $size
+
+# That's just a wild guess for now
+# TODO: needs improvement for other distros
+qemu_user_group="libvirt-qemu:kvm"
+
+case "$ID" in
+	"fedora")
+		qemu_user_group="qemu:qemu"
+
+		# Change SE Policy
+		sudo chcon -t svirt_image_t "$nvme_disk"
+		;;
+esac
+
+chmod 777 "$nvme_disk"
+chown $qemu_user_group "$nvme_disk"

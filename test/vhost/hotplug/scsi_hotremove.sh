@@ -1,3 +1,8 @@
+#  SPDX-License-Identifier: BSD-3-Clause
+#  Copyright (C) 2017 Intel Corporation
+#  All rights reserved.
+#
+
 set -xe
 
 # Vhost SCSI hotremove tests
@@ -45,7 +50,7 @@ function scsi_hotremove_tc1() {
 	# 1. Run the command to hot remove NVMe disk.
 	delete_nvme "Nvme0"
 	# 2. If vhost had crashed then tests would stop running
-	sleep 1
+	sleep 10
 	add_nvme "HotInNvme0" "$traddr"
 }
 

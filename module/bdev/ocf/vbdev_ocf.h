@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2018 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef SPDK_VBDEV_OCF_H
@@ -67,7 +39,7 @@ struct vbdev_ocf_state {
 	bool                         doing_clean_delete;
 	/* From the moment when finish started */
 	bool                         doing_finish;
-	/* From the moment when reset IO recieved, until it is completed */
+	/* From the moment when reset IO received, until it is completed */
 	bool                         doing_reset;
 	/* From the moment when exp_bdev is registered */
 	bool                         started;
@@ -85,7 +57,7 @@ struct vbdev_ocf_config {
 	struct ocf_mngt_cache_config        cache;
 
 	/* Cache device config */
-	struct ocf_mngt_cache_device_config device;
+	struct ocf_mngt_cache_attach_config attach;
 
 	/* Core initial config */
 	struct ocf_mngt_core_config         core;
@@ -169,8 +141,15 @@ struct vbdev_ocf {
 
 	/* Management context */
 	struct vbdev_ocf_mngt_ctx    mngt_ctx;
-	/* Cache conext */
+
+	/* Cache context */
 	struct vbdev_ocf_cache_ctx  *cache_ctx;
+
+	/* Status of flushing operation */
+	struct {
+		bool in_progress;
+		int status;
+	} flush;
 
 	/* Exposed SPDK bdev. Registered in bdev layer */
 	struct spdk_bdev             exp_bdev;
@@ -185,6 +164,7 @@ struct vbdev_ocf {
 void vbdev_ocf_construct(
 	const char *vbdev_name,
 	const char *cache_mode_name,
+	const uint64_t cache_line_size,
 	const char *cache_name,
 	const char *core_name,
 	bool loadq,
@@ -201,6 +181,22 @@ struct vbdev_ocf_base *vbdev_ocf_get_base_by_name(const char *name);
 int vbdev_ocf_delete(struct vbdev_ocf *vbdev, void (*cb)(void *, int), void *cb_arg);
 
 int vbdev_ocf_delete_clean(struct vbdev_ocf *vbdev, void (*cb)(void *, int), void *cb_arg);
+
+/* Set new cache mode on OCF cache */
+void vbdev_ocf_set_cache_mode(
+	struct vbdev_ocf *vbdev,
+	const char *cache_mode_name,
+	void (*cb)(int, struct vbdev_ocf *, void *),
+	void *cb_arg);
+
+/* Set sequential cutoff parameters on OCF cache */
+void vbdev_ocf_set_seqcutoff(
+	struct vbdev_ocf *vbdev,
+	const char *policy_name,
+	uint32_t threshold,
+	uint32_t promotion_count,
+	void (*cb)(int, void *),
+	void *cb_arg);
 
 typedef void (*vbdev_ocf_foreach_fn)(struct vbdev_ocf *, void *);
 

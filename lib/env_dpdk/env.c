@@ -1,39 +1,14 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2016 Intel Corporation.
+ *   Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
 #include "spdk/util.h"
 #include "spdk/env_dpdk.h"
+#include "spdk/log.h"
+#include "spdk/assert.h"
 
 #include "env_internal.h"
 
@@ -43,46 +18,43 @@
 #include <rte_mempool.h>
 #include <rte_memzone.h>
 #include <rte_version.h>
+#include <rte_eal.h>
 
-static uint64_t
-virt_to_phys(void *vaddr)
-{
-	uint64_t ret;
+static __thread bool g_is_thread_unaffinitized;
+static bool g_enforce_numa;
 
-	ret = rte_malloc_virt2iova(vaddr);
-	if (ret != RTE_BAD_IOVA) {
-		return ret;
-	}
-
-	return spdk_vtophys(vaddr, NULL);
-}
+SPDK_STATIC_ASSERT(SOCKET_ID_ANY == SPDK_ENV_NUMA_ID_ANY, "SOCKET_ID_ANY mismatch");
 
 void *
-spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags)
+spdk_malloc(size_t size, size_t align, uint64_t *unused, int numa_id, uint32_t flags)
 {
 	void *buf;
 
-	if (flags == 0) {
+	if (flags == 0 || unused != NULL) {
 		return NULL;
 	}
 
 	align = spdk_max(align, RTE_CACHE_LINE_SIZE);
-	buf = rte_malloc_socket(NULL, size, align, socket_id);
-	if (buf && phys_addr) {
-#ifdef DEBUG
-		fprintf(stderr, "phys_addr param in spdk_*malloc() is deprecated\n");
-#endif
-		*phys_addr = virt_to_phys(buf);
+	buf = rte_malloc_socket(NULL, size, align, numa_id);
+	if (buf == NULL && !g_enforce_numa && numa_id != SOCKET_ID_ANY) {
+		buf = rte_malloc_socket(NULL, size, align, SOCKET_ID_ANY);
 	}
 	return buf;
 }
 
 void *
-spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags)
+spdk_zmalloc(size_t size, size_t align, uint64_t *unused, int numa_id, uint32_t flags)
 {
-	void *buf = spdk_malloc(size, align, phys_addr, socket_id, flags);
-	if (buf) {
-		memset(buf, 0, size);
+	void *buf;
+
+	if (flags == 0 || unused != NULL) {
+		return NULL;
+	}
+
+	align = spdk_max(align, RTE_CACHE_LINE_SIZE);
+	buf = rte_zmalloc_socket(NULL, size, align, numa_id);
+	if (buf == NULL && !g_enforce_numa && numa_id != SOCKET_ID_ANY) {
+		buf = rte_zmalloc_socket(NULL, size, align, SOCKET_ID_ANY);
 	}
 	return buf;
 }
@@ -101,40 +73,37 @@ spdk_free(void *buf)
 }
 
 void *
-spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socket_id)
+spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *unused, int numa_id)
 {
-	return spdk_malloc(size, align, phys_addr, socket_id, (SPDK_MALLOC_DMA | SPDK_MALLOC_SHARE));
+	return spdk_malloc(size, align, unused, numa_id, (SPDK_MALLOC_DMA | SPDK_MALLOC_SHARE));
 }
 
 void *
-spdk_dma_zmalloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socket_id)
+spdk_dma_zmalloc_socket(size_t size, size_t align, uint64_t *unused, int numa_id)
 {
-	return spdk_zmalloc(size, align, phys_addr, socket_id, (SPDK_MALLOC_DMA | SPDK_MALLOC_SHARE));
+	return spdk_zmalloc(size, align, unused, numa_id, (SPDK_MALLOC_DMA | SPDK_MALLOC_SHARE));
 }
 
 void *
-spdk_dma_malloc(size_t size, size_t align, uint64_t *phys_addr)
+spdk_dma_malloc(size_t size, size_t align, uint64_t *unused)
 {
-	return spdk_dma_malloc_socket(size, align, phys_addr, SPDK_ENV_SOCKET_ID_ANY);
+	return spdk_dma_malloc_socket(size, align, unused, SPDK_ENV_NUMA_ID_ANY);
 }
 
 void *
-spdk_dma_zmalloc(size_t size, size_t align, uint64_t *phys_addr)
+spdk_dma_zmalloc(size_t size, size_t align, uint64_t *unused)
 {
-	return spdk_dma_zmalloc_socket(size, align, phys_addr, SPDK_ENV_SOCKET_ID_ANY);
+	return spdk_dma_zmalloc_socket(size, align, unused, SPDK_ENV_NUMA_ID_ANY);
 }
 
 void *
-spdk_dma_realloc(void *buf, size_t size, size_t align, uint64_t *phys_addr)
+spdk_dma_realloc(void *buf, size_t size, size_t align, uint64_t *unused)
 {
-	void *new_buf;
-
-	align = spdk_max(align, RTE_CACHE_LINE_SIZE);
-	new_buf = rte_realloc(buf, size, align);
-	if (new_buf && phys_addr) {
-		*phys_addr = virt_to_phys(new_buf);
+	if (unused != NULL) {
+		return NULL;
 	}
-	return new_buf;
+	align = spdk_max(align, RTE_CACHE_LINE_SIZE);
+	return rte_realloc(buf, size, align);
 }
 
 void
@@ -144,7 +113,7 @@ spdk_dma_free(void *buf)
 }
 
 void *
-spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
+spdk_memzone_reserve_aligned(const char *name, size_t len, int numa_id,
 			     unsigned flags, unsigned align)
 {
 	const struct rte_memzone *mz;
@@ -154,11 +123,14 @@ spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
 		dpdk_flags |= RTE_MEMZONE_IOVA_CONTIG;
 	}
 
-	if (socket_id == SPDK_ENV_SOCKET_ID_ANY) {
-		socket_id = SOCKET_ID_ANY;
+	if (numa_id == SPDK_ENV_NUMA_ID_ANY) {
+		numa_id = SOCKET_ID_ANY;
 	}
 
-	mz = rte_memzone_reserve_aligned(name, len, socket_id, dpdk_flags, align);
+	mz = rte_memzone_reserve_aligned(name, len, numa_id, dpdk_flags, align);
+	if (mz == NULL && !g_enforce_numa && numa_id != SOCKET_ID_ANY) {
+		mz = rte_memzone_reserve_aligned(name, len, SOCKET_ID_ANY, dpdk_flags, align);
+	}
 
 	if (mz != NULL) {
 		memset(mz->addr, 0, len);
@@ -169,9 +141,9 @@ spdk_memzone_reserve_aligned(const char *name, size_t len, int socket_id,
 }
 
 void *
-spdk_memzone_reserve(const char *name, size_t len, int socket_id, unsigned flags)
+spdk_memzone_reserve(const char *name, size_t len, int numa_id, unsigned flags)
 {
-	return spdk_memzone_reserve_aligned(name, len, socket_id, flags,
+	return spdk_memzone_reserve_aligned(name, len, numa_id, flags,
 					    RTE_CACHE_LINE_SIZE);
 }
 
@@ -207,14 +179,14 @@ spdk_memzone_dump(FILE *f)
 
 struct spdk_mempool *
 spdk_mempool_create_ctor(const char *name, size_t count,
-			 size_t ele_size, size_t cache_size, int socket_id,
+			 size_t ele_size, size_t cache_size, int numa_id,
 			 spdk_mempool_obj_cb_t *obj_init, void *obj_init_arg)
 {
 	struct rte_mempool *mp;
 	size_t tmp;
 
-	if (socket_id == SPDK_ENV_SOCKET_ID_ANY) {
-		socket_id = SOCKET_ID_ANY;
+	if (numa_id == SPDK_ENV_NUMA_ID_ANY) {
+		numa_id = SOCKET_ID_ANY;
 	}
 
 	/* No more than half of all elements can be in cache */
@@ -229,7 +201,12 @@ spdk_mempool_create_ctor(const char *name, size_t count,
 
 	mp = rte_mempool_create(name, count, ele_size, cache_size,
 				0, NULL, NULL, (rte_mempool_obj_cb_t *)obj_init, obj_init_arg,
-				socket_id, MEMPOOL_F_NO_PHYS_CONTIG);
+				numa_id, 0);
+	if (mp == NULL && !g_enforce_numa && numa_id != SOCKET_ID_ANY) {
+		mp = rte_mempool_create(name, count, ele_size, cache_size,
+					0, NULL, NULL, (rte_mempool_obj_cb_t *)obj_init, obj_init_arg,
+					SOCKET_ID_ANY, 0);
+	}
 
 	return (struct spdk_mempool *)mp;
 }
@@ -237,9 +214,9 @@ spdk_mempool_create_ctor(const char *name, size_t count,
 
 struct spdk_mempool *
 spdk_mempool_create(const char *name, size_t count,
-		    size_t ele_size, size_t cache_size, int socket_id)
+		    size_t ele_size, size_t cache_size, int numa_id)
 {
-	return spdk_mempool_create_ctor(name, count, ele_size, cache_size, socket_id,
+	return spdk_mempool_create_ctor(name, count, ele_size, cache_size, numa_id,
 					NULL, NULL);
 }
 
@@ -300,6 +277,33 @@ spdk_mempool_obj_iter(struct spdk_mempool *mp, spdk_mempool_obj_cb_t obj_cb,
 				    obj_cb_arg);
 }
 
+struct env_mempool_mem_iter_ctx {
+	spdk_mempool_mem_cb_t *user_cb;
+	void *user_arg;
+};
+
+static void
+mempool_mem_iter_remap(struct rte_mempool *mp, void *opaque, struct rte_mempool_memhdr *memhdr,
+		       unsigned mem_idx)
+{
+	struct env_mempool_mem_iter_ctx *ctx = opaque;
+
+	ctx->user_cb((struct spdk_mempool *)mp, ctx->user_arg, memhdr->addr, memhdr->iova, memhdr->len,
+		     mem_idx);
+}
+
+uint32_t
+spdk_mempool_mem_iter(struct spdk_mempool *mp, spdk_mempool_mem_cb_t mem_cb,
+		      void *mem_cb_arg)
+{
+	struct env_mempool_mem_iter_ctx ctx = {
+		.user_cb = mem_cb,
+		.user_arg = mem_cb_arg
+	};
+
+	return rte_mempool_mem_iter((struct rte_mempool *)mp, mempool_mem_iter_remap, &ctx);
+}
+
 struct spdk_mempool *
 spdk_mempool_lookup(const char *name)
 {
@@ -312,22 +316,26 @@ spdk_process_is_primary(void)
 	return (rte_eal_process_type() == RTE_PROC_PRIMARY);
 }
 
-uint64_t spdk_get_ticks(void)
+uint64_t
+spdk_get_ticks(void)
 {
 	return rte_get_timer_cycles();
 }
 
-uint64_t spdk_get_ticks_hz(void)
+uint64_t
+spdk_get_ticks_hz(void)
 {
 	return rte_get_timer_hz();
 }
 
-void spdk_delay_us(unsigned int us)
+void
+spdk_delay_us(unsigned int us)
 {
 	rte_delay_us(us);
 }
 
-void spdk_pause(void)
+void
+spdk_pause(void)
 {
 	rte_pause();
 }
@@ -335,8 +343,12 @@ void spdk_pause(void)
 void
 spdk_unaffinitize_thread(void)
 {
-	rte_cpuset_t new_cpuset, orig_cpuset;
-	long num_cores, i, orig_num_cores;
+	rte_cpuset_t new_cpuset;
+	long num_cores, i;
+
+	if (g_is_thread_unaffinitized) {
+		return;
+	}
 
 	CPU_ZERO(&new_cpuset);
 
@@ -347,17 +359,8 @@ spdk_unaffinitize_thread(void)
 		CPU_SET(i, &new_cpuset);
 	}
 
-	rte_thread_get_affinity(&orig_cpuset);
-	orig_num_cores = CPU_COUNT(&orig_cpuset);
-	if (orig_num_cores < num_cores) {
-		for (i = 0; i < orig_num_cores; i++) {
-			if (CPU_ISSET(i, &orig_cpuset)) {
-				CPU_CLR(i, &new_cpuset);
-			}
-		}
-	}
-
 	rte_thread_set_affinity(&new_cpuset);
+	g_is_thread_unaffinitized = true;
 }
 
 void *
@@ -370,23 +373,28 @@ spdk_call_unaffinitized(void *cb(void *arg), void *arg)
 		return NULL;
 	}
 
-	rte_thread_get_affinity(&orig_cpuset);
+	if (g_is_thread_unaffinitized) {
+		ret = cb(arg);
+	} else {
+		rte_thread_get_affinity(&orig_cpuset);
+		spdk_unaffinitize_thread();
 
-	spdk_unaffinitize_thread();
+		ret = cb(arg);
 
-	ret = cb(arg);
-
-	rte_thread_set_affinity(&orig_cpuset);
+		rte_thread_set_affinity(&orig_cpuset);
+		g_is_thread_unaffinitized = false;
+	}
 
 	return ret;
 }
 
 struct spdk_ring *
-spdk_ring_create(enum spdk_ring_type type, size_t count, int socket_id)
+spdk_ring_create(enum spdk_ring_type type, size_t count, int numa_id)
 {
 	char ring_name[64];
 	static uint32_t ring_num = 0;
 	unsigned flags = RING_F_EXACT_SZ;
+	struct rte_ring *ring;
 
 	switch (type) {
 	case SPDK_RING_TYPE_SP_SC:
@@ -405,7 +413,11 @@ spdk_ring_create(enum spdk_ring_type type, size_t count, int socket_id)
 	snprintf(ring_name, sizeof(ring_name), "ring_%u_%d",
 		 __atomic_fetch_add(&ring_num, 1, __ATOMIC_RELAXED), getpid());
 
-	return (struct spdk_ring *)rte_ring_create(ring_name, count, socket_id, flags);
+	ring = rte_ring_create(ring_name, count, numa_id, flags);
+	if (ring == NULL && !g_enforce_numa && numa_id != SOCKET_ID_ANY) {
+		ring = rte_ring_create(ring_name, count, SOCKET_ID_ANY, flags);
+	}
+	return (struct spdk_ring *)ring;
 }
 
 void
@@ -437,7 +449,7 @@ spdk_ring_dequeue(struct spdk_ring *ring, void **objs, size_t count)
 void
 spdk_env_dpdk_dump_mem_stats(FILE *file)
 {
-	fprintf(file, "DPDK memory size %lu\n", rte_eal_get_physmem_size());
+	fprintf(file, "DPDK memory size %" PRIu64 "\n", rte_eal_get_physmem_size());
 	fprintf(file, "DPDK memory layout\n");
 	rte_dump_physmem_layout(file);
 	fprintf(file, "DPDK memzones.\n");
@@ -448,4 +460,16 @@ spdk_env_dpdk_dump_mem_stats(FILE *file)
 	rte_malloc_dump_stats(file, NULL);
 	fprintf(file, "DPDK malloc heaps.\n");
 	rte_malloc_dump_heaps(file);
+}
+
+int
+spdk_get_tid(void)
+{
+	return rte_sys_gettid();
+}
+
+void
+mem_enforce_numa(void)
+{
+	g_enforce_numa = true;
 }

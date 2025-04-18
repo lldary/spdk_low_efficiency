@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2017 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/stdinc.h"
@@ -39,6 +11,7 @@
 #include "spdk/blob_bdev.h"
 #include "spdk/blob.h"
 #include "spdk/log.h"
+#include "spdk/string.h"
 
 /*
  * We'll use this struct to gather housekeeping hello_context to pass between
@@ -250,7 +223,7 @@ blob_write(struct hello_context_t *hello_context)
 }
 
 /*
- * Callback function for sync'ing metadata.
+ * Callback function for syncing metadata.
  */
 static void
 sync_complete(void *arg1, int bserrno)
@@ -371,7 +344,7 @@ bs_init_complete(void *cb_arg, struct spdk_blob_store *bs,
 
 	SPDK_NOTICELOG("entry\n");
 	if (bserrno) {
-		unload_bs(hello_context, "Error init'ing the blobstore",
+		unload_bs(hello_context, "Error initing the blobstore",
 			  bserrno);
 		return;
 	}
@@ -393,6 +366,13 @@ bs_init_complete(void *cb_arg, struct spdk_blob_store *bs,
 	create_blob(hello_context);
 }
 
+static void
+base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+		   void *event_ctx)
+{
+	SPDK_WARNLOG("Unsupported bdev event: type %d\n", type);
+}
+
 /*
  * Our initial event that kicks off everything from main().
  */
@@ -400,24 +380,16 @@ static void
 hello_start(void *arg1)
 {
 	struct hello_context_t *hello_context = arg1;
-	struct spdk_bdev *bdev = NULL;
 	struct spdk_bs_dev *bs_dev = NULL;
+	int rc;
 
 	SPDK_NOTICELOG("entry\n");
-	/*
-	 * Get the bdev. For this example it is our malloc (RAM)
-	 * disk configured via hello_blob.conf that was passed
-	 * in when we started the SPDK app framework so we can
-	 * get it via its name.
-	 */
-	bdev = spdk_bdev_get_by_name("Malloc0");
-	if (bdev == NULL) {
-		SPDK_ERRLOG("Could not find a bdev\n");
-		spdk_app_stop(-1);
-		return;
-	}
 
 	/*
+	 * In this example, use our malloc (RAM) disk configured via
+	 * hello_blob.json that was passed in when we started the
+	 * SPDK app framework.
+	 *
 	 * spdk_bs_init() requires us to fill out the structure
 	 * spdk_bs_dev with a set of callbacks. These callbacks
 	 * implement read, write, and other operations on the
@@ -430,9 +402,10 @@ hello_start(void *arg1)
 	 * However blobstore can be more tightly integrated into
 	 * any lower layer, such as NVMe for example.
 	 */
-	bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
-	if (bs_dev == NULL) {
-		SPDK_ERRLOG("Could not create blob bdev!!\n");
+	rc = spdk_bdev_create_bs_dev_ext("Malloc0", base_bdev_event_cb, NULL, &bs_dev);
+	if (rc != 0) {
+		SPDK_ERRLOG("Could not create blob bdev, %s!!\n",
+			    spdk_strerror(-rc));
 		spdk_app_stop(-1);
 		return;
 	}
@@ -450,7 +423,7 @@ main(int argc, char **argv)
 	SPDK_NOTICELOG("entry\n");
 
 	/* Set default values in opts structure. */
-	spdk_app_opts_init(&opts);
+	spdk_app_opts_init(&opts, sizeof(opts));
 
 	/*
 	 * Setup a few specifics before we init, for most SPDK cmd line
@@ -460,14 +433,14 @@ main(int argc, char **argv)
 	 */
 	opts.name = "hello_blob";
 	opts.json_config_file = argv[1];
-
+	opts.rpc_addr = NULL;
 
 	/*
 	 * Now we'll allocate and initialize the blobstore itself. We
 	 * can pass in an spdk_bs_opts if we want something other than
 	 * the defaults (cluster size, etc), but here we'll just take the
 	 * defaults.  We'll also pass in a struct that we'll use for
-	 * callbacks so we've got efficient bookeeping of what we're
+	 * callbacks so we've got efficient bookkeeping of what we're
 	 * creating. This is an async operation and bs_init_complete()
 	 * will be called when it is complete.
 	 */

@@ -8,7 +8,7 @@ queue or the scsi admin queue. Please see the NVMe fuzzer readme for information
 on how output is generated, debugging procedures, and the JSON format expected
 when supplying preconstructed values to the fuzzer.
 
-# Request Types
+## Request Types
 
 Like the NVMe fuzzer, there is an example json file showing the types of requests
 that the application accepts. Since the vhost application accepts both vhost block
@@ -33,12 +33,12 @@ the request will no longer point to a valid memory location.
 It is possible to supply all three types of requests in a single array to the application. They will be parsed and
 submitted to the proper block devices.
 
-# RPC
+## RPC
 
 The vhost fuzzer differs from the NVMe fuzzer in that it expects devices to be configured via rpc. The fuzzer should
 always be started with the --wait-for-rpc argument. Please see below for an example of starting the fuzzer.
 
-~~~
+~~~bash
 ./test/app/fuzz/vhost_fuzz/vhost_fuzz -t 30 --wait-for-rpc &
 ./scripts/rpc.py fuzz_vhost_create_dev -s ./Vhost.1 -b -V
 ./scripts/rpc.py fuzz_vhost_create_dev -s ./naa.VhostScsi0.1 -l -V

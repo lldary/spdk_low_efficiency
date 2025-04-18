@@ -1,6 +1,6 @@
 # SPDK Structural Overview {#overview}
 
-# Overview {#dir_overview}
+## Overview {#dir_overview}
 
 SPDK is composed of a set of C libraries residing in `lib` with public interface
 header files in `include/spdk`, plus a set of applications built out of those
@@ -77,13 +77,13 @@ directory and include the headers by prefixing `spdk/` like this:
 Most of the headers here correspond with a library in the `lib` directory. There
 are a few headers that stand alone, however. They are:
 
- - `assert.h`
- - `barrier.h`
- - `endian.h`
- - `fd.h`
- - `mmio.h`
- - `queue.h` and `queue_extras.h`
- - `string.h`
+- `assert.h`
+- `barrier.h`
+- `endian.h`
+- `fd.h`
+- `mmio.h`
+- `queue.h` and `queue_extras.h`
+- `string.h`
 
 There is also an `spdk_internal` directory that contains header files widely included
 by libraries within SPDK, but that are not part of the public API and would not be

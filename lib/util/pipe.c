@@ -1,38 +1,21 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (c) Intel Corporation.
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2019 Intel Corporation.
  *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "spdk/pipe.h"
 #include "spdk/util.h"
+#include "spdk/queue.h"
+#include "spdk/log.h"
+
+struct spdk_pipe_buf {
+	SLIST_ENTRY(spdk_pipe_buf)	link;
+	uint32_t			sz;
+};
+
+struct spdk_pipe_group {
+	SLIST_HEAD(, spdk_pipe_buf) bufs;
+};
 
 struct spdk_pipe {
 	uint8_t	*buf;
@@ -40,6 +23,9 @@ struct spdk_pipe {
 
 	uint32_t write;
 	uint32_t read;
+	bool full;
+
+	struct spdk_pipe_group *group;
 };
 
 struct spdk_pipe *
@@ -58,10 +44,47 @@ spdk_pipe_create(void *buf, uint32_t sz)
 	return pipe;
 }
 
-void
+void *
 spdk_pipe_destroy(struct spdk_pipe *pipe)
 {
+	void *buf;
+
+	if (pipe == NULL) {
+		return NULL;
+	}
+
+	if (pipe->group) {
+		spdk_pipe_group_remove(pipe->group, pipe);
+	}
+
+	buf = pipe->buf;
 	free(pipe);
+	return buf;
+}
+
+static void
+pipe_alloc_buf_from_group(struct spdk_pipe *pipe)
+{
+	struct spdk_pipe_buf *buf;
+	struct spdk_pipe_group *group;
+
+	assert(pipe->group != NULL);
+	group = pipe->group;
+
+	/* We have to pick a buffer that's the correct size. It's almost always
+	 * the first one. */
+	buf = SLIST_FIRST(&group->bufs);
+	while (buf != NULL) {
+		if (buf->sz == pipe->sz) {
+			/* TODO: Could track the previous and do an SLIST_REMOVE_AFTER */
+			SLIST_REMOVE(&pipe->group->bufs, buf, spdk_pipe_buf, link);
+			pipe->buf = (void *)buf;
+			return;
+		}
+		buf = SLIST_NEXT(buf, link);
+	}
+	/* Should never get here. */
+	assert(false);
 }
 
 int
@@ -74,12 +97,20 @@ spdk_pipe_writer_get_buffer(struct spdk_pipe *pipe, uint32_t requested_sz, struc
 	read = pipe->read;
 	write = pipe->write;
 
-	if (read <= write) {
-		requested_sz = spdk_min(requested_sz, ((read + pipe->sz) - write - 1));
+	if (pipe->full || requested_sz == 0) {
+		iovs[0].iov_base = NULL;
+		iovs[0].iov_len = 0;
+		return 0;
+	}
 
+	if (pipe->buf == NULL) {
+		pipe_alloc_buf_from_group(pipe);
+	}
+
+	if (read <= write) {
 		sz = spdk_min(requested_sz, pipe->sz - write);
 
-		iovs[0].iov_base = (sz == 0) ? NULL : (pipe->buf + write);
+		iovs[0].iov_base = pipe->buf + write;
 		iovs[0].iov_len = sz;
 
 		requested_sz -= sz;
@@ -94,9 +125,9 @@ spdk_pipe_writer_get_buffer(struct spdk_pipe *pipe, uint32_t requested_sz, struc
 			iovs[1].iov_len = 0;
 		}
 	} else {
-		sz = spdk_min(requested_sz, read - write - 1);
+		sz = spdk_min(requested_sz, read - write);
 
-		iovs[0].iov_base = (sz == 0) ? NULL : (pipe->buf + write);
+		iovs[0].iov_base = pipe->buf + write;
 		iovs[0].iov_len = sz;
 		iovs[1].iov_base = NULL;
 		iovs[1].iov_len = 0;
@@ -115,38 +146,37 @@ spdk_pipe_writer_advance(struct spdk_pipe *pipe, uint32_t requested_sz)
 	read = pipe->read;
 	write = pipe->write;
 
-	if (requested_sz > pipe->sz - 1) {
+	if (requested_sz > pipe->sz || pipe->full) {
 		return -EINVAL;
 	}
 
 	if (read <= write) {
-		if (requested_sz > (read + pipe->sz) - write) {
+		if (requested_sz > (pipe->sz - write) + read) {
 			return -EINVAL;
 		}
 
 		sz = spdk_min(requested_sz, pipe->sz - write);
 
 		write += sz;
-		if (write > pipe->sz - 1) {
+		if (write == pipe->sz) {
 			write = 0;
 		}
 		requested_sz -= sz;
 
 		if (requested_sz > 0) {
-			if (requested_sz >= read) {
-				return -EINVAL;
-			}
-
 			write = requested_sz;
 		}
 	} else {
-		if (requested_sz > (read - write - 1)) {
+		if (requested_sz > (read - write)) {
 			return -EINVAL;
 		}
 
 		write += requested_sz;
 	}
 
+	if (read == write) {
+		pipe->full = true;
+	}
 	pipe->write = write;
 
 	return 0;
@@ -161,11 +191,13 @@ spdk_pipe_reader_bytes_available(struct spdk_pipe *pipe)
 	read = pipe->read;
 	write = pipe->write;
 
-	if (read <= write) {
+	if (read == write && !pipe->full) {
+		return 0;
+	} else if (read < write) {
 		return write - read;
+	} else {
+		return (pipe->sz - read) + write;
 	}
-
-	return (write + pipe->sz) - read;
 }
 
 int
@@ -178,17 +210,22 @@ spdk_pipe_reader_get_buffer(struct spdk_pipe *pipe, uint32_t requested_sz, struc
 	read = pipe->read;
 	write = pipe->write;
 
-	if (read <= write) {
+	if ((read == write && !pipe->full) || requested_sz == 0) {
+		iovs[0].iov_base = NULL;
+		iovs[0].iov_len = 0;
+		iovs[1].iov_base = NULL;
+		iovs[1].iov_len = 0;
+	} else if (read < write) {
 		sz = spdk_min(requested_sz, write - read);
 
-		iovs[0].iov_base = (sz == 0) ? NULL : (pipe->buf + read);
+		iovs[0].iov_base = pipe->buf + read;
 		iovs[0].iov_len = sz;
 		iovs[1].iov_base = NULL;
 		iovs[1].iov_len = 0;
 	} else {
 		sz = spdk_min(requested_sz, pipe->sz - read);
 
-		iovs[0].iov_base = (sz == 0) ? NULL : (pipe->buf + read);
+		iovs[0].iov_base = pipe->buf + read;
 		iovs[0].iov_len = sz;
 
 		requested_sz -= sz;
@@ -216,7 +253,11 @@ spdk_pipe_reader_advance(struct spdk_pipe *pipe, uint32_t requested_sz)
 	read = pipe->read;
 	write = pipe->write;
 
-	if (read <= write) {
+	if (requested_sz == 0) {
+		return 0;
+	}
+
+	if (read < write) {
 		if (requested_sz > (write - read)) {
 			return -EINVAL;
 		}
@@ -226,7 +267,7 @@ spdk_pipe_reader_advance(struct spdk_pipe *pipe, uint32_t requested_sz)
 		sz = spdk_min(requested_sz, pipe->sz - read);
 
 		read += sz;
-		if (read > pipe->sz - 1) {
+		if (read == pipe->sz) {
 			read = 0;
 		}
 		requested_sz -= sz;
@@ -240,7 +281,89 @@ spdk_pipe_reader_advance(struct spdk_pipe *pipe, uint32_t requested_sz)
 		}
 	}
 
+	/* We know we advanced at least one byte, so the pipe isn't full. */
+	pipe->full = false;
+
+	if (read == write) {
+		/* The pipe is empty. To re-use the same memory more frequently, jump
+		 * both pointers back to the beginning of the pipe. */
+		read = 0;
+		pipe->write = 0;
+
+		/* Additionally, release the buffer to the shared pool */
+		if (pipe->group) {
+			struct spdk_pipe_buf *buf = (struct spdk_pipe_buf *)pipe->buf;
+			buf->sz = pipe->sz;
+			SLIST_INSERT_HEAD(&pipe->group->bufs, buf, link);
+			pipe->buf = NULL;
+		}
+	}
+
 	pipe->read = read;
 
+	return 0;
+}
+
+struct spdk_pipe_group *
+spdk_pipe_group_create(void)
+{
+	struct spdk_pipe_group *group;
+
+	group = calloc(1, sizeof(*group));
+	if (!group) {
+		return NULL;
+	}
+
+	SLIST_INIT(&group->bufs);
+
+	return group;
+}
+
+void
+spdk_pipe_group_destroy(struct spdk_pipe_group *group)
+{
+	if (!SLIST_EMPTY(&group->bufs)) {
+		SPDK_ERRLOG("Destroying a pipe group that still has buffers!\n");
+		assert(false);
+	}
+
+	free(group);
+}
+
+int
+spdk_pipe_group_add(struct spdk_pipe_group *group, struct spdk_pipe *pipe)
+{
+	struct spdk_pipe_buf *buf;
+
+	assert(pipe->group == NULL);
+
+	pipe->group = group;
+	if (pipe->read != pipe->write || pipe->full) {
+		/* Pipe currently has valid data, so keep the buffer attached
+		 * to the pipe for now.  We can move it to the group's SLIST
+		 * later when it gets emptied.
+		 */
+		return 0;
+	}
+
+	buf = (struct spdk_pipe_buf *)pipe->buf;
+	buf->sz = pipe->sz;
+	SLIST_INSERT_HEAD(&group->bufs, buf, link);
+	pipe->buf = NULL;
+	return 0;
+}
+
+int
+spdk_pipe_group_remove(struct spdk_pipe_group *group, struct spdk_pipe *pipe)
+{
+	assert(pipe->group == group);
+
+	if (pipe->buf == NULL) {
+		/* Associate a buffer with the pipe before returning. */
+		pipe_alloc_buf_from_group(pipe);
+		assert(pipe->buf != NULL);
+	}
+
+	pipe->group = NULL;
 	return 0;
 }

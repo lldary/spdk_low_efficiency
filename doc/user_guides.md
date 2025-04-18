@@ -2,6 +2,7 @@
 
 - @subpage system_configuration
 - @subpage libraries
+- @subpage pkgconfig
 - @subpage app_overview
 - @subpage iscsi
 - @subpage nvmf
@@ -10,3 +11,7 @@
 - @subpage blobfs
 - @subpage jsonrpc
 - @subpage jsonrpc_proxy
+- @subpage usdt
+- @subpage nvme_multipath
+- @subpage sma
+- @subpage ublk
