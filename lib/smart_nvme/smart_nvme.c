@@ -1,6 +1,6 @@
 #include <spdk/smart_nvme.h>
 #include <spdk/nvme.h> // Include the header defining struct spdk_nvme_ctrlr
-#include <bits/time.h>
+// #include <bits/time.h>
 #include <sys/timerfd.h>
 #include <arpa/inet.h>
 #include <x86gprintrin.h>
@@ -8,9 +8,9 @@
 #include <spdk/nvme_zns.h>
 #include "queue_wrapper.h" // Include the queue wrapper header
 
-#ifndef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
+// #ifndef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
 #define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
-#endif
+// #endif
 
 #define NS_PER_S 1000000000
 #define US_PER_S 1000000
@@ -108,6 +108,7 @@ static struct spdk_plus_smart_schedule_module_opts g_smart_schedule_module_opts 
     },
     .read_alpha = 0.5,
     .write_alpha = 0.5,
+    .enable_back_ssd = true,
 };
 
 pthread_t g_control_thread; /* 控制线程 */
@@ -492,15 +493,20 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         SPDK_ERRLOG("Failed to create poll queue\n");
         goto failed;
     }
-    smart_nvme->back_poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(g_back_device.ctrlr, &opts, opts_size);
-    if (!smart_nvme->back_poll_qpair.qpair) {
-        SPDK_ERRLOG("Failed to allocate back poll qpair\n");
-        goto failed;
-    }
-    smart_nvme->back_poll_qpair.queue = create_queue();
-    if (!smart_nvme->back_poll_qpair.queue) {
-        SPDK_ERRLOG("Failed to create back poll queue\n");
-        goto failed;
+    if(g_smart_schedule_module_opts.enable_back_ssd) {
+        smart_nvme->back_poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(g_back_device.ctrlr, &opts, opts_size);
+        if (!smart_nvme->back_poll_qpair.qpair) {
+            SPDK_ERRLOG("Failed to allocate back poll qpair\n");
+            goto failed;
+        }
+        smart_nvme->back_poll_qpair.queue = create_queue();
+        if (!smart_nvme->back_poll_qpair.queue) {
+            SPDK_ERRLOG("Failed to create back poll queue\n");
+            goto failed;
+        }
+    } else {
+        smart_nvme->back_poll_qpair.qpair = NULL;
+        smart_nvme->back_poll_qpair.queue = NULL;
     }
     opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
     smart_nvme->int_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &smart_nvme->int_qpair.fd);
@@ -1119,6 +1125,7 @@ spdk_plus_get_default_opts(enum spdk_plus_smart_schedule_module_status status,
             opts->read_alpha = 0.5;
             opts->write_alpha = 0.5;
             opts->threshold_ns = 100000; /* 100us */
+            opts->enable_back_ssd = true;
             break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_POWER_SAVE:
             opts->read_sleep_rate = 0.9;
@@ -1126,6 +1133,7 @@ spdk_plus_get_default_opts(enum spdk_plus_smart_schedule_module_status status,
             opts->read_alpha = 0.5;
             opts->write_alpha = 0.5;
             opts->threshold_ns = 100000; /* 100us */
+            opts->enable_back_ssd = true;
             break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_BALANCE:
             opts->read_sleep_rate = 0.8;
@@ -1133,6 +1141,7 @@ spdk_plus_get_default_opts(enum spdk_plus_smart_schedule_module_status status,
             opts->read_alpha = 0.5;
             opts->write_alpha = 0.5;
             opts->threshold_ns = 100000; /* 100us */
+            opts->enable_back_ssd = false;
             break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_PERFORMANCE:
             opts->read_sleep_rate = 0.7;
@@ -1140,6 +1149,7 @@ spdk_plus_get_default_opts(enum spdk_plus_smart_schedule_module_status status,
             opts->read_alpha = 0.5;
             opts->write_alpha = 0.5;
             opts->threshold_ns = 100000; /* 100us */
+            opts->enable_back_ssd = false;
             break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_SUPER_PERFORMANCE:
             opts->read_sleep_rate = 0.2;
@@ -1147,6 +1157,7 @@ spdk_plus_get_default_opts(enum spdk_plus_smart_schedule_module_status status,
             opts->read_alpha = 0.5;
             opts->write_alpha = 0.5;
             opts->threshold_ns = 100000; /* 100us */
+            opts->enable_back_ssd = false;
             break;
         case SPDK_PLUS_SMART_SCHEDULE_MODULE_CUSTOM:
             SPDK_ERRLOG("Custom mode, not support\n");
@@ -1238,7 +1249,7 @@ spdk_plus_control_thread(void* arg){
     struct itimerspec ts;
     int32_t timer_fd = timerfd_create(CLOCK_MONOTONIC_RAW, TFD_NONBLOCK | TFD_CLOEXEC);
     if (timer_fd < 0) {
-        SPDK_ERRLOG("Failed to create timer fd\n");
+        ERRLOG("Failed to create timer fd: %s\n", strerror(errno));
         close(server_fd);
         return NULL;
     }
@@ -1325,7 +1336,7 @@ spdk_plus_control_thread(void* arg){
                     continue;
                 }
                 spdk_plus_change_ssd_strategy();
-                printf("Timer expired %llu times\n", (unsigned long long)expirations);
+                DEBUGLOG("Timer expired %llu times\n", (unsigned long long)expirations);
             }
         }
     }
@@ -1410,49 +1421,58 @@ int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
         SPDK_ERRLOG("Failed to detach control thread\n");
         return SPDK_PLUS_ERR;
     }
-    /* 设置后备ssd */
-    char filename[SPDK_PLUS_BUF_SIZE] = {0};
-    strncpy(filename, dev_name, sizeof(filename) - 1);
-    struct spdk_nvme_transport_id trid;
-    trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
-    char* p = strstr(filename, " ns=");
-    char* trid_info = NULL;
-    if (p != NULL) {
-        trid_info = strndup(filename, p - filename);
-    } else {
-        trid_info = strndup(filename, strlen(filename));
-    }
 
-    if (!trid_info) {
-        SPDK_ERRLOG("Failed to allocate space for trid_info\n");
-        return SPDK_PLUS_ERR;
-    }
-
-    rc = spdk_nvme_transport_id_parse(&trid, trid_info);
-    if (rc < 0) {
-        SPDK_ERRLOG("Failed to parse given str: %s\n", trid_info);
-        free(trid_info);
-        return SPDK_PLUS_ERR;
-    }
-    free(trid_info);
-
-    if (trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
-        struct spdk_pci_addr pci_addr;
-        if (spdk_pci_addr_parse(&pci_addr, trid.traddr) < 0) {
-            SPDK_ERRLOG("Invalid traddr=%s\n", trid.traddr);
+    if(g_smart_schedule_module_opts.enable_back_ssd) {
+        /* 设置后备ssd */
+        if(dev_name == NULL) {
+            ERRLOG("dev_name is NULL but back_ssd is enable\n");
             return SPDK_PLUS_ERR_INVALID;
         }
-        spdk_pci_addr_fmt(trid.traddr, sizeof(trid.traddr), &pci_addr);
-    } else {
-        SPDK_ERRLOG("Invalid transport type not supported\n");
-        return SPDK_PLUS_ERR_NOT_SUPPORTED;
-    }
+        char filename[SPDK_PLUS_BUF_SIZE] = {0};
+        strncpy(filename, dev_name, sizeof(filename) - 1);
+        struct spdk_nvme_transport_id trid;
+        trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
+        char* p = strstr(filename, " ns=");
+        char* trid_info = NULL;
+        if (p != NULL) {
+            trid_info = strndup(filename, p - filename);
+        } else {
+            trid_info = strndup(filename, strlen(filename));
+        }
 
-    if (spdk_nvme_probe(&trid, &trid, probe_cb, attach_cb, NULL) != 0) {
-        SPDK_ERRLOG("spdk_nvme_probe() failed\n");
-        return SPDK_PLUS_ERR;
+        if (!trid_info) {
+            SPDK_ERRLOG("Failed to allocate space for trid_info\n");
+            return SPDK_PLUS_ERR;
+        }
+
+        rc = spdk_nvme_transport_id_parse(&trid, trid_info);
+        if (rc < 0) {
+            SPDK_ERRLOG("Failed to parse given str: %s\n", trid_info);
+            free(trid_info);
+            return SPDK_PLUS_ERR;
+        }
+        free(trid_info);
+
+        if (trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
+            struct spdk_pci_addr pci_addr;
+            if (spdk_pci_addr_parse(&pci_addr, trid.traddr) < 0) {
+                SPDK_ERRLOG("Invalid traddr=%s\n", trid.traddr);
+                return SPDK_PLUS_ERR_INVALID;
+            }
+            spdk_pci_addr_fmt(trid.traddr, sizeof(trid.traddr), &pci_addr);
+        } else {
+            SPDK_ERRLOG("Invalid transport type not supported\n");
+            return SPDK_PLUS_ERR_NOT_SUPPORTED;
+        }
+
+        if (spdk_nvme_probe(&trid, &trid, probe_cb, attach_cb, NULL) != 0) {
+            SPDK_ERRLOG("spdk_nvme_probe() failed\n");
+            return SPDK_PLUS_ERR;
+        }
+        INFOLOG("spdk plus env init success, trid: %s\n", trid.traddr);
+    } else {
+        INFOLOG("spdk plus env init success, back ssd is off\n");
     }
-    INFOLOG("spdk plus env init success, trid: %s\n", trid.traddr);
     return SPDK_PLUS_SUCCESS;
 }
 

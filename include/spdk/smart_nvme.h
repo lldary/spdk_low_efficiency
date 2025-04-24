@@ -43,6 +43,7 @@ struct spdk_plus_smart_schedule_module_opts {
     uint64_t threshold_ns; /* 阈值 （ns） 用于区分什么时候使用用户中断指令休眠，什么是否使用内核中断指令休眠 */
     double read_alpha; /* 读操作线性加权平均的alpha值 */
     double write_alpha; /* 写操作线性加权平均的alpha值 */
+    bool enable_back_ssd; /* 是否开启后备ssd */
 };
 
 /* 根据这些跟踪大小记录平均时延 */

@@ -495,7 +495,7 @@ void set_thread_affinity(pthread_t thread, int cpu_core) {
      }
 
      printf("Initializing SPDK smart nvme env\n");
-     spdk_plus_env_init(SPDK_PLUS_SMART_SCHEDULE_MODULE_BALANCE, NULL, "trtype=PCIe traddr=0000:97:00.0");
+     spdk_plus_env_init(SPDK_PLUS_SMART_SCHEDULE_MODULE_BALANCE, NULL, NULL);
  
      printf("Initializing NVMe Controllers\n");
  
