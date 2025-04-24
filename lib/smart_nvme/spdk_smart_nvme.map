@@ -1,0 +1,18 @@
+{
+	global:
+
+	# public functions from nvme.h
+	spdk_plus_env_init;
+	spdk_plus_env_fini;
+	spdk_plus_nvme_ctrlr_alloc_io_device;
+	spdk_plus_nvme_ctrlr_free_io_qpair;
+	spdk_plus_nvme_ns_cmd_read;
+	spdk_plus_nvme_ns_cmd_readv;
+	spdk_plus_nvme_ns_cmd_write;
+	spdk_plus_nvme_ns_cmd_writev;
+	spdk_plus_nvme_ns_cmd_flush;
+	spdk_plus_nvme_zns_reset_zone;
+	spdk_plus_nvme_process_completions;
+
+	local: *;
+};
