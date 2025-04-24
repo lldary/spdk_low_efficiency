@@ -1,5 +1,10 @@
 /* 这个文档是智能调度模块对外暴露API和定义的头文件 */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #include <stdint.h>
 #include <spdk/nvme.h> /* Include SPDK NVMe header for required definitions */
 #include <spdk/spdk_plus_log.h>
@@ -149,3 +154,7 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
 
 /* 完全释放qpair */
 int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device);
+
+#ifdef __cplusplus
+}
+#endif
