@@ -1336,7 +1336,7 @@ spdk_plus_control_thread(void* arg){
                     continue;
                 }
                 spdk_plus_change_ssd_strategy();
-                DEBUGLOG("Timer expired %llu times\n", (unsigned long long)expirations);
+                // DEBUGLOG("Timer expired %llu times\n", (unsigned long long)expirations);
             }
         }
     }
