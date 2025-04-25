@@ -101,6 +101,9 @@ struct spdk_plus_smart_nvme {
     TAILQ_ENTRY(spdk_plus_smart_nvme)	link;
 };
 
+struct io_task; // 不暴露结构体定义
+void *spdk_plus_get_cb_arg(const void *task);
+
 /* 系统整体初始化 */
 int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
     struct spdk_plus_smart_schedule_module_opts *opts, const char* dev_name);

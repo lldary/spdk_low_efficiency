@@ -2,6 +2,7 @@
 	global:
 
 	# public functions from nvme.h
+	spdk_plus_get_cb_arg;
 	spdk_plus_env_init;
 	spdk_plus_env_fini;
 	spdk_plus_nvme_ctrlr_alloc_io_device;

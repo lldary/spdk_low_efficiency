@@ -66,7 +66,7 @@ struct io_task {
     struct spdk_plus_smart_nvme *nvme_device; /* NVMe设备 */
     spdk_nvme_cmd_cb cb_fn; /* 回调函数 */
     struct timespec start_time;
-    void *t;
+    void *cb_arg;
 };
 
 struct spdk_plus_nvme_thread {
@@ -126,6 +126,7 @@ uint32_t lba_size = 0;
 bool g_spdk_plus_exit = false;
 struct spdk_plus_smart_nvme g_back_device; /* NVMe设备 */
 static uint32_t nvme_ctrlr_keep_alive_timeout_in_ms = 10000;
+static uint32_t tmp_core = 0;
 
 void spdk_plus_switch_thread(struct spdk_plus_nvme_thread *from, struct spdk_plus_nvme_thread *to);
 
@@ -446,6 +447,9 @@ nvme_prepare_uintr_env(void) {
     DEBUGLOG("试运行成功\n");
 }
 
+void* spdk_plus_get_cb_arg(const void *task) {
+    return ((const struct io_task*)task)->cb_arg;
+}
 
 struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nvme_ctrlr *ctrlr,
     const struct spdk_nvme_io_qpair_opts *user_opts,
@@ -453,10 +457,11 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     struct spdk_plus_smart_nvme *smart_nvme = NULL;
     struct spdk_nvme_io_qpair_opts opts;
 
-    // if (ctrlr->opts.enable_interrupts) {
-    //     SPDK_ERRLOG("Interrupts are enabled, cannot allocate I/O device\n");
-    //     goto failed;
-    // }
+    /* 设置线程亲和性 */
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(tmp_core++, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 
     smart_nvme = calloc(1, sizeof(struct spdk_plus_smart_nvme));
     if (!smart_nvme) {
@@ -550,7 +555,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     }
     int uipi_index = uintr_register_sender(smart_nvme->uintr_qpair.fd, 0);
     if(uipi_index < 0) {
-        SPDK_ERRLOG("Unable to register sender\n");
+        ERRLOG("Unable to register sender fd=%d rc=%d\n", smart_nvme->uintr_qpair.fd, uipi_index);
         goto failed;
     }
     g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
@@ -687,7 +692,9 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion) {
         return;
     }
     
-    task->cb_fn(task->t, completion);
+    if(task->cb_fn) {
+        task->cb_fn(task->cb_arg, completion);
+    }
     free(task);
     return;
 }
@@ -748,7 +755,7 @@ spdk_plus_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme 
     task->io_size = nvme_get_statistical_io_size(lba_count);
     task->nvme_device = nvme_device;
     clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
-    task->t = cb_arg;
+    task->cb_arg = cb_arg;
     
     qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_READ);
     if (!qpair) {
@@ -789,7 +796,7 @@ int spdk_plus_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_plus_smart_
     task->io_size = nvme_get_statistical_io_size(lba_count);
     task->nvme_device = nvme_device;
     clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
-    task->t = cb_arg;
+    task->cb_arg = cb_arg;
     
     qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_READ);
     if (!qpair) {
@@ -832,7 +839,7 @@ spdk_plus_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme
     task->io_size = nvme_get_statistical_io_size(lba_count);
     task->nvme_device = nvme_device;
     clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
-    task->t = cb_arg;
+    task->cb_arg = cb_arg;
 
     qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_WRITE);
     if (!qpair) {
@@ -875,7 +882,7 @@ int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart
     task->io_size = nvme_get_statistical_io_size(lba_count);
     task->nvme_device = nvme_device;
     clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
-    task->t = cb_arg;
+    task->cb_arg = cb_arg;
 
     qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_WRITE);
     if (!qpair) {
@@ -889,6 +896,7 @@ int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart
         reset_sgl_fn, next_sge_fn);
     if(rc < 0)
         ERRLOG("spdk_nvme_ns_cmd_writev failed rc = %d\n", rc);
+    printf("spdk_nvme_ns_cmd_writev rc = %d\n", rc);
     update_stat(lba_count, nvme_device, SPDK_PLUS_WRITE);
     return rc;
 
@@ -1092,7 +1100,7 @@ int spdk_plus_nvme_ns_cmd_flush(struct spdk_nvme_ns *ns, struct spdk_plus_smart_
     task->io_size = SPDK_PLUS_MONITOR_FLUSH;
     task->nvme_device = nvme_device;
     clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
-    task->t = cb_arg;
+    task->cb_arg = cb_arg;
 
     qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_FLUSH);
     if (!qpair) {
@@ -1493,7 +1501,7 @@ int spdk_plus_nvme_zns_reset_zone(struct spdk_nvme_ns *ns, struct spdk_plus_smar
     task->io_size = SPDK_PLUS_MONITOR_FLUSH;
     task->nvme_device = nvme_device;
     clock_gettime(CLOCK_MONOTONIC_RAW, &task->start_time);
-    task->t = cb_arg;
+    task->cb_arg = cb_arg;
 
     qpair = nvme_get_suitable_io_qpair(nvme_device, task, SPDK_PLUS_FLUSH);
     if (!qpair) {
