@@ -114,7 +114,7 @@ int spdk_plus_env_fini(void);
 /* 注册IO接口 —— 注意调用的时候必须已经到了固定的核心，否则用户中断可能出现问题 */
 struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nvme_ctrlr *ctrlr,
 			       const struct spdk_nvme_io_qpair_opts *user_opts,
-			       size_t opts_size);
+			       size_t opts_size, int* rc);
 
 
 /* 读写IO接口 */

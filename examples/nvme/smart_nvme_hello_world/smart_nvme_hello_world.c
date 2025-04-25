@@ -199,7 +199,8 @@
           *  qpair.  This enables extremely efficient I/O processing by making all
           *  I/O operations completely lockless.
           */
-        ns_entry->nvme_dev = spdk_plus_nvme_ctrlr_alloc_io_device(ns_entry->ctrlr, NULL, 0);
+        int rc = 0;
+        ns_entry->nvme_dev = spdk_plus_nvme_ctrlr_alloc_io_device(ns_entry->ctrlr, NULL, 0, &rc);
          if (ns_entry->nvme_dev == NULL) {
              printf("ERROR: spdk_nvme_ctrlr_alloc_io_qpair() failed\n");
              return;
