@@ -454,6 +454,7 @@ void* spdk_plus_get_cb_arg(const void *task) {
 struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nvme_ctrlr *ctrlr,
     const struct spdk_nvme_io_qpair_opts *user_opts,
     size_t opts_size){
+    DEBUGLOG("正在创建一个新的队列\n");
     struct spdk_plus_smart_nvme *smart_nvme = NULL;
     struct spdk_nvme_io_qpair_opts opts;
 
@@ -558,6 +559,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         ERRLOG("Unable to register sender fd=%d rc=%d\n", smart_nvme->uintr_qpair.fd, uipi_index);
         goto failed;
     }
+    smart_nvme->uintr_qpair.uipi_index = uipi_index;
     g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
     DEBUGLOG("uipi_index: %d\n", uipi_index);
     _senduipi(uipi_index);
@@ -735,6 +737,13 @@ static void update_stat(uint32_t lba_count, struct spdk_plus_smart_nvme *nvme_de
     }
 }
 
+static inline void update_uipi_stat(const struct spdk_plus_smart_nvme *nvme_device) {
+    if(g_cpuid_uipi_map[nvme_device->cpu_id] == 0) {
+        g_cpuid_uipi_map[nvme_device->cpu_id] = nvme_device->uintr_qpair.uipi_index;
+    }
+    return;
+}
+
 int
 spdk_plus_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device, void *buffer,
 		      uint64_t lba,
@@ -743,6 +752,8 @@ spdk_plus_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme 
                 struct spdk_nvme_qpair *qpair = NULL;
     struct io_task *task = NULL;
     int rc;
+
+    update_uipi_stat(nvme_device);
 
     task = calloc(1, sizeof(struct io_task));
     if (!task) {
@@ -784,6 +795,8 @@ int spdk_plus_nvme_ns_cmd_readv(struct spdk_nvme_ns *ns, struct spdk_plus_smart_
     struct spdk_nvme_qpair *qpair = NULL;
     struct io_task *task = NULL;
     int rc;
+
+    update_uipi_stat(nvme_device);
 
     task = calloc(1, sizeof(struct io_task));
     if (!task) {
@@ -828,6 +841,8 @@ spdk_plus_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme
     struct io_task *task = NULL;
     int rc;
 
+    update_uipi_stat(nvme_device);
+
     task = calloc(1, sizeof(struct io_task));
     if (!task) {
         SPDK_ERRLOG("Failed to allocate memory for task\n");
@@ -871,6 +886,8 @@ int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart
     struct io_task *task = NULL;
     int rc;
 
+    update_uipi_stat(nvme_device);
+
     task = calloc(1, sizeof(struct io_task));
     if (!task) {
         SPDK_ERRLOG("Failed to allocate memory for task\n");
@@ -896,7 +913,6 @@ int spdk_plus_nvme_ns_cmd_writev(struct spdk_nvme_ns *ns, struct spdk_plus_smart
         reset_sgl_fn, next_sge_fn);
     if(rc < 0)
         ERRLOG("spdk_nvme_ns_cmd_writev failed rc = %d\n", rc);
-    printf("spdk_nvme_ns_cmd_writev rc = %d\n", rc);
     update_stat(lba_count, nvme_device, SPDK_PLUS_WRITE);
     return rc;
 
@@ -948,6 +964,9 @@ int32_t nvme_process_completions_poll(struct spdk_plus_smart_nvme *nvme_device,
 int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_device,
     uint32_t max_completions) {
     int32_t rc = 0;
+
+    update_uipi_stat(nvme_device);
+
     if (!queue_empty(nvme_device->poll_qpair.queue)) { // 轮询所在的qpair有未完成命令
         switch(g_smart_schedule_module_opts.status) {
             case SPDK_PLUS_SMART_SCHEDULE_MODULE_SUPER_PERFORMANCE: /* 和轮询模式形态一致 */
@@ -1089,6 +1108,9 @@ int spdk_plus_nvme_ns_cmd_flush(struct spdk_nvme_ns *ns, struct spdk_plus_smart_
     struct spdk_nvme_qpair *qpair = NULL;
     struct io_task *task = NULL;
     int rc;
+
+    update_uipi_stat(nvme_device);
+
     task = calloc(1, sizeof(struct io_task));
     if (!task) {
         SPDK_ERRLOG("Failed to allocate memory for task\n");
@@ -1553,6 +1575,10 @@ int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
             goto failed;
         }
         destroy_queue(nvme_device->uintr_qpair.queue);
+        uintr_unregister_sender(nvme_device->uintr_qpair.uipi_index, 0);
+        if(g_cpuid_uipi_map[nvme_device->cpu_id] == nvme_device->uintr_qpair.uipi_index) {
+            g_cpuid_uipi_map[nvme_device->cpu_id] = 0;
+        }
     }
     if (nvme_device->back_poll_qpair.qpair) {
         rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->back_poll_qpair.qpair);
