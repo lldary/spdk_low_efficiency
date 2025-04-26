@@ -60,6 +60,7 @@ enum spdk_plus_nvme_control_cmd
 // TODO: 硬盘功耗控制
 // TODO: 后备写还没有做
 // TODO: 回写也也没有做
+// TODO: 中断聚合等操作如何利用
 
 struct io_task
 {
@@ -125,6 +126,7 @@ static struct spdk_log_opts g_log_opts = {
     .open = NULL,
     .close = NULL,
     .user_ctx = NULL,
+    .size = sizeof(struct spdk_log_opts),
 };
 
 static const char *const spdk_level_names[] = {
@@ -174,28 +176,6 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
     }
 }
 
-// __attribute__((noinline)) void spdk_plus_switch_thread(struct spdk_plus_nvme_thread *from, struct spdk_plus_nvme_thread *to)
-// {
-//     asm volatile(
-//         "push %%rbx\n\t"
-//         "push %%rbp\n\t"
-//         "push %%r12\n\t"
-//         "push %%r13\n\t"
-//         "push %%r14\n\t"
-//         "push %%r15\n\t"
-//         "mov %%rsp , %0\n\t"
-//         "mov %1 , %%rsp\n\t"
-//         "pop %%r15\n\t"
-//         "pop %%r14\n\t"
-//         "pop %%r13\n\t"
-//         "pop %%r12\n\t"
-//         "pop %%rbp\n\t"
-//         "pop %%rbx\n\t"
-//         : "=m"(from->rsp) // 正确存储 from->rsp
-//         : "m"(to->rsp)    // 正确加载 to->rsp 和 to->rip
-//     );
-// }
-
 static void
 get_timestamp_prefix(char *buf, int buf_size)
 {
@@ -229,6 +209,7 @@ static void spdk_plus_vlog(enum spdk_log_level level, const char *file, const in
     if (fp == NULL)
     {
         perror("Failed to open log file");
+        pthread_mutex_unlock(&log_mutex);
         return;
     }
 
@@ -273,7 +254,7 @@ static void spdk_plus_idle_thread_func(void)
     );
 
     {
-        printf("%lx %lx\n", g_work_thread[cpu_id]->rsp, *(uint64_t*)(g_work_thread[cpu_id]->rsp+0x30));
+        printf("%lx %lx\n", g_work_thread[cpu_id]->rsp, *(uint64_t *)(g_work_thread[cpu_id]->rsp + 0x30));
         spdk_plus_switch_thread(g_idle_thread[cpu_id], g_work_thread[cpu_id]);
         g_curr_thread[cpu_id] = g_idle_thread[cpu_id];
     }
@@ -889,6 +870,14 @@ failed:
         if (smart_nvme->int_qpair.fd >= 0)
         {
             close(smart_nvme->int_qpair.fd);
+        }
+        if (smart_nvme->uintr_qpair.fd >= 0)
+        {
+            if (smart_nvme->uintr_qpair.uipi_index > 0)
+            {
+                uintr_unregister_sender(smart_nvme->uintr_qpair.uipi_index, 0);
+            }
+            close(smart_nvme->uintr_qpair.fd);
         }
         if (smart_nvme->fd > 0)
         {
@@ -1783,6 +1772,18 @@ static void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
     }
 }
 
+static void dpdk_log_open_ext(const char *file_path)
+{
+    FILE *fp = fopen(file_path, "a+");
+    if (fp == NULL)
+    {
+        ERRLOG("Failed to open log file");
+        return;
+    }
+    rte_openlog_stream(fp);
+    return;
+}
+
 int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
                        struct spdk_plus_smart_schedule_module_opts *opts, const char *dev_name)
 {
@@ -1792,6 +1793,7 @@ int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
     }
     /* 日志初始化 */
     spdk_log_open_ext(&g_log_opts);
+    dpdk_log_open_ext("/home/led/workspace/dpdk_plus_log.log");
     // 初始化互斥锁
     if (pthread_mutex_init(&meta_mutex, NULL) != 0)
     {
@@ -1998,6 +2000,15 @@ int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
         if (rc != 0)
         {
             SPDK_ERRLOG("Failed to close int qpair fd\n");
+            goto failed;
+        }
+    }
+    if (nvme_device->uintr_qpair.fd >= 0)
+    {
+        rc = close(nvme_device->uintr_qpair.fd);
+        if (rc != 0)
+        {
+            SPDK_ERRLOG("Failed to close uintr qpair fd\n");
             goto failed;
         }
     }
