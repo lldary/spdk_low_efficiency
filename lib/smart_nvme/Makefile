@@ -6,6 +6,8 @@ SO_MINOR := 0
 
 C_SRCS = smart_nvme.c queue_wrapper.c power-scheduler.c
 
+AS_SRCS = switch_thread.S
+
 LIBNAME = smart_nvme
 
 CFLAGS += -Wpointer-arith -muintr

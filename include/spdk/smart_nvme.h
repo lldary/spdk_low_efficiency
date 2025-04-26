@@ -19,6 +19,10 @@ enum spdk_plus_errno {
     SPDK_PLUS_ERR_NOT_FOUND = -6, /* 找不到 */
     SPDK_PLUS_ERR_EXIST = -7, /* 已存在 */
     SPDK_PLUS_ERR_NOT_SUPPORTED = -8, /* 不支持 */
+    SPDK_PLUS_ERR_KERNEL_API_FAILED = -9, /* 内核API失败 */
+    SPDK_PLUS_ERR_SPDK_API_FAILED = -10, /* SPDK API失败 */
+    SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED = -11, /* SPDK PLUS API失败 */
+    SPDK_PLUS_ERR_SYS_API_FAILED = -12, /* 系统API失败 特指c基础组件库 */
 };
 
 /* 这个是用于用户设置模块调度总体行为的 */
@@ -74,7 +78,7 @@ typedef void* QueueHandle;
 struct spdk_plus_nvme_qpair {
     struct spdk_nvme_qpair* qpair; /* NVMe队列对 */
     int32_t fd; /* NVMe队列对的文件描述符 只有中断模式才需要 */
-    int32_t uipi_index; /* NVMe队列对应的uipiindex 只有用户中断模式才需要 */
+    uint32_t uipi_index; /* NVMe队列对应的uipiindex 只有用户中断模式才需要 */
     QueueHandle queue; /* 当前队列时间管理队列 用于中断轮询 */
 };
 
