@@ -1203,19 +1203,16 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 
 static int nvme_pcie_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, uint16_t flag)
 {
-	SPDK_ERRLOG("[ DEBUG ] nvme_pcie_ctrlr_alloc_msix\n");
 	// TODO: 不允许MSIX解决方案
 	struct spdk_pci_device *pci_dev = nvme_ctrlr_proc_get_devhandle(ctrlr);
 #ifdef SPDK_CONFIG_UINTR_MODE
 	if (flag & SPDK_PLUS_UINTR_MODE)
 	{
 		spdk_pci_device_enable_interrupts_uintr(pci_dev, index);
-		SPDK_ERRLOG("[ DEBUG ] SPDK_PLUS_UINTR_MODE\n");
 	}
 	else if (flag & SPDK_PLUS_INTERRUPT_MODE)
 	{
 		spdk_pci_device_enable_spec_interrupts(pci_dev, index);
-		SPDK_ERRLOG("[ DEBUG ] SPDK_PLUS_INTERRUPT_MODE\n");
 	}
 	else
 	{
@@ -1223,7 +1220,6 @@ static int nvme_pcie_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t in
 		return -EINVAL;
 	}
 #else
-	// spdk_pci_device_enable_interrupts(pci_dev, index+1);
 	SPDK_ERRLOG("错误，除非支持用户中断，否则不应该调用该函数\n");
 	exit(1);
 #endif
@@ -1238,19 +1234,17 @@ static void *spdk_plus_pci_get_msix_table(struct spdk_pci_device *pci_dev)
 
 static int nvme_pcie_ctrlr_control_msix_enable(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, bool enable)
 {
-	SPDK_ERRLOG("[ DEBUG ] nvme_pcie_ctrlr_control_msix_enable\n");
 	struct spdk_pci_device *pci_dev = nvme_ctrlr_proc_get_devhandle(ctrlr);
 #ifdef SPDK_CONFIG_UINTR_MODE
 	if (spdk_pci_device_get_interrupt_efd_by_index(pci_dev, index) < 0)
 	{
-		SPDK_ERRLOG("错误，未分配中断\n");
+		SPDK_ERRLOG("未分配中断\n");
 		return -EINVAL;
 	}
-	SPDK_ERRLOG("spdk_pci_device_control_spec_interrupt\n");
 	int ret = spdk_pci_device_control_spec_interrupt(pci_dev, index, enable);
 	if (ret < 0)
 	{
-		SPDK_ERRLOG("spdk_pci_device_control_spec_interrupt失败\n");
+		SPDK_ERRLOG("设置中断失败\n");
 		return ret;
 	}
 #else

@@ -712,13 +712,7 @@ int spdk_nvme_ctrlr_control_io_qpair_interrupt(struct spdk_nvme_qpair *qpair,
 		return -EINVAL;
 	}
 
-	// if (nvme_qpair_get_state(qpair) != NVME_QPAIR_CONNECTED)
-	// {
-	// 	return -ENOTCONN;
-	// }
-
 	nvme_ctrlr_lock(ctrlr);
-	SPDK_ERRLOG("[ DEBUG ] mask = %d\n", mask);
 	rc = nvme_transport_ctrlr_control_msix_enable(ctrlr, qpair->id, mask);
 	nvme_ctrlr_unlock(ctrlr);
 
