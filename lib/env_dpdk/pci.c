@@ -14,10 +14,10 @@
 #include "spdk/string.h"
 #include "spdk/memory.h"
 
-#define SYSFS_PCI_DRIVERS	"/sys/bus/pci/drivers"
+#define SYSFS_PCI_DRIVERS "/sys/bus/pci/drivers"
 
-#define PCI_CFG_SIZE		256
-#define PCI_EXT_CAP_ID_SN	0x03
+#define PCI_CFG_SIZE 256
+#define PCI_EXT_CAP_ID_SN 0x03
 
 /* DPDK 18.11+ hotplug isn't robust. Multiple apps starting at the same time
  * might cause the internal IPC to misbehave. Just retry in such case.
@@ -37,11 +37,13 @@ static TAILQ_HEAD(, spdk_pci_device_provider) g_pci_device_providers =
 int pci_device_init(struct rte_pci_driver *driver, struct rte_pci_device *device);
 int pci_device_fini(struct rte_pci_device *device);
 
-struct env_devargs {
-	struct rte_bus	*bus;
-	char		name[128];
-	uint64_t	allowed_at;
-	TAILQ_ENTRY(env_devargs) link;
+struct env_devargs
+{
+	struct rte_bus *bus;
+	char name[128];
+	uint64_t allowed_at;
+	TAILQ_ENTRY(env_devargs)
+	link;
 };
 static TAILQ_HEAD(, env_devargs) g_env_devargs = TAILQ_HEAD_INITIALIZER(g_env_devargs);
 
@@ -50,8 +52,10 @@ find_env_devargs(struct rte_bus *bus, const char *name)
 {
 	struct env_devargs *da;
 
-	TAILQ_FOREACH(da, &g_env_devargs, link) {
-		if (bus == da->bus && !strcmp(name, da->name)) {
+	TAILQ_FOREACH(da, &g_env_devargs, link)
+	{
+		if (bus == da->bus && !strcmp(name, da->name))
+		{
 			return da;
 		}
 	}
@@ -61,7 +65,7 @@ find_env_devargs(struct rte_bus *bus, const char *name)
 
 static int
 map_bar_rte(struct spdk_pci_device *device, uint32_t bar,
-	    void **mapped_addr, uint64_t *phys_addr, uint64_t *size)
+			void **mapped_addr, uint64_t *phys_addr, uint64_t *size)
 {
 	struct rte_mem_resource *res;
 
@@ -98,7 +102,8 @@ remove_rte_dev(struct rte_pci_device *rte_dev)
 	int i = 0, rc;
 
 	snprintf(bdf, sizeof(bdf), "%s", dpdk_pci_device_get_name(rte_dev));
-	do {
+	do
+	{
 		rc = rte_eal_hotplug_remove("pci", bdf);
 	} while (rc == -ENOMSG && ++i <= DPDK_HOTPLUG_RETRY_COUNT);
 }
@@ -123,7 +128,8 @@ detach_rte(struct spdk_pci_device *dev)
 	int i;
 	bool removed;
 
-	if (!spdk_process_is_primary()) {
+	if (!spdk_process_is_primary())
+	{
 		return;
 	}
 
@@ -136,14 +142,16 @@ detach_rte(struct spdk_pci_device *dev)
 	rte_eal_alarm_set(1, detach_rte_cb, rte_dev);
 
 	/* wait up to 2s for the cb to execute */
-	for (i = 2000; i > 0; i--) {
+	for (i = 2000; i > 0; i--)
+	{
 
 		spdk_delay_us(1000);
 		pthread_mutex_lock(&g_pci_mutex);
 		removed = dev->internal.removed;
 		pthread_mutex_unlock(&g_pci_mutex);
 
-		if (removed) {
+		if (removed)
+		{
 			break;
 		}
 	}
@@ -162,21 +170,22 @@ detach_rte(struct spdk_pci_device *dev)
 	pthread_mutex_lock(&g_pci_mutex);
 	removed = dev->internal.removed;
 	pthread_mutex_unlock(&g_pci_mutex);
-	if (!removed) {
+	if (!removed)
+	{
 		SPDK_ERRLOG("Timeout waiting for DPDK to remove PCI device %s.\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		/* If we reach this state, then the device couldn't be removed and most likely
 		   a subsequent hot add of a device in the same BDF will fail */
 	}
 }
 
-void
-spdk_pci_driver_register(const char *name, struct spdk_pci_id *id_table, uint32_t flags)
+void spdk_pci_driver_register(const char *name, struct spdk_pci_id *id_table, uint32_t flags)
 {
 	struct spdk_pci_driver *driver;
 
 	driver = calloc(1, sizeof(*driver));
-	if (!driver) {
+	if (!driver)
+	{
 		/* we can't do any better than bailing atm */
 		return;
 	}
@@ -199,8 +208,10 @@ spdk_pci_get_driver(const char *name)
 {
 	struct spdk_pci_driver *driver;
 
-	TAILQ_FOREACH(driver, &g_pci_drivers, tailq) {
-		if (strcmp(driver->name, name) == 0) {
+	TAILQ_FOREACH(driver, &g_pci_drivers, tailq)
+	{
+		if (strcmp(driver->name, name) == 0)
+		{
 			return driver;
 		}
 	}
@@ -210,34 +221,39 @@ spdk_pci_get_driver(const char *name)
 
 static void
 pci_device_rte_dev_event(const char *device_name,
-			 enum rte_dev_event_type event,
-			 void *cb_arg)
+						 enum rte_dev_event_type event,
+						 void *cb_arg)
 {
 	struct spdk_pci_device *dev;
 	bool can_detach = false;
 
-	switch (event) {
+	switch (event)
+	{
 	default:
 	case RTE_DEV_EVENT_ADD:
 		/* Nothing to do here yet. */
 		break;
 	case RTE_DEV_EVENT_REMOVE:
 		pthread_mutex_lock(&g_pci_mutex);
-		TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
+		TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq)
+		{
 			struct rte_pci_device *rte_dev = dev->dev_handle;
 
-			if (strcmp(dpdk_pci_device_get_name(rte_dev), device_name)) {
+			if (strcmp(dpdk_pci_device_get_name(rte_dev), device_name))
+			{
 				continue;
 			}
 
 			/* Note: these ERRLOGs are useful for triaging issue #2983. */
-			if (dev->internal.pending_removal || dev->internal.removed) {
+			if (dev->internal.pending_removal || dev->internal.removed)
+			{
 				SPDK_ERRLOG("Received event for device SPDK already tried to remove\n");
 				SPDK_ERRLOG("pending_removal=%d removed=%d\n", dev->internal.pending_removal,
-					    dev->internal.removed);
+							dev->internal.removed);
 			}
 
-			if (!dev->internal.pending_removal) {
+			if (!dev->internal.pending_removal)
+			{
 				can_detach = !dev->internal.attached;
 				/* prevent any further attaches */
 				dev->internal.pending_removal = true;
@@ -246,7 +262,8 @@ pci_device_rte_dev_event(const char *device_name,
 		}
 		pthread_mutex_unlock(&g_pci_mutex);
 
-		if (can_detach) {
+		if (can_detach)
+		{
 			/* if device is not attached we can remove it right away.
 			 * Otherwise it will be removed at detach.
 			 *
@@ -272,8 +289,10 @@ cleanup_pci_devices(void)
 
 	pthread_mutex_lock(&g_pci_mutex);
 	/* cleanup removed devices */
-	TAILQ_FOREACH_SAFE(dev, &g_pci_devices, internal.tailq, tmp) {
-		if (!dev->internal.removed) {
+	TAILQ_FOREACH_SAFE(dev, &g_pci_devices, internal.tailq, tmp)
+	{
+		if (!dev->internal.removed)
+		{
 			continue;
 		}
 
@@ -283,7 +302,8 @@ cleanup_pci_devices(void)
 	}
 
 	/* add newly-attached devices */
-	TAILQ_FOREACH_SAFE(dev, &g_pci_hotplugged_devices, internal.tailq, tmp) {
+	TAILQ_FOREACH_SAFE(dev, &g_pci_hotplugged_devices, internal.tailq, tmp)
+	{
 		TAILQ_REMOVE(&g_pci_hotplugged_devices, dev, internal.tailq);
 		TAILQ_INSERT_TAIL(&g_pci_devices, dev, internal.tailq);
 		vtophys_pci_device_added(dev->dev_handle);
@@ -303,23 +323,25 @@ _pci_env_init(void)
 	scan_pci_bus(false);
 
 	/* Register a single hotremove callback for all devices. */
-	if (spdk_process_is_primary()) {
+	if (spdk_process_is_primary())
+	{
 		rte_dev_event_callback_register(NULL, pci_device_rte_dev_event, NULL);
 	}
 }
 
-int
-pci_env_init(void)
+int pci_env_init(void)
 {
 	struct spdk_pci_driver *driver;
 	int rc;
 
 	rc = dpdk_pci_init();
-	if (rc) {
+	if (rc)
+	{
 		return rc;
 	}
 
-	TAILQ_FOREACH(driver, &g_pci_drivers, tailq) {
+	TAILQ_FOREACH(driver, &g_pci_drivers, tailq)
+	{
 		dpdk_pci_driver_register(driver, pci_device_init, pci_device_fini);
 	}
 
@@ -327,8 +349,7 @@ pci_env_init(void)
 	return 0;
 }
 
-void
-pci_env_reinit(void)
+void pci_env_reinit(void)
 {
 	/* There is no need to register pci drivers again, since they were
 	 * already pre-registered in pci_env_init.
@@ -337,28 +358,29 @@ pci_env_reinit(void)
 	_pci_env_init();
 }
 
-void
-pci_env_fini(void)
+void pci_env_fini(void)
 {
 	struct spdk_pci_device *dev;
 	char bdf[32];
 
 	cleanup_pci_devices();
-	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
-		if (dev->internal.attached) {
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq)
+	{
+		if (dev->internal.attached)
+		{
 			spdk_pci_addr_fmt(bdf, sizeof(bdf), &dev->addr);
 			SPDK_ERRLOG("Device %s is still attached at shutdown!\n", bdf);
 		}
 	}
 
-	if (spdk_process_is_primary()) {
+	if (spdk_process_is_primary())
+	{
 		rte_dev_event_callback_unregister(NULL, pci_device_rte_dev_event, NULL);
 	}
 }
 
-int
-pci_device_init(struct rte_pci_driver *_drv,
-		struct rte_pci_device *_dev)
+int pci_device_init(struct rte_pci_driver *_drv,
+					struct rte_pci_device *_dev)
 {
 	struct spdk_pci_driver *driver = (struct spdk_pci_driver *)_drv;
 	struct spdk_pci_device *dev;
@@ -367,7 +389,8 @@ pci_device_init(struct rte_pci_driver *_drv,
 	int rc;
 
 	dev = calloc(1, sizeof(*dev));
-	if (dev == NULL) {
+	if (dev == NULL)
+	{
 		return -1;
 	}
 
@@ -397,9 +420,11 @@ pci_device_init(struct rte_pci_driver *_drv,
 	dev->internal.driver = driver;
 	dev->internal.claim_fd = -1;
 
-	if (driver->cb_fn != NULL) {
+	if (driver->cb_fn != NULL)
+	{
 		rc = driver->cb_fn(driver->cb_arg, dev);
-		if (rc != 0) {
+		if (rc != 0)
+		{
 			free(dev);
 			return rc;
 		}
@@ -418,9 +443,11 @@ set_allowed_at(struct rte_devargs *rte_da, uint64_t tsc)
 	struct env_devargs *env_da;
 
 	env_da = find_env_devargs(rte_da->bus, rte_da->name);
-	if (env_da == NULL) {
+	if (env_da == NULL)
+	{
 		env_da = calloc(1, sizeof(*env_da));
-		if (env_da == NULL) {
+		if (env_da == NULL)
+		{
 			SPDK_ERRLOG("could not set_allowed_at for device %s\n", rte_da->name);
 			return;
 		}
@@ -438,33 +465,39 @@ get_allowed_at(struct rte_devargs *rte_da)
 	struct env_devargs *env_da;
 
 	env_da = find_env_devargs(rte_da->bus, rte_da->name);
-	if (env_da) {
+	if (env_da)
+	{
 		return env_da->allowed_at;
-	} else {
+	}
+	else
+	{
 		return 0;
 	}
 }
 
-int
-pci_device_fini(struct rte_pci_device *_dev)
+int pci_device_fini(struct rte_pci_device *_dev)
 {
 	struct spdk_pci_device *dev;
 
 	pthread_mutex_lock(&g_pci_mutex);
-	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
-		if (dev->dev_handle == _dev) {
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq)
+	{
+		if (dev->dev_handle == _dev)
+		{
 			break;
 		}
 	}
 
-	if (dev == NULL || dev->internal.attached) {
+	if (dev == NULL || dev->internal.attached)
+	{
 		/* The device might be still referenced somewhere in SPDK. */
 		pthread_mutex_unlock(&g_pci_mutex);
 		return -EBUSY;
 	}
 
 	/* remove our allowed_at option */
-	if (dpdk_pci_device_get_devargs(_dev)) {
+	if (dpdk_pci_device_get_devargs(_dev))
+	{
 		set_allowed_at(dpdk_pci_device_get_devargs(_dev), 0);
 	}
 
@@ -477,22 +510,23 @@ pci_device_fini(struct rte_pci_device *_dev)
 	dev->internal.removed = true;
 	pthread_mutex_unlock(&g_pci_mutex);
 	return 0;
-
 }
 
-void
-spdk_pci_device_detach(struct spdk_pci_device *dev)
+void spdk_pci_device_detach(struct spdk_pci_device *dev)
 {
 	struct spdk_pci_device_provider *provider;
 
 	assert(dev->internal.attached);
 
-	if (dev->internal.claim_fd >= 0) {
+	if (dev->internal.claim_fd >= 0)
+	{
 		spdk_pci_device_unclaim(dev);
 	}
 
-	TAILQ_FOREACH(provider, &g_pci_device_providers, tailq) {
-		if (strcmp(dev->type, provider->name) == 0) {
+	TAILQ_FOREACH(provider, &g_pci_device_providers, tailq)
+	{
+		if (strcmp(dev->type, provider->name) == 0)
+		{
 			break;
 		}
 	}
@@ -514,25 +548,30 @@ scan_pci_bus(bool delay_init)
 	dpdk_bus_scan();
 	now = spdk_get_ticks();
 
-	if (!TAILQ_FIRST(&g_pci_drivers)) {
+	if (!TAILQ_FIRST(&g_pci_drivers))
+	{
 		return 0;
 	}
 
-	RTE_DEV_FOREACH(rte_dev, "bus=pci", &it) {
+	RTE_DEV_FOREACH(rte_dev, "bus=pci", &it)
+	{
 		struct rte_devargs *da;
 
 		da = dpdk_device_get_devargs(rte_dev);
-		if (!da) {
+		if (!da)
+		{
 			char devargs_str[128];
 
 			/* the device was never blocked or allowed */
 			da = calloc(1, sizeof(*da));
-			if (!da) {
+			if (!da)
+			{
 				return -1;
 			}
 
 			snprintf(devargs_str, sizeof(devargs_str), "pci:%s", dpdk_device_get_name(rte_dev));
-			if (rte_devargs_parse(da, devargs_str) != 0) {
+			if (rte_devargs_parse(da, devargs_str) != 0)
+			{
 				free(da);
 				return -1;
 			}
@@ -541,21 +580,28 @@ scan_pci_bus(bool delay_init)
 			dpdk_device_set_devargs(rte_dev, da);
 		}
 
-		if (get_allowed_at(da)) {
+		if (get_allowed_at(da))
+		{
 			uint64_t allowed_at = get_allowed_at(da);
 
 			/* this device was seen by spdk before... */
-			if (da->policy == RTE_DEV_BLOCKED && allowed_at <= now) {
+			if (da->policy == RTE_DEV_BLOCKED && allowed_at <= now)
+			{
 				da->policy = RTE_DEV_ALLOWED;
 			}
-		} else if ((dpdk_device_scan_allowed(rte_dev) && da->policy == RTE_DEV_ALLOWED) ||
-			   da->policy != RTE_DEV_BLOCKED) {
+		}
+		else if ((dpdk_device_scan_allowed(rte_dev) && da->policy == RTE_DEV_ALLOWED) ||
+				 da->policy != RTE_DEV_BLOCKED)
+		{
 			/* override the policy only if not permanently blocked */
 
-			if (delay_init) {
+			if (delay_init)
+			{
 				da->policy = RTE_DEV_BLOCKED;
 				set_allowed_at(da, now + 2 * spdk_get_ticks_hz());
-			} else {
+			}
+			else
+			{
 				da->policy = RTE_DEV_ALLOWED;
 				set_allowed_at(da, now);
 			}
@@ -573,11 +619,13 @@ pci_attach_rte(const struct spdk_pci_addr *addr)
 
 	spdk_pci_addr_fmt(bdf, sizeof(bdf), addr);
 
-	do {
+	do
+	{
 		rc = rte_eal_hotplug_add("pci", bdf, "");
 	} while (rc == -ENOMSG && ++i <= DPDK_HOTPLUG_RETRY_COUNT);
 
-	if (i > 1 && rc == -EEXIST) {
+	if (i > 1 && rc == -EEXIST)
+	{
 		/* Even though the previous request timed out, the device
 		 * was attached successfully.
 		 */
@@ -595,10 +643,9 @@ static struct spdk_pci_device_provider g_pci_rte_provider = {
 
 SPDK_PCI_REGISTER_DEVICE_PROVIDER(pci, &g_pci_rte_provider);
 
-int
-spdk_pci_device_attach(struct spdk_pci_driver *driver,
-		       spdk_pci_enum_cb enum_cb,
-		       void *enum_ctx, struct spdk_pci_addr *pci_address)
+int spdk_pci_device_attach(struct spdk_pci_driver *driver,
+						   spdk_pci_enum_cb enum_cb,
+						   void *enum_ctx, struct spdk_pci_addr *pci_address)
 {
 	struct spdk_pci_device *dev;
 	struct spdk_pci_device_provider *provider;
@@ -608,21 +655,26 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 
 	cleanup_pci_devices();
 
-	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
-		if (spdk_pci_addr_compare(&dev->addr, pci_address) == 0) {
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq)
+	{
+		if (spdk_pci_addr_compare(&dev->addr, pci_address) == 0)
+		{
 			break;
 		}
 	}
 
-	if (dev != NULL && dev->internal.driver == driver) {
+	if (dev != NULL && dev->internal.driver == driver)
+	{
 		pthread_mutex_lock(&g_pci_mutex);
-		if (dev->internal.attached || dev->internal.pending_removal) {
+		if (dev->internal.attached || dev->internal.pending_removal)
+		{
 			pthread_mutex_unlock(&g_pci_mutex);
 			return -1;
 		}
 
 		rc = enum_cb(enum_ctx, dev);
-		if (rc == 0) {
+		if (rc == 0)
+		{
 			dev->internal.attached = true;
 		}
 		pthread_mutex_unlock(&g_pci_mutex);
@@ -633,9 +685,11 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 	driver->cb_arg = enum_ctx;
 
 	rc = -ENODEV;
-	TAILQ_FOREACH(provider, &g_pci_device_providers, tailq) {
+	TAILQ_FOREACH(provider, &g_pci_device_providers, tailq)
+	{
 		rc = provider->attach_cb(pci_address);
-		if (rc == 0) {
+		if (rc == 0)
+		{
 			break;
 		}
 	}
@@ -645,24 +699,29 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
 
 	cleanup_pci_devices();
 
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		return -1;
 	}
 
 	/* explicit attach ignores the allowlist, so if we blocked this
 	 * device before let's enable it now - just for clarity.
 	 */
-	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
-		if (spdk_pci_addr_compare(&dev->addr, pci_address) == 0) {
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq)
+	{
+		if (spdk_pci_addr_compare(&dev->addr, pci_address) == 0)
+		{
 			break;
 		}
 	}
 	assert(dev != NULL);
 
 	rte_dev = dev->dev_handle;
-	if (rte_dev != NULL) {
+	if (rte_dev != NULL)
+	{
 		da = dpdk_pci_device_get_devargs(rte_dev);
-		if (da && get_allowed_at(da)) {
+		if (da && get_allowed_at(da))
+		{
 			set_allowed_at(da, spdk_get_ticks());
 			da->policy = RTE_DEV_ALLOWED;
 		}
@@ -675,10 +734,9 @@ spdk_pci_device_attach(struct spdk_pci_driver *driver,
  *       simultaneously safely, but you cannot call spdk_pci_enumerate
  *       and rte_eal_pci_probe simultaneously.
  */
-int
-spdk_pci_enumerate(struct spdk_pci_driver *driver,
-		   spdk_pci_enum_cb enum_cb,
-		   void *enum_ctx)
+int spdk_pci_enumerate(struct spdk_pci_driver *driver,
+					   spdk_pci_enum_cb enum_cb,
+					   void *enum_ctx)
 {
 	struct spdk_pci_device *dev;
 	int rc;
@@ -686,31 +744,38 @@ spdk_pci_enumerate(struct spdk_pci_driver *driver,
 	cleanup_pci_devices();
 
 	pthread_mutex_lock(&g_pci_mutex);
-	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq) {
+	TAILQ_FOREACH(dev, &g_pci_devices, internal.tailq)
+	{
 		if (dev->internal.attached ||
-		    dev->internal.driver != driver ||
-		    dev->internal.pending_removal) {
+			dev->internal.driver != driver ||
+			dev->internal.pending_removal)
+		{
 			continue;
 		}
 
 		rc = enum_cb(enum_ctx, dev);
-		if (rc == 0) {
+		if (rc == 0)
+		{
 			dev->internal.attached = true;
-		} else if (rc < 0) {
+		}
+		else if (rc < 0)
+		{
 			pthread_mutex_unlock(&g_pci_mutex);
 			return -1;
 		}
 	}
 	pthread_mutex_unlock(&g_pci_mutex);
 
-	if (scan_pci_bus(true) != 0) {
+	if (scan_pci_bus(true) != 0)
+	{
 		return -1;
 	}
 
 	driver->cb_fn = enum_cb;
 	driver->cb_arg = enum_ctx;
 
-	if (dpdk_bus_probe() != 0) {
+	if (dpdk_bus_probe() != 0)
+	{
 		driver->cb_arg = NULL;
 		driver->cb_fn = NULL;
 		return -1;
@@ -723,48 +788,54 @@ spdk_pci_enumerate(struct spdk_pci_driver *driver,
 	return 0;
 }
 
-void
-spdk_pci_for_each_device(void *ctx, void (*fn)(void *ctx, struct spdk_pci_device *dev))
+void spdk_pci_for_each_device(void *ctx, void (*fn)(void *ctx, struct spdk_pci_device *dev))
 {
 	struct spdk_pci_device *dev, *tmp;
 
 	pthread_mutex_lock(&g_pci_mutex);
-	TAILQ_FOREACH_SAFE(dev, &g_pci_devices, internal.tailq, tmp) {
+	TAILQ_FOREACH_SAFE(dev, &g_pci_devices, internal.tailq, tmp)
+	{
 		fn(ctx, dev);
 	}
 	pthread_mutex_unlock(&g_pci_mutex);
 }
 
-int
-spdk_pci_device_map_bar(struct spdk_pci_device *dev, uint32_t bar,
-			void **mapped_addr, uint64_t *phys_addr, uint64_t *size)
+int spdk_pci_device_map_bar(struct spdk_pci_device *dev, uint32_t bar,
+							void **mapped_addr, uint64_t *phys_addr, uint64_t *size)
 {
 	int rc;
 
 	rc = dev->map_bar(dev, bar, mapped_addr, phys_addr, size);
-	if (rc) {
+	if (rc)
+	{
 		return rc;
 	}
 
 #if VFIO_ENABLED
 	/* Automatically map the BAR to the IOMMU */
-	if (!spdk_iommu_is_enabled()) {
+	if (!spdk_iommu_is_enabled())
+	{
 		return 0;
 	}
 
-	if (rte_eal_iova_mode() == RTE_IOVA_VA) {
+	if (rte_eal_iova_mode() == RTE_IOVA_VA)
+	{
 		/* We'll use the virtual address as the iova to match DPDK. */
-		rc = vtophys_iommu_map_dma_bar((uint64_t)(*mapped_addr), (uint64_t) * mapped_addr, *size);
-		if (rc) {
+		rc = vtophys_iommu_map_dma_bar((uint64_t)(*mapped_addr), (uint64_t)*mapped_addr, *size);
+		if (rc)
+		{
 			dev->unmap_bar(dev, bar, *mapped_addr);
 			return -EFAULT;
 		}
 
 		*phys_addr = (uint64_t)(*mapped_addr);
-	} else {
+	}
+	else
+	{
 		/* We'll use the physical address as the iova to match DPDK. */
 		rc = vtophys_iommu_map_dma_bar((uint64_t)(*mapped_addr), *phys_addr, *size);
-		if (rc) {
+		if (rc)
+		{
 			dev->unmap_bar(dev, bar, *mapped_addr);
 			return -EFAULT;
 		}
@@ -773,15 +844,16 @@ spdk_pci_device_map_bar(struct spdk_pci_device *dev, uint32_t bar,
 	return rc;
 }
 
-int
-spdk_pci_device_unmap_bar(struct spdk_pci_device *dev, uint32_t bar, void *addr)
+int spdk_pci_device_unmap_bar(struct spdk_pci_device *dev, uint32_t bar, void *addr)
 {
 #if VFIO_ENABLED
 	int rc;
 
-	if (spdk_iommu_is_enabled()) {
+	if (spdk_iommu_is_enabled())
+	{
 		rc = vtophys_iommu_unmap_dma_bar((uint64_t)addr);
-		if (rc) {
+		if (rc)
+		{
 			return -EFAULT;
 		}
 	}
@@ -790,54 +862,54 @@ spdk_pci_device_unmap_bar(struct spdk_pci_device *dev, uint32_t bar, void *addr)
 	return dev->unmap_bar(dev, bar, addr);
 }
 
-int
-spdk_pci_device_enable_interrupt(struct spdk_pci_device *dev)
+int spdk_pci_device_enable_interrupt(struct spdk_pci_device *dev)
 {
 	return dpdk_pci_device_enable_interrupt(dev->dev_handle);
 }
 
-int
-spdk_pci_device_disable_interrupt(struct spdk_pci_device *dev)
+int spdk_pci_device_disable_interrupt(struct spdk_pci_device *dev)
 {
 	return dpdk_pci_device_disable_interrupt(dev->dev_handle);
 }
 
-int
-spdk_pci_device_get_interrupt_efd(struct spdk_pci_device *dev)
+int spdk_pci_device_get_interrupt_efd(struct spdk_pci_device *dev)
 {
 	return dpdk_pci_device_get_interrupt_efd(dev->dev_handle);
 }
 
-int
-spdk_pci_device_enable_interrupts(struct spdk_pci_device *dev, uint32_t efd_count)
+int spdk_pci_device_enable_interrupts(struct spdk_pci_device *dev, uint32_t efd_count)
 {
 	struct rte_pci_device *rte_dev = dev->dev_handle;
 	int rc;
 
-	if (efd_count == 0) {
+	if (efd_count == 0)
+	{
 		SPDK_ERRLOG("Invalid efd_count (%u)\n", efd_count);
 		return -EINVAL;
 	}
 
 	/* Detect if device has MSI-X capability */
-	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1) {
+	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1)
+	{
 		SPDK_ERRLOG("VFIO MSI-X capability not present for device %s\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		return -ENOTSUP;
 	}
 
 	/* Create event file descriptors */
 	rc = dpdk_pci_device_create_interrupt_efds(rte_dev, efd_count);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("Can't setup eventfd (%u)\n", efd_count);
 		return rc;
 	}
 
 	/* Bind each event fd to each interrupt vector */
 	rc = dpdk_pci_device_enable_interrupt(rte_dev);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("Failed to enable interrupt for PCI device %s\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		dpdk_pci_device_delete_interrupt_efds(rte_dev);
 		return rc;
 	}
@@ -845,8 +917,7 @@ spdk_pci_device_enable_interrupts(struct spdk_pci_device *dev, uint32_t efd_coun
 	return 0;
 }
 
-int
-spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t index)
+int spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t index)
 {
 	struct rte_pci_device *rte_dev = dev->dev_handle;
 	int rc;
@@ -857,9 +928,10 @@ spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t in
 	// }
 
 	/* Detect if device has MSI-X capability */
-	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1) {
+	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1)
+	{
 		SPDK_ERRLOG("VFIO MSI-X capability not present for device %s\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		return -ENOTSUP;
 	}
 
@@ -867,16 +939,18 @@ spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t in
 
 	/* Create event file descriptors */
 	rc = dpdk_pci_device_create_interrupt_efds_uintr(rte_dev, index);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("Can't setup eventfd index (%u)\n", index);
 		return rc;
 	}
 
 	/* Bind each event fd to each interrupt vector */
 	rc = dpdk_pci_device_enable_interrupt_uintr(rte_dev, index);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("Failed to enable interrupt for PCI device %s\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		dpdk_pci_device_delete_interrupt_efds(rte_dev); // TODO: 这个错误处理有问题
 		return rc;
 	}
@@ -884,16 +958,16 @@ spdk_pci_device_enable_interrupts_uintr(struct spdk_pci_device *dev, uint32_t in
 	return 0;
 }
 
-int
-spdk_pci_device_enable_spec_interrupts(struct spdk_pci_device *dev, uint32_t index)
+int spdk_pci_device_enable_spec_interrupts(struct spdk_pci_device *dev, uint32_t index)
 {
 	struct rte_pci_device *rte_dev = dev->dev_handle;
 	int rc;
 
 	/* Detect if device has MSI-X capability */
-	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1) {
+	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1)
+	{
 		SPDK_ERRLOG("VFIO MSI-X capability not present for device %s\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		return -ENOTSUP;
 	}
 
@@ -901,16 +975,18 @@ spdk_pci_device_enable_spec_interrupts(struct spdk_pci_device *dev, uint32_t ind
 
 	/* Create event file descriptors */
 	rc = dpdk_pci_device_create_spec_interrupt_efds(rte_dev, index);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("Can't setup eventfd index (%u)\n", index);
 		return rc;
 	}
 
 	/* Bind each event fd to each interrupt vector */
 	rc = dpdk_pci_device_enable_spec_interrupt(rte_dev, index);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("Failed to enable interrupt for PCI device %s\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		dpdk_pci_device_delete_interrupt_efds(rte_dev); // TODO: 这个错误处理有问题
 		return rc;
 	}
@@ -918,16 +994,42 @@ spdk_pci_device_enable_spec_interrupts(struct spdk_pci_device *dev, uint32_t ind
 	return 0;
 }
 
-int
-spdk_pci_device_disable_interrupts(struct spdk_pci_device *dev)
+int spdk_pci_device_control_spec_interrupt(struct spdk_pci_device *dev, uint32_t index, bool mask)
+{
+	struct rte_pci_device *rte_dev = dev->dev_handle;
+	int rc;
+
+	/* Detect if device has MSI-X capability */
+	if (dpdk_pci_device_interrupt_cap_multi(rte_dev) != 1)
+	{
+		SPDK_ERRLOG("VFIO MSI-X capability not present for device %s\n",
+					dpdk_pci_device_get_name(rte_dev));
+		return -ENOTSUP;
+	}
+
+	SPDK_ERRLOG("[ DEBUG ] changing kernel interrupts %s for device %s index %u\n", mask ? "unmask" : "mask", dpdk_pci_device_get_name(rte_dev), index);
+
+	rc = dpdk_pci_device_control_spec_interrupt(rte_dev, index, mask);
+	if (rc)
+	{
+		SPDK_ERRLOG("Failed to control interrupt for PCI device %s\n",
+					dpdk_pci_device_get_name(rte_dev));
+		return rc;
+	}
+
+	return 0;
+}
+
+int spdk_pci_device_disable_interrupts(struct spdk_pci_device *dev)
 {
 	struct rte_pci_device *rte_dev = dev->dev_handle;
 	int rc;
 
 	rc = dpdk_pci_device_disable_interrupt(rte_dev);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("Failed to disable interrupt for PCI device %s\n",
-			    dpdk_pci_device_get_name(rte_dev));
+					dpdk_pci_device_get_name(rte_dev));
 		return rc;
 	}
 
@@ -936,12 +1038,14 @@ spdk_pci_device_disable_interrupts(struct spdk_pci_device *dev)
 	return 0;
 }
 
-int
-spdk_pci_device_get_interrupt_efd_by_index(struct spdk_pci_device *dev, uint32_t index)
+int spdk_pci_device_get_interrupt_efd_by_index(struct spdk_pci_device *dev, uint32_t index)
 {
-	if (index == 0) {
+	if (index == 0)
+	{
 		return dpdk_pci_device_get_interrupt_efd(dev->dev_handle);
-	} else {
+	}
+	else
+	{
 		/* Note: The interrupt vector offset starts from 1, and in DPDK these
 		 * are mapped to efd index 0 onwards.
 		 */
@@ -1003,94 +1107,90 @@ spdk_pci_device_get_id(struct spdk_pci_device *dev)
 	return dev->id;
 }
 
-int
-spdk_pci_device_get_numa_id(struct spdk_pci_device *dev)
+int spdk_pci_device_get_numa_id(struct spdk_pci_device *dev)
 {
 	return dev->numa_id;
 }
 
 SPDK_LOG_DEPRECATION_REGISTER(pci_device_socket_id, "spdk_pci_device_get_socket_id", "v25.05", 0);
 
-int
-spdk_pci_device_get_socket_id(struct spdk_pci_device *dev)
+int spdk_pci_device_get_socket_id(struct spdk_pci_device *dev)
 {
 	SPDK_LOG_DEPRECATED(pci_device_socket_id);
 	return spdk_pci_device_get_numa_id(dev);
 }
 
-int
-spdk_pci_device_cfg_read(struct spdk_pci_device *dev, void *value, uint32_t len, uint32_t offset)
+int spdk_pci_device_cfg_read(struct spdk_pci_device *dev, void *value, uint32_t len, uint32_t offset)
 {
 	return dev->cfg_read(dev, value, len, offset);
 }
 
-int
-spdk_pci_device_cfg_write(struct spdk_pci_device *dev, void *value, uint32_t len, uint32_t offset)
+int spdk_pci_device_cfg_write(struct spdk_pci_device *dev, void *value, uint32_t len, uint32_t offset)
 {
 	return dev->cfg_write(dev, value, len, offset);
 }
 
-int
-spdk_pci_device_cfg_read8(struct spdk_pci_device *dev, uint8_t *value, uint32_t offset)
+int spdk_pci_device_cfg_read8(struct spdk_pci_device *dev, uint8_t *value, uint32_t offset)
 {
 	return spdk_pci_device_cfg_read(dev, value, 1, offset);
 }
 
-int
-spdk_pci_device_cfg_write8(struct spdk_pci_device *dev, uint8_t value, uint32_t offset)
+int spdk_pci_device_cfg_write8(struct spdk_pci_device *dev, uint8_t value, uint32_t offset)
 {
 	return spdk_pci_device_cfg_write(dev, &value, 1, offset);
 }
 
-int
-spdk_pci_device_cfg_read16(struct spdk_pci_device *dev, uint16_t *value, uint32_t offset)
+int spdk_pci_device_cfg_read16(struct spdk_pci_device *dev, uint16_t *value, uint32_t offset)
 {
 	return spdk_pci_device_cfg_read(dev, value, 2, offset);
 }
 
-int
-spdk_pci_device_cfg_write16(struct spdk_pci_device *dev, uint16_t value, uint32_t offset)
+int spdk_pci_device_cfg_write16(struct spdk_pci_device *dev, uint16_t value, uint32_t offset)
 {
 	return spdk_pci_device_cfg_write(dev, &value, 2, offset);
 }
 
-int
-spdk_pci_device_cfg_read32(struct spdk_pci_device *dev, uint32_t *value, uint32_t offset)
+int spdk_pci_device_cfg_read32(struct spdk_pci_device *dev, uint32_t *value, uint32_t offset)
 {
 	return spdk_pci_device_cfg_read(dev, value, 4, offset);
 }
 
-int
-spdk_pci_device_cfg_write32(struct spdk_pci_device *dev, uint32_t value, uint32_t offset)
+int spdk_pci_device_cfg_write32(struct spdk_pci_device *dev, uint32_t value, uint32_t offset)
 {
 	return spdk_pci_device_cfg_write(dev, &value, 4, offset);
 }
 
-int
-spdk_pci_device_get_serial_number(struct spdk_pci_device *dev, char *sn, size_t len)
+int spdk_pci_device_get_serial_number(struct spdk_pci_device *dev, char *sn, size_t len)
 {
 	int err;
 	uint32_t pos, header = 0;
 	uint32_t i, buf[2];
 
-	if (len < 17) {
+	if (len < 17)
+	{
 		return -1;
 	}
 
 	err = spdk_pci_device_cfg_read32(dev, &header, PCI_CFG_SIZE);
-	if (err || !header) {
+	if (err || !header)
+	{
 		return -1;
 	}
 
 	pos = PCI_CFG_SIZE;
-	while (1) {
-		if ((header & 0x0000ffff) == PCI_EXT_CAP_ID_SN) {
-			if (pos) {
+	while (1)
+	{
+		if ((header & 0x0000ffff) == PCI_EXT_CAP_ID_SN)
+		{
+			if (pos)
+			{
 				/* skip the header */
 				pos += 4;
-				for (i = 0; i < 2; i++) {
+				for (i = 0; i < 2; i++)
+				{
 					err = spdk_pci_device_cfg_read32(dev, &buf[i], pos + 4 * i);
-					if (err) {
+					if (err)
+					{
 						return -1;
 					}
 				}
@@ -1100,11 +1200,13 @@ spdk_pci_device_get_serial_number(struct spdk_pci_device *dev, char *sn, size_t 
 		}
 		pos = (header >> 20) & 0xffc;
 		/* 0 if no other items exist */
-		if (pos < PCI_CFG_SIZE) {
+		if (pos < PCI_CFG_SIZE)
+		{
 			return -1;
 		}
 		err = spdk_pci_device_cfg_read32(dev, &header, pos);
-		if (err) {
+		if (err)
+		{
 			return -1;
 		}
 	}
@@ -1117,30 +1219,43 @@ spdk_pci_device_get_addr(struct spdk_pci_device *dev)
 	return dev->addr;
 }
 
-bool
-spdk_pci_device_is_removed(struct spdk_pci_device *dev)
+bool spdk_pci_device_is_removed(struct spdk_pci_device *dev)
 {
 	return dev->internal.pending_removal;
 }
 
-int
-spdk_pci_addr_compare(const struct spdk_pci_addr *a1, const struct spdk_pci_addr *a2)
+int spdk_pci_addr_compare(const struct spdk_pci_addr *a1, const struct spdk_pci_addr *a2)
 {
-	if (a1->domain > a2->domain) {
+	if (a1->domain > a2->domain)
+	{
 		return 1;
-	} else if (a1->domain < a2->domain) {
+	}
+	else if (a1->domain < a2->domain)
+	{
 		return -1;
-	} else if (a1->bus > a2->bus) {
+	}
+	else if (a1->bus > a2->bus)
+	{
 		return 1;
-	} else if (a1->bus < a2->bus) {
+	}
+	else if (a1->bus < a2->bus)
+	{
 		return -1;
-	} else if (a1->dev > a2->dev) {
+	}
+	else if (a1->dev > a2->dev)
+	{
 		return 1;
-	} else if (a1->dev < a2->dev) {
+	}
+	else if (a1->dev < a2->dev)
+	{
 		return -1;
-	} else if (a1->func > a2->func) {
+	}
+	else if (a1->func > a2->func)
+	{
 		return 1;
-	} else if (a1->func < a2->func) {
+	}
+	else if (a1->func < a2->func)
+	{
 		return -1;
 	}
 
@@ -1148,8 +1263,7 @@ spdk_pci_addr_compare(const struct spdk_pci_addr *a1, const struct spdk_pci_addr
 }
 
 #ifdef __linux__
-int
-spdk_pci_device_claim(struct spdk_pci_device *dev)
+int spdk_pci_device_claim(struct spdk_pci_device *dev)
 {
 	int dev_fd;
 	char dev_name[64];
@@ -1163,32 +1277,37 @@ spdk_pci_device_claim(struct spdk_pci_device *dev)
 	};
 
 	snprintf(dev_name, sizeof(dev_name), "/var/tmp/spdk_pci_lock_%04x:%02x:%02x.%x",
-		 dev->addr.domain, dev->addr.bus, dev->addr.dev, dev->addr.func);
+			 dev->addr.domain, dev->addr.bus, dev->addr.dev, dev->addr.func);
 
 	dev_fd = open(dev_name, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-	if (dev_fd == -1) {
+	if (dev_fd == -1)
+	{
 		SPDK_ERRLOG("could not open %s\n", dev_name);
 		return -errno;
 	}
 
-	if (ftruncate(dev_fd, sizeof(int)) != 0) {
+	if (ftruncate(dev_fd, sizeof(int)) != 0)
+	{
 		SPDK_ERRLOG("could not truncate %s\n", dev_name);
 		close(dev_fd);
 		return -errno;
 	}
 
 	dev_map = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE,
-		       MAP_SHARED, dev_fd, 0);
-	if (dev_map == MAP_FAILED) {
+				   MAP_SHARED, dev_fd, 0);
+	if (dev_map == MAP_FAILED)
+	{
 		SPDK_ERRLOG("could not mmap dev %s (%d)\n", dev_name, errno);
 		close(dev_fd);
 		return -errno;
 	}
 
-	if (fcntl(dev_fd, F_SETLK, &pcidev_lock) != 0) {
+	if (fcntl(dev_fd, F_SETLK, &pcidev_lock) != 0)
+	{
 		pid = *(int *)dev_map;
 		SPDK_ERRLOG("Cannot create lock on device %s, probably"
-			    " process %d has claimed it\n", dev_name, pid);
+					" process %d has claimed it\n",
+					dev_name, pid);
 		munmap(dev_map, sizeof(int));
 		close(dev_fd);
 		/* F_SETLK returns unspecified errnos, normalize them */
@@ -1202,59 +1321,66 @@ spdk_pci_device_claim(struct spdk_pci_device *dev)
 	return 0;
 }
 
-void
-spdk_pci_device_unclaim(struct spdk_pci_device *dev)
+void spdk_pci_device_unclaim(struct spdk_pci_device *dev)
 {
 	char dev_name[64];
 
 	snprintf(dev_name, sizeof(dev_name), "/var/tmp/spdk_pci_lock_%04x:%02x:%02x.%x",
-		 dev->addr.domain, dev->addr.bus, dev->addr.dev, dev->addr.func);
+			 dev->addr.domain, dev->addr.bus, dev->addr.dev, dev->addr.func);
 
 	close(dev->internal.claim_fd);
 	dev->internal.claim_fd = -1;
 	unlink(dev_name);
 }
-#else /* !__linux__ */
-int
-spdk_pci_device_claim(struct spdk_pci_device *dev)
+#else  /* !__linux__ */
+int spdk_pci_device_claim(struct spdk_pci_device *dev)
 {
 	/* TODO */
 	return 0;
 }
 
-void
-spdk_pci_device_unclaim(struct spdk_pci_device *dev)
+void spdk_pci_device_unclaim(struct spdk_pci_device *dev)
 {
 	/* TODO */
 }
 #endif /* __linux__ */
 
-int
-spdk_pci_addr_parse(struct spdk_pci_addr *addr, const char *bdf)
+int spdk_pci_addr_parse(struct spdk_pci_addr *addr, const char *bdf)
 {
 	unsigned domain, bus, dev, func;
 
-	if (addr == NULL || bdf == NULL) {
+	if (addr == NULL || bdf == NULL)
+	{
 		return -EINVAL;
 	}
 
 	if ((sscanf(bdf, "%x:%x:%x.%x", &domain, &bus, &dev, &func) == 4) ||
-	    (sscanf(bdf, "%x.%x.%x.%x", &domain, &bus, &dev, &func) == 4)) {
+		(sscanf(bdf, "%x.%x.%x.%x", &domain, &bus, &dev, &func) == 4))
+	{
 		/* Matched a full address - all variables are initialized */
-	} else if (sscanf(bdf, "%x:%x:%x", &domain, &bus, &dev) == 3) {
+	}
+	else if (sscanf(bdf, "%x:%x:%x", &domain, &bus, &dev) == 3)
+	{
 		func = 0;
-	} else if ((sscanf(bdf, "%x:%x.%x", &bus, &dev, &func) == 3) ||
-		   (sscanf(bdf, "%x.%x.%x", &bus, &dev, &func) == 3)) {
+	}
+	else if ((sscanf(bdf, "%x:%x.%x", &bus, &dev, &func) == 3) ||
+			 (sscanf(bdf, "%x.%x.%x", &bus, &dev, &func) == 3))
+	{
 		domain = 0;
-	} else if ((sscanf(bdf, "%x:%x", &bus, &dev) == 2) ||
-		   (sscanf(bdf, "%x.%x", &bus, &dev) == 2)) {
+	}
+	else if ((sscanf(bdf, "%x:%x", &bus, &dev) == 2) ||
+			 (sscanf(bdf, "%x.%x", &bus, &dev) == 2))
+	{
 		domain = 0;
 		func = 0;
-	} else {
+	}
+	else
+	{
 		return -EINVAL;
 	}
 
-	if (bus > 0xFF || dev > 0x1F || func > 7) {
+	if (bus > 0xFF || dev > 0x1F || func > 7)
+	{
 		return -EINVAL;
 	}
 
@@ -1266,24 +1392,23 @@ spdk_pci_addr_parse(struct spdk_pci_addr *addr, const char *bdf)
 	return 0;
 }
 
-int
-spdk_pci_addr_fmt(char *bdf, size_t sz, const struct spdk_pci_addr *addr)
+int spdk_pci_addr_fmt(char *bdf, size_t sz, const struct spdk_pci_addr *addr)
 {
 	int rc;
 
 	rc = snprintf(bdf, sz, "%04x:%02x:%02x.%x",
-		      addr->domain, addr->bus,
-		      addr->dev, addr->func);
+				  addr->domain, addr->bus,
+				  addr->dev, addr->func);
 
-	if (rc > 0 && (size_t)rc < sz) {
+	if (rc > 0 && (size_t)rc < sz)
+	{
 		return 0;
 	}
 
 	return -1;
 }
 
-int
-spdk_pci_hook_device(struct spdk_pci_driver *drv, struct spdk_pci_device *dev)
+int spdk_pci_hook_device(struct spdk_pci_driver *drv, struct spdk_pci_device *dev)
 {
 	int rc;
 
@@ -1293,9 +1418,11 @@ spdk_pci_hook_device(struct spdk_pci_driver *drv, struct spdk_pci_device *dev)
 	assert(dev->cfg_write != NULL);
 	dev->internal.driver = drv;
 
-	if (drv->cb_fn != NULL) {
+	if (drv->cb_fn != NULL)
+	{
 		rc = drv->cb_fn(drv->cb_arg, dev);
-		if (rc != 0) {
+		if (rc != 0)
+		{
 			return -ECANCELED;
 		}
 
@@ -1307,15 +1434,13 @@ spdk_pci_hook_device(struct spdk_pci_driver *drv, struct spdk_pci_device *dev)
 	return 0;
 }
 
-void
-spdk_pci_unhook_device(struct spdk_pci_device *dev)
+void spdk_pci_unhook_device(struct spdk_pci_device *dev)
 {
 	assert(!dev->internal.attached);
 	TAILQ_REMOVE(&g_pci_devices, dev, internal.tailq);
 }
 
-void
-spdk_pci_register_device_provider(struct spdk_pci_device_provider *provider)
+void spdk_pci_register_device_provider(struct spdk_pci_device_provider *provider)
 {
 	TAILQ_INSERT_TAIL(&g_pci_device_providers, provider, tailq);
 }
@@ -1326,21 +1451,22 @@ spdk_pci_device_get_type(const struct spdk_pci_device *dev)
 	return dev->type;
 }
 
-int
-spdk_pci_device_allow(struct spdk_pci_addr *pci_addr)
+int spdk_pci_device_allow(struct spdk_pci_addr *pci_addr)
 {
 	struct rte_devargs *da;
 	char devargs_str[128];
 
 	da = calloc(1, sizeof(*da));
-	if (da == NULL) {
+	if (da == NULL)
+	{
 		SPDK_ERRLOG("could not allocate rte_devargs\n");
 		return -ENOMEM;
 	}
 
 	snprintf(devargs_str, sizeof(devargs_str), "pci:%04x:%02x:%02x.%x",
-		 pci_addr->domain, pci_addr->bus, pci_addr->dev, pci_addr->func);
-	if (rte_devargs_parse(da, devargs_str) != 0) {
+			 pci_addr->domain, pci_addr->bus, pci_addr->dev, pci_addr->func);
+	if (rte_devargs_parse(da, devargs_str) != 0)
+	{
 		SPDK_ERRLOG("rte_devargs_parse() failed on '%s'\n", devargs_str);
 		free(da);
 		return -EINVAL;
@@ -1351,7 +1477,8 @@ spdk_pci_device_allow(struct spdk_pci_addr *pci_addr)
 	 * DPDK will take care of memory management for the devargs structure after
 	 * it has been inserted, so there's nothing SPDK needs to track.
 	 */
-	if (rte_devargs_insert(&da) != 0) {
+	if (rte_devargs_insert(&da) != 0)
+	{
 		SPDK_ERRLOG("rte_devargs_insert() failed on '%s'\n", devargs_str);
 		free(da);
 		return -EINVAL;

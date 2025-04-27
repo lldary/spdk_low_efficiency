@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <x86gprintrin.h>
 #include <spdk/log.h>
+#include <rte_log.h>
 #include <spdk/nvme_zns.h>
 #include "queue_wrapper.h" // Include the queue wrapper header
 
@@ -165,6 +166,7 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 {
     local_irq_save(g_curr_thread[vector]->flags);
     _senduipi(g_cpuid_uipi_map[vector]);
+    write(2, "uintr_get_handler\n", 18);
     if (g_curr_thread[vector] == g_idle_thread[vector])
     {
         spdk_plus_switch_thread(g_idle_thread[vector], g_work_thread[vector]);
@@ -184,7 +186,7 @@ get_timestamp_prefix(char *buf, int buf_size)
     struct timespec ts;
     long usec;
 
-    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    clock_gettime(CLOCK_REALTIME, &ts);
     info = localtime(&ts.tv_sec);
     usec = ts.tv_nsec / 1000;
     if (info == NULL)
@@ -745,6 +747,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
         goto failed;
     }
+    spdk_nvme_ctrlr_control_io_qpair_interrupt(smart_nvme->uintr_qpair.qpair, false);
     smart_nvme->uintr_qpair.uipi_index = uipi_index;
     g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
     DEBUGLOG("uipi_index: %d\n", uipi_index);
@@ -1781,6 +1784,7 @@ static void dpdk_log_open_ext(const char *file_path)
         return;
     }
     rte_openlog_stream(fp);
+    rte_log_set_global_level(RTE_LOG_DEBUG);
     return;
 }
 
