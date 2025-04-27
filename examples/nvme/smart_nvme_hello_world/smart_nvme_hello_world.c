@@ -538,7 +538,7 @@ int main(int argc, char **argv)
     }
 
     printf("Initializing SPDK smart nvme env\n");
-    spdk_plus_env_init(SPDK_PLUS_SMART_SCHEDULE_MODULE_BALANCE, NULL, NULL);
+    spdk_plus_env_init(SPDK_PLUS_SMART_SCHEDULE_MODULE_SUPER_PERFORMANCE, NULL, NULL);
 
     printf("Initializing NVMe Controllers\n");
 

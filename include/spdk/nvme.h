@@ -1887,7 +1887,7 @@ extern "C"
 
 	/* 控制qpair的MSIX中断是否屏蔽 */
 	int spdk_nvme_ctrlr_control_io_qpair_interrupt(struct spdk_nvme_qpair *qpair,
-												   bool enable);
+												   bool mask);
 
 	/**
 	 * Connect a newly created I/O qpair.

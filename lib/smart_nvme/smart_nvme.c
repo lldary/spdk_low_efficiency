@@ -487,6 +487,24 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
     // DEBUGLOG("io_mode: %d, qpair_mode: %ld, queue size: %d\n", io_mode, task->notify_mode, queue_size(qpair->queue));
     if (qpair == NULL)
         ERRLOG("qpair is NULL\n");
+    if (task->notify_mode == SPDK_PLUS_POLL_MODE)
+    {
+        int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, true);
+        if (rc != 0)
+        {
+            SPDK_ERRLOG("Failed to disable interrupt for qpair\n");
+            return NULL;
+        }
+    }
+    else if (queue_size(nvme_device->poll_qpair.queue) == 0)
+    {
+        int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, false);
+        if (rc != 0)
+        {
+            SPDK_ERRLOG("Failed to enable interrupt for qpair\n");
+            return NULL;
+        }
+    }
     return qpair->qpair;
 }
 
@@ -650,13 +668,14 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_INVALID;
         goto failed;
     }
-    smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, opts_size);
-    if (!smart_nvme->poll_qpair.qpair)
-    {
-        SPDK_ERRLOG("Failed to allocate poll qpair\n");
-        *rc = SPDK_PLUS_ERR_SPDK_API_FAILED;
-        goto failed;
-    }
+    // smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, opts_size);
+    // if (!smart_nvme->poll_qpair.qpair)
+    // {
+    //     SPDK_ERRLOG("Failed to allocate poll qpair\n");
+    //     *rc = SPDK_PLUS_ERR_SPDK_API_FAILED;
+    //     goto failed;
+    // }
+    smart_nvme->poll_qpair.qpair = NULL;
     smart_nvme->poll_qpair.queue = create_queue();
     if (!smart_nvme->poll_qpair.queue)
     {
@@ -734,6 +753,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 4;
         goto failed;
     }
+    smart_nvme->poll_qpair.qpair = smart_nvme->uintr_qpair.qpair;
     if (smart_nvme->uintr_qpair.fd < 0)
     {
         SPDK_ERRLOG("Failed to get uintr qpair fd\n");
@@ -747,7 +767,6 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
         goto failed;
     }
-    spdk_nvme_ctrlr_control_io_qpair_interrupt(smart_nvme->uintr_qpair.qpair, false);
     smart_nvme->uintr_qpair.uipi_index = uipi_index;
     g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
     DEBUGLOG("uipi_index: %d\n", uipi_index);
@@ -856,7 +875,7 @@ failed:
     {
         if (smart_nvme->poll_qpair.qpair)
         {
-            spdk_nvme_ctrlr_free_io_qpair(smart_nvme->poll_qpair.qpair);
+            // spdk_nvme_ctrlr_free_io_qpair(smart_nvme->poll_qpair.qpair);
         }
         if (smart_nvme->int_qpair.qpair)
         {
@@ -1946,7 +1965,7 @@ int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
     }
     if (nvme_device->poll_qpair.qpair)
     {
-        rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
+        // rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
         if (rc != 0)
         {
             SPDK_ERRLOG("Failed to free poll qpair\n");

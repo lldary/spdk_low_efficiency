@@ -702,7 +702,7 @@ unlock:
 }
 
 int spdk_nvme_ctrlr_control_io_qpair_interrupt(struct spdk_nvme_qpair *qpair,
-											   bool enable)
+											   bool mask)
 {
 	struct spdk_nvme_ctrlr *ctrlr = qpair->ctrlr;
 	int rc;
@@ -718,8 +718,8 @@ int spdk_nvme_ctrlr_control_io_qpair_interrupt(struct spdk_nvme_qpair *qpair,
 	// }
 
 	nvme_ctrlr_lock(ctrlr);
-	SPDK_ERRLOG("[ DEBUG ] enable = %d\n", enable);
-	rc = nvme_transport_ctrlr_control_msix_enable(ctrlr, qpair->id, enable);
+	SPDK_ERRLOG("[ DEBUG ] mask = %d\n", mask);
+	rc = nvme_transport_ctrlr_control_msix_enable(ctrlr, qpair->id, mask);
 	nvme_ctrlr_unlock(ctrlr);
 
 	return rc;
