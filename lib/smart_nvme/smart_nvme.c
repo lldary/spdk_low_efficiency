@@ -17,6 +17,8 @@
 #define US_PER_S 1000000
 #define CORE_NUMBER 0XFF
 
+#define SPDK_PLUS_MAX_QUEUE_NUM 12
+
 #ifndef __NR_uintr_register_handler
 #define __NR_uintr_wait_msix_interrupt 470
 #define __NR_uintr_register_handler 471
@@ -85,8 +87,9 @@ struct spdk_plus_nvme_thread
 struct nvme_metadata
 {
     struct spdk_nvme_ctrlr *ctrlr;
-    struct spdk_plus_nvme_qpair qpair;
+    struct spdk_plus_nvme_qpair qpair; // 后备队列
     uint64_t cite_number;
+    struct spdk_plus_smart_nvme *nvme_qpair[SPDK_PLUS_MAX_QUEUE_NUM]; // NVMe队列对
     TAILQ_ENTRY(nvme_metadata)
     link;
 };
@@ -106,6 +109,7 @@ struct nvme_metadata
 
 static void spdk_plus_vlog(enum spdk_log_level level, const char *file, const int line, const char *func,
                            const char *format, va_list ap);
+void spdk_plus_switch_thread(struct spdk_plus_nvme_thread *from, struct spdk_plus_nvme_thread *to);
 
 /* 全局变量定义 */
 static struct spdk_plus_smart_schedule_module_opts g_smart_schedule_module_opts = {
@@ -154,11 +158,9 @@ pthread_mutex_t meta_mutex;
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER; // TODO: 这个要解决
 uint32_t lba_size = 0;
 bool g_spdk_plus_exit = false;
-struct spdk_plus_smart_nvme g_back_device; /* NVMe设备 */
+struct spdk_plus_smart_nvme g_back_device; /* 备选 NVMe设备 */
 static uint32_t nvme_ctrlr_keep_alive_timeout_in_ms = 10000;
 static uint32_t tmp_core = 0;
-
-void spdk_plus_switch_thread(struct spdk_plus_nvme_thread *from, struct spdk_plus_nvme_thread *to);
 
 void __attribute__((interrupt)) __attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame,
@@ -166,7 +168,6 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 {
     local_irq_save(g_curr_thread[vector]->flags);
     _senduipi(g_cpuid_uipi_map[vector]);
-    write(2, "uintr_get_handler\n", 18);
     if (g_curr_thread[vector] == g_idle_thread[vector])
     {
         spdk_plus_switch_thread(g_idle_thread[vector], g_work_thread[vector]);
@@ -256,7 +257,6 @@ static void spdk_plus_idle_thread_func(void)
     );
 
     {
-        printf("%lx %lx\n", g_work_thread[cpu_id]->rsp, *(uint64_t *)(g_work_thread[cpu_id]->rsp + 0x30));
         spdk_plus_switch_thread(g_idle_thread[cpu_id], g_work_thread[cpu_id]);
         g_curr_thread[cpu_id] = g_idle_thread[cpu_id];
     }
@@ -487,7 +487,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
     // DEBUGLOG("io_mode: %d, qpair_mode: %ld, queue size: %d\n", io_mode, task->notify_mode, queue_size(qpair->queue));
     if (qpair == NULL)
         ERRLOG("qpair is NULL\n");
-    if (task->notify_mode == SPDK_PLUS_POLL_MODE)
+    if (task->notify_mode == SPDK_PLUS_POLL_MODE && nvme_device->poll_qpair.fd == false)
     {
         int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, true);
         if (rc != 0)
@@ -495,8 +495,9 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             SPDK_ERRLOG("Failed to disable interrupt for qpair\n");
             return NULL;
         }
+        nvme_device->poll_qpair.fd = true;
     }
-    else if (queue_size(nvme_device->poll_qpair.queue) == 0)
+    else if (queue_size(nvme_device->poll_qpair.queue) == 0 && nvme_device->poll_qpair.fd == true)
     {
         int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, false);
         if (rc != 0)
@@ -504,6 +505,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             SPDK_ERRLOG("Failed to enable interrupt for qpair\n");
             return NULL;
         }
+        nvme_device->poll_qpair.fd = false;
     }
     return qpair->qpair;
 }
@@ -754,6 +756,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         goto failed;
     }
     smart_nvme->poll_qpair.qpair = smart_nvme->uintr_qpair.qpair;
+    smart_nvme->poll_qpair.fd = false; // 代表轮询队列中断没有屏蔽
     if (smart_nvme->uintr_qpair.fd < 0)
     {
         SPDK_ERRLOG("Failed to get uintr qpair fd\n");
@@ -797,6 +800,8 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         if (nvme_meta->ctrlr == ctrlr)
         {
             nvme_meta->cite_number++;
+            smart_nvme->curr_cite_num = 1;
+            nvme_meta->nvme_qpair[smart_nvme->cpu_id % SPDK_PLUS_MAX_QUEUE_NUM] = smart_nvme;
             if (pthread_mutex_unlock(&meta_mutex) != 0)
             {
                 SPDK_ERRLOG("Failed to unlock mutex\n");
@@ -860,6 +865,8 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         goto failed;
     }
     nvme_meta->cite_number = 1;
+    smart_nvme->curr_cite_num = 1;
+    nvme_meta->nvme_qpair[smart_nvme->cpu_id % SPDK_PLUS_MAX_QUEUE_NUM] = smart_nvme;
     TAILQ_INSERT_TAIL(&g_nvme_metadata_list, nvme_meta, link);
     if (pthread_mutex_unlock(&meta_mutex) != 0)
     {
@@ -1958,6 +1965,7 @@ failed:
 int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
 {
     int rc = 0;
+    int cpu_id = nvme_device->cpu_id;
     if (nvme_device == NULL)
     {
         SPDK_ERRLOG("nvme_device is NULL\n");
@@ -2057,6 +2065,7 @@ failed:
         if (meta->ctrlr == nvme_device->ctrlr)
         {
             meta->cite_number--;
+            meta->nvme_qpair[cpu_id % SPDK_PLUS_MAX_QUEUE_NUM] = NULL;
             if (meta->cite_number == 0)
             {
                 TAILQ_REMOVE(&g_nvme_metadata_list, meta, link);
@@ -2070,6 +2079,7 @@ failed:
     }
     pthread_mutex_unlock(&meta_mutex);
     DEBUGLOG("Free nvme device %p rc = %d\n", nvme_device, rc);
+    SPDK_ERRLOG("Free nvme device %p rc = %d thread id = %lu\n", nvme_device, rc, pthread_self());
     return rc;
 }
 
