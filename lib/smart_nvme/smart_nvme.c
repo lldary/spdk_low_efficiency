@@ -1849,6 +1849,9 @@ int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
         return SPDK_PLUS_ERR;
     }
 
+    if(dev_name == NULL) // 如果没有传入设备名，则不启用后备SSD
+        g_smart_schedule_module_opts.enable_back_ssd = false;
+
     if (g_smart_schedule_module_opts.enable_back_ssd)
     {
         /* 设置后备ssd */
