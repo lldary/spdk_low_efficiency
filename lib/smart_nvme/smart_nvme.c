@@ -72,7 +72,7 @@ struct io_task
     uint64_t notify_mode;                     /* 通知模式，注意，中断轮询算作轮询 */
     struct spdk_plus_smart_nvme *nvme_device; /* NVMe设备 */
     spdk_nvme_cmd_cb cb_fn;                   /* 回调函数 */
-    struct timespec start_time;
+    struct timespec start_time;               /* 开始时间 */
     void *cb_arg;
 };
 
@@ -924,6 +924,7 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
     clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
     uint64_t latency = (end_time.tv_sec - task->start_time.tv_sec) * 1000000000 + (end_time.tv_nsec - task->start_time.tv_nsec);
     struct spdk_plus_smart_nvme *nvme_device = task->nvme_device;
+    latency = (end_time.tv_sec - nvme_device->start_wait_timestamp.tv_sec) * 1000000000 + (end_time.tv_nsec - nvme_device->start_wait_timestamp.tv_nsec);
     if (task->notify_mode == SPDK_PLUS_POLL_MODE)
     {
         if (task->io_mode == SPDK_PLUS_READ)
@@ -965,9 +966,7 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
 
     if (task->cb_fn)
     {
-        DEBUGLOG("dev: %p iosize: %u latency: %lu FN START\n", nvme_device, task->io_size, latency);
         task->cb_fn(task->cb_arg, completion);
-        DEBUGLOG("dev: %p iosize: %u latency: %lu FN COMPLETE\n", nvme_device, task->io_size, latency);
     }
     free(task);
     return;
@@ -1270,6 +1269,8 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
     int32_t rc = 0;
 
     update_uipi_stat(nvme_device);
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &nvme_device->start_wait_timestamp);
 
     if (!queue_empty(nvme_device->poll_qpair.queue))
     { // 轮询所在的qpair有未完成命令

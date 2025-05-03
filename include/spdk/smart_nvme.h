@@ -7,6 +7,7 @@ extern "C"
 
 #include <stdint.h>
 #include <spdk/nvme.h> /* Include SPDK NVMe header for required definitions */
+#include <sys/timerfd.h>
 
     enum spdk_plus_errno
     {
@@ -107,6 +108,7 @@ extern "C"
         uint16_t cpu_id;                                                 /* CPU ID */
         int32_t fd;                                                      /* 文件描述符 (用于控制线程通知事务时处理) */
         uint16_t curr_cite_num;                                          /* 当前引用计数 */
+        struct timespec start_wait_timestamp;                            /* 开始等待时间戳 */
         struct spdk_plus_nvme_threshold_opts threshold_opts;             /* 阈值选项 */
         uint64_t io_write_btypes;                                        /* 写入字节数 (循环统计，预定100微秒清除一次) */
         uint64_t io_read_btypes;                                         /* 读取字节数 (循环统计，预定100微秒清除一次) */
