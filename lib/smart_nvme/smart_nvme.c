@@ -487,26 +487,26 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
     // DEBUGLOG("io_mode: %d, qpair_mode: %ld, queue size: %d\n", io_mode, task->notify_mode, queue_size(qpair->queue));
     if (qpair == NULL)
         ERRLOG("qpair is NULL\n");
-    if (task->notify_mode == SPDK_PLUS_POLL_MODE && nvme_device->poll_qpair.fd == false)
-    {
-        int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, true);
-        if (rc != 0)
-        {
-            SPDK_ERRLOG("Failed to disable interrupt for qpair\n");
-            return NULL;
-        }
-        nvme_device->poll_qpair.fd = true;
-    }
-    else if (queue_size(nvme_device->poll_qpair.queue) == 0 && nvme_device->poll_qpair.fd == true)
-    {
-        int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, false);
-        if (rc != 0)
-        {
-            SPDK_ERRLOG("Failed to enable interrupt for qpair\n");
-            return NULL;
-        }
-        nvme_device->poll_qpair.fd = false;
-    }
+    // if (task->notify_mode == SPDK_PLUS_POLL_MODE && nvme_device->poll_qpair.fd == false)
+    // {
+    //     int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, true);
+    //     if (rc != 0)
+    //     {
+    //         SPDK_ERRLOG("Failed to disable interrupt for qpair\n");
+    //         return NULL;
+    //     }
+    //     nvme_device->poll_qpair.fd = true;
+    // }
+    // else if (queue_size(nvme_device->poll_qpair.queue) == 0 && nvme_device->poll_qpair.fd == true)
+    // {
+    //     int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, false);
+    //     if (rc != 0)
+    //     {
+    //         SPDK_ERRLOG("Failed to enable interrupt for qpair\n");
+    //         return NULL;
+    //     }
+    //     nvme_device->poll_qpair.fd = false;
+    // }
     return qpair->qpair;
 }
 
@@ -670,14 +670,14 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_INVALID;
         goto failed;
     }
-    // smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, opts_size);
-    // if (!smart_nvme->poll_qpair.qpair)
-    // {
-    //     SPDK_ERRLOG("Failed to allocate poll qpair\n");
-    //     *rc = SPDK_PLUS_ERR_SPDK_API_FAILED;
-    //     goto failed;
-    // }
-    smart_nvme->poll_qpair.qpair = NULL;
+    smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, opts_size);
+    if (!smart_nvme->poll_qpair.qpair)
+    {
+        SPDK_ERRLOG("Failed to allocate poll qpair\n");
+        *rc = SPDK_PLUS_ERR_SPDK_API_FAILED;
+        goto failed;
+    }
+    // smart_nvme->poll_qpair.qpair = NULL;
     smart_nvme->poll_qpair.queue = create_queue();
     if (!smart_nvme->poll_qpair.queue)
     {
@@ -755,7 +755,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 4;
         goto failed;
     }
-    smart_nvme->poll_qpair.qpair = smart_nvme->uintr_qpair.qpair;
+    // smart_nvme->poll_qpair.qpair = smart_nvme->uintr_qpair.qpair;
     smart_nvme->poll_qpair.fd = false; // 代表轮询队列中断没有屏蔽
     if (smart_nvme->uintr_qpair.fd < 0)
     {
@@ -882,7 +882,7 @@ failed:
     {
         if (smart_nvme->poll_qpair.qpair)
         {
-            // spdk_nvme_ctrlr_free_io_qpair(smart_nvme->poll_qpair.qpair);
+            spdk_nvme_ctrlr_free_io_qpair(smart_nvme->poll_qpair.qpair);
         }
         if (smart_nvme->int_qpair.qpair)
         {
@@ -930,11 +930,13 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
         {
             nvme_device->avg_read_latency[task->io_size] = g_smart_schedule_module_opts.read_alpha * latency +
                                                            (1 - g_smart_schedule_module_opts.read_alpha) * nvme_device->avg_read_latency[task->io_size]; /* 指数加权移动平均 */
+            SPDK_ERRLOG("dev: %p iosize: %u read latency: %lu\n", nvme_device, task->io_size, nvme_device->avg_read_latency[task->io_size]);
         }
         else if (task->io_mode == SPDK_PLUS_WRITE)
         {
             nvme_device->avg_write_latency[task->io_size] = g_smart_schedule_module_opts.write_alpha * latency +
                                                             (1 - g_smart_schedule_module_opts.write_alpha) * nvme_device->avg_write_latency[task->io_size]; /* 指数加权移动平均 */
+            SPDK_ERRLOG("dev: %p iosize: %u write latency: %lu\n", nvme_device, task->io_size, nvme_device->avg_write_latency[task->io_size]);
         }
         dequeue(nvme_device->poll_qpair.queue);
     }
@@ -1849,7 +1851,7 @@ int spdk_plus_env_init(enum spdk_plus_smart_schedule_module_status status,
         return SPDK_PLUS_ERR;
     }
 
-    if(dev_name == NULL) // 如果没有传入设备名，则不启用后备SSD
+    if (dev_name == NULL) // 如果没有传入设备名，则不启用后备SSD
         g_smart_schedule_module_opts.enable_back_ssd = false;
 
     if (g_smart_schedule_module_opts.enable_back_ssd)
@@ -1976,7 +1978,7 @@ int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
     }
     if (nvme_device->poll_qpair.qpair)
     {
-        // rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
+        rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
         if (rc != 0)
         {
             SPDK_ERRLOG("Failed to free poll qpair\n");
@@ -2089,6 +2091,27 @@ failed:
 int spdk_plus_env_fini(void)
 {
     int rc = 0;
+    /* 等待所有队列全部释放 */
+    bool is_all_free = true;
+    do
+    {
+        usleep(1000);
+        struct spdk_plus_smart_nvme *smart_nvme = NULL;
+        if (pthread_mutex_lock(&meta_mutex) < 0)
+        {
+            SPDK_ERRLOG("Failed to lock mutex\n");
+            return SPDK_PLUS_ERR;
+        }
+        TAILQ_FOREACH(smart_nvme, &g_qpair_list, link)
+        {
+            if (smart_nvme != NULL)
+            {
+                is_all_free = false;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&meta_mutex);
+    } while (!is_all_free);
     g_spdk_plus_exit = true;
     if (g_back_device.ctrlr)
     {

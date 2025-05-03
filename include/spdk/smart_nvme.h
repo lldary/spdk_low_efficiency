@@ -1,5 +1,5 @@
 /* 这个文档是智能调度模块对外暴露API和定义的头文件 */
-
+#pragma once
 #ifdef __cplusplus
 extern "C"
 {
