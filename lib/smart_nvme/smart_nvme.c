@@ -1,11 +1,11 @@
 #include <spdk/smart_nvme.h>
 #include <spdk/nvme.h> // Include the header defining struct spdk_nvme_ctrlr
-// #include <bits/time.h>
 #include <sys/timerfd.h>
 #include <arpa/inet.h>
 #include <x86gprintrin.h>
 #include <spdk/log.h>
 #include <rte_log.h>
+#include <spdk/spdk_plus_log.h>
 #include <spdk/nvme_zns.h>
 #include "queue_wrapper.h" // Include the queue wrapper header
 
@@ -965,7 +965,9 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
 
     if (task->cb_fn)
     {
+        DEBUGLOG("dev: %p iosize: %u latency: %lu FN START\n", nvme_device, task->io_size, latency);
         task->cb_fn(task->cb_arg, completion);
+        DEBUGLOG("dev: %p iosize: %u latency: %lu FN COMPLETE\n", nvme_device, task->io_size, latency);
     }
     free(task);
     return;
@@ -2090,6 +2092,7 @@ failed:
 
 int spdk_plus_env_fini(void)
 {
+    INFOLOG("SPDK Plus environment finalizing...\n");
     int rc = 0;
     /* 等待所有队列全部释放 */
     bool is_all_free = true;
@@ -2107,11 +2110,13 @@ int spdk_plus_env_fini(void)
             if (smart_nvme != NULL)
             {
                 is_all_free = false;
+                DEBUGLOG("SPDK Plus env is not free, still has %p\n", smart_nvme);
                 break;
             }
         }
         pthread_mutex_unlock(&meta_mutex);
     } while (!is_all_free);
+    INFOLOG("SPDK Plus env is free, now we will process the backend ssd source\n");
     g_spdk_plus_exit = true;
     if (g_back_device.ctrlr)
     {
