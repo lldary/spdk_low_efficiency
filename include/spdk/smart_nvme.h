@@ -89,31 +89,38 @@ extern "C"
         QueueHandle queue;             /* 当前队列时间管理队列 用于中断轮询 */
     };
 
+    /* 现在修改为分配轮询、中断、用户中断等等待时间 单位ns */
     struct spdk_plus_nvme_threshold_opts
     {
-        uint8_t depth_threshold1; /* 阈值深度 */
-        uint8_t depth_threshold2; /* 阈值深度 */
-        uint8_t depth_threshold3; /* 阈值深度 */
+        uint32_t depth_threshold1; /* 阈值深度 */
+        uint32_t depth_threshold2; /* 阈值深度 */
+        uint32_t depth_threshold3; /* 阈值深度 */
     };
 
     /* 读写基本单位数据结构 */
     struct spdk_plus_smart_nvme
     {
-        struct spdk_nvme_ctrlr *ctrlr;                                   /* NVMe控制器 */
-        struct spdk_nvme_ns *ns;                                         /* NVMe命名空间 */
-        struct spdk_plus_nvme_qpair poll_qpair;                          /* 轮询模式的NVMe队列对 */
-        struct spdk_plus_nvme_qpair int_qpair;                           /* 内核中断模式的NVMe队列对 */
-        struct spdk_plus_nvme_qpair uintr_qpair;                         /* 用户中断模式的NVMe队列对 */
-        struct spdk_plus_nvme_qpair back_poll_qpair;                     /* 后备轮询模式的NVMe队列对 */
-        uint16_t cpu_id;                                                 /* CPU ID */
-        int32_t fd;                                                      /* 文件描述符 (用于控制线程通知事务时处理) */
-        uint16_t curr_cite_num;                                          /* 当前引用计数 */
-        struct timespec start_wait_timestamp;                            /* 开始等待时间戳 */
-        struct spdk_plus_nvme_threshold_opts threshold_opts;             /* 阈值选项 */
-        uint64_t io_write_btypes;                                        /* 写入字节数 (循环统计，预定100微秒清除一次) */
-        uint64_t io_read_btypes;                                         /* 读取字节数 (循环统计，预定100微秒清除一次) */
-        uint64_t avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM]; /* 平均写延迟 ns 用于中断轮询 */
-        uint64_t avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];  /* 平均读延迟 ns 用于中断轮询 */
+        struct spdk_nvme_ctrlr *ctrlr;                                        /* NVMe控制器 */
+        struct spdk_nvme_ns *ns;                                              /* NVMe命名空间 */
+        struct spdk_plus_nvme_qpair poll_qpair;                               /* 轮询模式的NVMe队列对 */
+        struct spdk_plus_nvme_qpair int_qpair;                                /* 内核中断模式的NVMe队列对 */
+        struct spdk_plus_nvme_qpair uintr_qpair;                              /* 用户中断模式的NVMe队列对 */
+        struct spdk_plus_nvme_qpair back_poll_qpair;                          /* 后备轮询模式的NVMe队列对 */
+        uint16_t cpu_id;                                                      /* CPU ID */
+        int32_t fd;                                                           /* 文件描述符 (用于控制线程通知事务时处理) */
+        uint16_t curr_cite_num;                                               /* 当前引用计数 */
+        struct timespec start_wait_timestamp;                                 /* 开始等待时间戳 */
+        struct spdk_plus_nvme_threshold_opts threshold_opts;                  /* 阈值选项 */
+        int64_t finish_io_count;                                              /* 完成IO数量 (循环统计，预定100微秒清除一次) */
+        int16_t poll_io_depth;                                                /* 轮询IO深度 (循环统计，预定100微秒更新一次) */
+        int16_t uintr_io_depth;                                               /* 用户中断IO深度 (循环统计，预定100微秒更新一次) */
+        int16_t int_io_depth;                                                 /* 内核中断IO深度 (循环统计，预定100微秒更新一次) */
+        uint64_t io_write_btypes;                                             /* 写入字节数 (循环统计，预定100微秒清除一次) */
+        uint64_t io_read_btypes;                                              /* 读取字节数 (循环统计，预定100微秒清除一次) */
+        uint64_t avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];      /* 平均写延迟 ns 用于中断轮询 */
+        uint64_t avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM]; /* 平均写等待延迟 */
+        uint64_t avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];       /* 平均读延迟 ns 用于中断轮询 */
+        uint64_t avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];  /* 平均读等待延迟 */
         TAILQ_ENTRY(spdk_plus_smart_nvme)
         link;
     };

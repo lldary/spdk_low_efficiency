@@ -7,11 +7,14 @@
 #include <rte_log.h>
 #include <spdk/spdk_plus_log.h>
 #include <spdk/nvme_zns.h>
-#include "queue_wrapper.h" // Include the queue wrapper header
+#include "queue_wrapper.h"           // Include the queue wrapper header
+#include "thread_affinity_control.h" // Include the thread affinity control header
+#include "cJSON.h"
 
-// #ifndef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
+#ifdef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
+#undef CLOCK_MONOTONIC_RAW
 #define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
-// #endif
+#endif
 
 #define NS_PER_S 1000000000
 #define US_PER_S 1000000
@@ -156,6 +159,7 @@ TAILQ_HEAD(, nvme_metadata)
 g_nvme_metadata_list = TAILQ_HEAD_INITIALIZER(g_nvme_metadata_list);
 pthread_mutex_t meta_mutex;
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER; // TODO: 这个要解决
+pthread_rwlock_t meta_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 uint32_t lba_size = 0;
 bool g_spdk_plus_exit = false;
 struct spdk_plus_smart_nvme g_back_device; /* 备选 NVMe设备 */
@@ -277,9 +281,12 @@ begin:
 static int nvme_get_default_threshold_opts(
     struct spdk_plus_nvme_threshold_opts *opts)
 {
-    opts->depth_threshold1 = 8;
-    opts->depth_threshold2 = 16;
-    opts->depth_threshold3 = 32;
+    // opts->depth_threshold1 = 8;
+    // opts->depth_threshold2 = 16;
+    // opts->depth_threshold3 = 32;
+    opts->depth_threshold1 = 10 * 1000;
+    opts->depth_threshold2 = 30 * 1000;
+    opts->depth_threshold3 = 100 * 1000;
     return SPDK_PLUS_SUCCESS;
 }
 
@@ -448,6 +455,41 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             qpair = &nvme_device->int_qpair;
             task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
         }
+
+        switch (task->io_mode)
+        {
+        case SPDK_PLUS_READ:
+            if (nvme_device->avg_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold3)
+            {
+                qpair = &nvme_device->uintr_qpair;
+                task->notify_mode = SPDK_PLUS_UINTR_MODE;
+            }
+            else
+            {
+                qpair = &nvme_device->int_qpair;
+                task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
+            }
+            break;
+        case SPDK_PLUS_WRITE:
+            if (nvme_device->avg_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold3)
+            {
+                qpair = &nvme_device->uintr_qpair;
+                task->notify_mode = SPDK_PLUS_UINTR_MODE;
+            }
+            else
+            {
+                qpair = &nvme_device->int_qpair;
+                task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
+            }
+            break;
+        case SPDK_PLUS_FLUSH:
+            qpair = &nvme_device->uintr_qpair;
+            task->notify_mode = SPDK_PLUS_UINTR_MODE;
+            break;
+        default:
+            ERRLOG("Unknown IO mode\n");
+            break;
+        }
     }
     break;
     case SPDK_PLUS_SMART_SCHEDULE_MODULE_BALANCE:
@@ -470,6 +512,51 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             qpair = &nvme_device->int_qpair;
             task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
         }
+
+        switch (task->io_mode)
+        {
+        case SPDK_PLUS_READ:
+            if (nvme_device->avg_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
+            {
+                qpair = &nvme_device->poll_qpair;
+                task->notify_mode = SPDK_PLUS_POLL_MODE;
+            }
+            else if (nvme_device->avg_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold3)
+            {
+                qpair = &nvme_device->uintr_qpair;
+                task->notify_mode = SPDK_PLUS_UINTR_MODE;
+            }
+            else
+            {
+                qpair = &nvme_device->int_qpair;
+                task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
+            }
+            break;
+        case SPDK_PLUS_WRITE:
+            if (nvme_device->avg_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
+            {
+                qpair = &nvme_device->poll_qpair;
+                task->notify_mode = SPDK_PLUS_POLL_MODE;
+            }
+            else if (nvme_device->avg_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold3)
+            {
+                qpair = &nvme_device->uintr_qpair;
+                task->notify_mode = SPDK_PLUS_UINTR_MODE;
+            }
+            else
+            {
+                qpair = &nvme_device->int_qpair;
+                task->notify_mode = SPDK_PLUS_INTERRUPT_MODE;
+            }
+            break;
+        case SPDK_PLUS_FLUSH:
+            qpair = &nvme_device->uintr_qpair;
+            task->notify_mode = SPDK_PLUS_UINTR_MODE;
+            break;
+        default:
+            ERRLOG("Unknown IO mode\n");
+            break;
+        }
     }
     break;
     case SPDK_PLUS_SMART_SCHEDULE_MODULE_PERFORMANCE:
@@ -484,29 +571,8 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
         SPDK_ERRLOG("Unknown schedule module status\n");
     }
     enqueue(qpair->queue, (struct nvme_timestamp){.ts = task->start_time, .io_size = task->io_size, .io_mode = io_mode});
-    // DEBUGLOG("io_mode: %d, qpair_mode: %ld, queue size: %d\n", io_mode, task->notify_mode, queue_size(qpair->queue));
     if (qpair == NULL)
         ERRLOG("qpair is NULL\n");
-    // if (task->notify_mode == SPDK_PLUS_POLL_MODE && nvme_device->poll_qpair.fd == false)
-    // {
-    //     int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, true);
-    //     if (rc != 0)
-    //     {
-    //         SPDK_ERRLOG("Failed to disable interrupt for qpair\n");
-    //         return NULL;
-    //     }
-    //     nvme_device->poll_qpair.fd = true;
-    // }
-    // else if (queue_size(nvme_device->poll_qpair.queue) == 0 && nvme_device->poll_qpair.fd == true)
-    // {
-    //     int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, false);
-    //     if (rc != 0)
-    //     {
-    //         SPDK_ERRLOG("Failed to enable interrupt for qpair\n");
-    //         return NULL;
-    //     }
-    //     nvme_device->poll_qpair.fd = false;
-    // }
     return qpair->qpair;
 }
 
@@ -627,10 +693,17 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     *rc = SPDK_PLUS_SUCCESS;
 
     /* 设置线程亲和性 */
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(tmp_core++, &cpuset);
-    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    int32_t cpu_id = spdk_plus_get_sutiable_core_id(ctrlr);
+    if (cpu_id < 0)
+    {
+        ERRLOG("Failed to get suitable core id\n");
+        SPDK_ERRLOG("Failed to get suitable core id\n");
+        *rc = cpu_id;
+        goto failed;
+    }
+    spdk_plus_set_thread_affinity(cpu_id);
+    DEBUGLOG("设置线程亲和性成功，cpu_id: %d\n", cpu_id);
+    SPDK_ERRLOG("[ DEBUG ]设置线程 %u 亲和性成功，cpu_id: %d\n", syscall(SYS_gettid), cpu_id);
 
     smart_nvme = calloc(1, sizeof(struct spdk_plus_smart_nvme));
     if (!smart_nvme)
@@ -785,16 +858,18 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     }
     memset(smart_nvme->avg_write_latency, 0, sizeof(smart_nvme->avg_write_latency));
     memset(smart_nvme->avg_read_latency, 0, sizeof(smart_nvme->avg_read_latency));
-    DEBUGLOG("数组已清零\n");
-    TAILQ_INSERT_TAIL(&g_qpair_list, smart_nvme, link);
-    DEBUGLOG("已将该qpair添加到全局队列中管理\n");
+    memset(smart_nvme->avg_wait_read_latency, 0, sizeof(smart_nvme->avg_wait_read_latency));
+    memset(smart_nvme->avg_wait_write_latency, 0, sizeof(smart_nvme->avg_wait_write_latency));
     struct nvme_metadata *nvme_meta = NULL;
-    if (pthread_mutex_lock(&meta_mutex) != 0)
+    if (pthread_rwlock_wrlock(&meta_rwlock) != 0)
     {
         SPDK_ERRLOG("Failed to lock mutex\n");
         *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
         return NULL;
     }
+    DEBUGLOG("数组已清零\n");
+    TAILQ_INSERT_TAIL(&g_qpair_list, smart_nvme, link);
+    DEBUGLOG("已将该qpair添加到全局队列中管理\n");
     TAILQ_FOREACH(nvme_meta, &g_nvme_metadata_list, link)
     {
         if (nvme_meta->ctrlr == ctrlr)
@@ -802,7 +877,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
             nvme_meta->cite_number++;
             smart_nvme->curr_cite_num = 1;
             nvme_meta->nvme_qpair[smart_nvme->cpu_id % SPDK_PLUS_MAX_QUEUE_NUM] = smart_nvme;
-            if (pthread_mutex_unlock(&meta_mutex) != 0)
+            if (pthread_rwlock_unlock(&meta_rwlock) != 0)
             {
                 SPDK_ERRLOG("Failed to unlock mutex\n");
                 *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
@@ -815,7 +890,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     if (!nvme_meta)
     {
         SPDK_ERRLOG("Failed to allocate memory for nvme_meta\n");
-        pthread_mutex_unlock(&meta_mutex);
+        pthread_rwlock_unlock(&meta_rwlock);
         *rc = SPDK_PLUS_ERR_NO_MEMORY;
         goto failed;
     }
@@ -826,7 +901,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     {
         SPDK_ERRLOG("Failed to allocate nvme_meta qpair\n");
         *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 6;
-        pthread_mutex_unlock(&meta_mutex);
+        pthread_rwlock_unlock(&meta_rwlock);
         free(nvme_meta);
         goto failed;
     }
@@ -834,7 +909,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     {
         SPDK_ERRLOG("Failed to get nvme_meta qpair fd\n");
         *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 7;
-        pthread_mutex_unlock(&meta_mutex);
+        pthread_rwlock_unlock(&meta_rwlock);
         free(nvme_meta);
         goto failed;
     }
@@ -843,7 +918,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     {
         SPDK_ERRLOG("Failed to get flags\n");
         *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
-        pthread_mutex_unlock(&meta_mutex);
+        pthread_rwlock_unlock(&meta_rwlock);
         free(nvme_meta);
         goto failed;
     }
@@ -851,7 +926,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     {
         SPDK_ERRLOG("Failed to set flags\n");
         *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
-        pthread_mutex_unlock(&meta_mutex);
+        pthread_rwlock_unlock(&meta_rwlock);
         free(nvme_meta);
         goto failed;
     }
@@ -860,7 +935,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     {
         SPDK_ERRLOG("Failed to create nvme_meta queue\n");
         *rc = SPDK_PLUS_ERR_SYS_API_FAILED;
-        pthread_mutex_unlock(&meta_mutex);
+        pthread_rwlock_unlock(&meta_rwlock);
         free(nvme_meta);
         goto failed;
     }
@@ -868,7 +943,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     smart_nvme->curr_cite_num = 1;
     nvme_meta->nvme_qpair[smart_nvme->cpu_id % SPDK_PLUS_MAX_QUEUE_NUM] = smart_nvme;
     TAILQ_INSERT_TAIL(&g_nvme_metadata_list, nvme_meta, link);
-    if (pthread_mutex_unlock(&meta_mutex) != 0)
+    if (pthread_rwlock_unlock(&meta_rwlock) != 0)
     {
         SPDK_ERRLOG("Failed to unlock mutex\n");
         *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
@@ -924,20 +999,23 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
     clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
     uint64_t latency = (end_time.tv_sec - task->start_time.tv_sec) * 1000000000 + (end_time.tv_nsec - task->start_time.tv_nsec);
     struct spdk_plus_smart_nvme *nvme_device = task->nvme_device;
-    latency = (end_time.tv_sec - nvme_device->start_wait_timestamp.tv_sec) * 1000000000 + (end_time.tv_nsec - nvme_device->start_wait_timestamp.tv_nsec);
+    nvme_device->finish_io_count++;
+    uint64_t wait_latency = (end_time.tv_sec - nvme_device->start_wait_timestamp.tv_sec) * 1000000000 + (end_time.tv_nsec - nvme_device->start_wait_timestamp.tv_nsec);
     if (task->notify_mode == SPDK_PLUS_POLL_MODE)
     {
         if (task->io_mode == SPDK_PLUS_READ)
         {
             nvme_device->avg_read_latency[task->io_size] = g_smart_schedule_module_opts.read_alpha * latency +
                                                            (1 - g_smart_schedule_module_opts.read_alpha) * nvme_device->avg_read_latency[task->io_size]; /* 指数加权移动平均 */
-            SPDK_ERRLOG("dev: %p iosize: %u read latency: %lu\n", nvme_device, task->io_size, nvme_device->avg_read_latency[task->io_size]);
+            nvme_device->avg_wait_read_latency[task->io_size] = g_smart_schedule_module_opts.read_alpha * wait_latency +
+                                                                (1 - g_smart_schedule_module_opts.read_alpha) * nvme_device->avg_wait_read_latency[task->io_size]; /* 指数加权移动平均 */
         }
         else if (task->io_mode == SPDK_PLUS_WRITE)
         {
             nvme_device->avg_write_latency[task->io_size] = g_smart_schedule_module_opts.write_alpha * latency +
                                                             (1 - g_smart_schedule_module_opts.write_alpha) * nvme_device->avg_write_latency[task->io_size]; /* 指数加权移动平均 */
-            SPDK_ERRLOG("dev: %p iosize: %u write latency: %lu\n", nvme_device, task->io_size, nvme_device->avg_write_latency[task->io_size]);
+            nvme_device->avg_wait_write_latency[task->io_size] = g_smart_schedule_module_opts.write_alpha * wait_latency +
+                                                                 (1 - g_smart_schedule_module_opts.write_alpha) * nvme_device->avg_wait_write_latency[task->io_size]; /* 指数加权移动平均 */
         }
         dequeue(nvme_device->poll_qpair.queue);
     }
@@ -1436,8 +1514,8 @@ int32_t spdk_plus_nvme_process_completions(struct spdk_plus_smart_nvme *nvme_dev
             }
         }
     }
-    SPDK_ERRLOG("All qpair are empty\n");
-    return SPDK_PLUS_ERR;
+    WARNLOG("All qpair are empty\n");
+    return 0;
 }
 
 int spdk_plus_nvme_ns_cmd_flush(struct spdk_nvme_ns *ns, struct spdk_plus_smart_nvme *nvme_device,
@@ -1543,13 +1621,167 @@ spdk_plus_get_default_opts(enum spdk_plus_smart_schedule_module_status status,
     return SPDK_PLUS_SUCCESS;
 }
 
+static void
+spdk_plus_print_statistical_data(int client_id)
+{
+    struct spdk_plus_smart_nvme *smart_nvme = NULL;
+    char buffer[SPDK_PLUS_BUF_SIZE] = {0};
+    cJSON *array = cJSON_CreateArray();
+    if (array == NULL)
+    {
+        SPDK_ERRLOG("Failed to create JSON array\n");
+        return;
+    }
+    pthread_rwlock_rdlock(&meta_rwlock);
+    TAILQ_FOREACH(smart_nvme, &g_qpair_list, link)
+    {
+        if (smart_nvme->ctrlr == NULL)
+        {
+            SPDK_ERRLOG("Controller is NULL\n");
+            continue;
+        }
+        cJSON *object = cJSON_CreateObject();
+        if (object == NULL)
+        {
+            SPDK_ERRLOG("Failed to create JSON object\n");
+            cJSON_Delete(array);
+            return;
+        }
+        cJSON_AddStringToObject(object, "Device", spdk_nvme_ctrlr_get_transport_id(smart_nvme->ctrlr)->traddr);
+        cJSON_AddNumberToObject(object, "Current Poll Depth", smart_nvme->poll_io_depth);
+        cJSON_AddNumberToObject(object, "Current Uintr Depth", smart_nvme->uintr_io_depth);
+        cJSON_AddNumberToObject(object, "Current Int Depth", smart_nvme->int_io_depth);
+        cJSON_AddNumberToObject(object, "finish IO Count", smart_nvme->finish_io_count);
+        cJSON *read_latency = cJSON_CreateObject();
+        if (read_latency == NULL)
+        {
+            SPDK_ERRLOG("Failed to create JSON object\n");
+            cJSON_Delete(object);
+            cJSON_Delete(array);
+            return;
+        }
+        cJSON_AddNumberToObject(read_latency, "4k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(read_latency, "8k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(read_latency, "16k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(read_latency, "32k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(read_latency, "64k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(read_latency, "128k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(read_latency, "256k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(read_latency, "512k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(read_latency, "1M", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(read_latency, "2M", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(read_latency, "Over 2M", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(read_latency, "flush", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddItemToObject(object, "Read Latency", read_latency);
+        cJSON *write_latency = cJSON_CreateObject();
+        if (write_latency == NULL)
+        {
+            SPDK_ERRLOG("Failed to create JSON object\n");
+            cJSON_Delete(read_latency);
+            cJSON_Delete(object);
+            cJSON_Delete(array);
+            return;
+        }
+        cJSON_AddNumberToObject(write_latency, "4k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(write_latency, "8k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(write_latency, "16k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(write_latency, "32k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(write_latency, "64k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(write_latency, "128k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(write_latency, "256k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(write_latency, "512k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(write_latency, "1M", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(write_latency, "2M", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(write_latency, "Over 2M", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(write_latency, "flush", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddItemToObject(object, "Write Latency", write_latency);
+        cJSON *read_wait_latency = cJSON_CreateObject();
+        if (read_wait_latency == NULL)
+        {
+            SPDK_ERRLOG("Failed to create JSON object\n");
+            cJSON_Delete(read_latency);
+            cJSON_Delete(write_latency);
+            cJSON_Delete(object);
+            cJSON_Delete(array);
+            return;
+        }
+        cJSON_AddNumberToObject(read_wait_latency, "4k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(read_wait_latency, "8k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(read_wait_latency, "16k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(read_wait_latency, "32k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(read_wait_latency, "64k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(read_wait_latency, "128k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(read_wait_latency, "256k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(read_wait_latency, "512k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(read_wait_latency, "1M", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(read_wait_latency, "2M", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(read_wait_latency, "Over 2M", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(read_wait_latency, "flush", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddItemToObject(object, "Read Wait Latency", read_wait_latency);
+        cJSON *write_wait_latency = cJSON_CreateObject();
+        if (write_wait_latency == NULL)
+        {
+            SPDK_ERRLOG("Failed to create JSON object\n");
+            cJSON_Delete(read_wait_latency);
+            cJSON_Delete(read_latency);
+            cJSON_Delete(write_latency);
+            cJSON_Delete(object);
+            cJSON_Delete(array);
+            return;
+        }
+        cJSON_AddNumberToObject(write_wait_latency, "4k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(write_wait_latency, "8k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(write_wait_latency, "16k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(write_wait_latency, "32k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(write_wait_latency, "64k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(write_wait_latency, "128k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(write_wait_latency, "256k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(write_wait_latency, "512k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(write_wait_latency, "1M", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(write_wait_latency, "2M", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(write_wait_latency, "Over 2M", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(write_wait_latency, "flush", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddItemToObject(object, "Write Wait Latency", write_wait_latency);
+        cJSON_AddItemToArray(array, object);
+    }
+    pthread_rwlock_unlock(&meta_rwlock);
+    char *json_string = cJSON_Print(array);
+    if (json_string == NULL)
+    {
+        SPDK_ERRLOG("Failed to print JSON string\n");
+        cJSON_Delete(array);
+        return;
+    }
+    int16_t pos = 0;
+    int16_t len = strlen(json_string);
+    int16_t send_len = 0;
+    while (pos < len)
+    {
+        send_len = send(client_id, json_string + pos, len - pos, 0);
+        if (send_len <= 0)
+        {
+            SPDK_ERRLOG("Failed to send data to client\n");
+            break;
+        }
+        pos += send_len;
+    }
+    send(client_id, "\n", 1, 0);
+    if (send_len <= 0)
+    {
+        SPDK_ERRLOG("Failed to send newline to client\n");
+    }
+    free(json_string);
+    cJSON_Delete(array);
+    return;
+}
+
 static void *
 spdk_plus_get_remote_control_function(void *arg)
 {
     int client_fd = *((int *)arg);
     free(arg);
     char buffer[SPDK_PLUS_BUF_SIZE] = {0};
-    while (1)
+    if (1)
     {
         memset(buffer, 0, sizeof(buffer));
         ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1);
@@ -1563,10 +1795,19 @@ spdk_plus_get_remote_control_function(void *arg)
             {
                 SPDK_ERRLOG("Error reading from client\n");
             }
-            break;
+            close(client_fd);
+            return NULL;
         }
-        printf("Received from client: %s\n", buffer);
+        // printf("Received from client: %s\n", buffer);
         // TODO: 处理接收到的数据
+        if (strcmp(buffer, "dump") == 0)
+        {
+            spdk_plus_print_statistical_data(client_fd);
+        }
+        else
+        {
+            SPDK_ERRLOG("Unknown command: %s\n", buffer);
+        }
     }
 
     close(client_fd);
@@ -1578,6 +1819,7 @@ spdk_plus_change_ssd_strategy(void)
 {
     // TODO: 策略调整
 
+    pthread_rwlock_rdlock(&meta_rwlock);
     /* 通知所有qpair清零统计数据 */
     struct spdk_plus_smart_nvme *smart_nvme = NULL;
     TAILQ_FOREACH(smart_nvme, &g_qpair_list, link)
@@ -1587,13 +1829,36 @@ spdk_plus_change_ssd_strategy(void)
             SPDK_ERRLOG("Controller is NULL\n");
             continue;
         }
-        uint64_t cmd = SPDK_PLUS_CLEAR_STAT;
-        int rc = write(smart_nvme->fd, &cmd, sizeof(cmd));
-        if (rc != sizeof(cmd))
-        {
-            SPDK_ERRLOG("Failed to write to eventfd\n");
-        }
+        // uint64_t cmd = SPDK_PLUS_CLEAR_STAT;
+        // int rc = write(smart_nvme->fd, &cmd, sizeof(cmd));
+        // if (rc != sizeof(cmd))
+        // {
+        //     SPDK_ERRLOG("Failed to write to eventfd\n");
+        // }
     }
+    pthread_rwlock_unlock(&meta_rwlock);
+}
+
+static void
+spdk_plus_update_statistical_data(void)
+{
+    pthread_rwlock_rdlock(&meta_rwlock);
+    /* 更新统计数据 */
+    struct spdk_plus_smart_nvme *smart_nvme = NULL;
+    TAILQ_FOREACH(smart_nvme, &g_qpair_list, link)
+    {
+        if (smart_nvme->ctrlr == NULL)
+        {
+            SPDK_ERRLOG("Controller is NULL\n");
+            continue;
+        }
+        smart_nvme->finish_io_count = 0;
+        smart_nvme->poll_io_depth = (smart_nvme->poll_io_depth + queue_size(smart_nvme->poll_qpair.queue)) / 2;
+        smart_nvme->uintr_io_depth = (smart_nvme->uintr_io_depth + queue_size(smart_nvme->uintr_qpair.queue)) / 2;
+        smart_nvme->int_io_depth = (smart_nvme->int_io_depth + queue_size(smart_nvme->int_qpair.queue)) / 2;
+    }
+    pthread_rwlock_unlock(&meta_rwlock);
+    return;
 }
 
 static void *
@@ -1601,7 +1866,7 @@ spdk_plus_control_thread(void *arg)
 {
     if (arg != NULL)
     {
-        SPDK_ERRLOG("Control thread is not NULL\n");
+        ERRLOG("Control thread is not NULL\n");
         return NULL;
     }
     /* 创建网络监听符 */
@@ -1612,28 +1877,33 @@ spdk_plus_control_thread(void *arg)
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1)
     {
-        SPDK_ERRLOG("socket failed\n");
+        ERRLOG("socket failed\n");
         return NULL;
     }
+    // 随机生成端口号
+    uint16_t port = rand() % (10000) + 20000;
     // 设置地址结构
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY; // 监听所有网络接口
-    address.sin_port = htons(PORT);
+    address.sin_port = htons(port);
     // 绑定套接字到地址
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
     {
-        perror("bind failed");
+        ERRLOG("bind failed");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
     // 开始监听
     if (listen(server_fd, BACKLOG) < 0)
     {
-        perror("listen failed");
+        ERRLOG("listen failed");
         close(server_fd);
         exit(EXIT_FAILURE);
     }
+    pid_t tid = syscall(SYS_gettid);
+    INFOLOG("Thread %u Listening on port %d\n", tid, port);
+    SPDK_ERRLOG("Thread %u Listening on port %d\n", tid, port);
     /* 创建100us循环的触发一次的描述符 */
     struct itimerspec ts;
     int32_t timer_fd = timerfd_create(CLOCK_MONOTONIC_RAW, TFD_NONBLOCK | TFD_CLOEXEC);
@@ -1652,7 +1922,7 @@ spdk_plus_control_thread(void *arg)
     // 设置定时器
     if (timerfd_settime(timer_fd, 0, &ts, NULL) == -1)
     {
-        perror("timerfd_settime");
+        ERRLOG("timerfd_settime");
         close(timer_fd);
         close(server_fd);
         exit(EXIT_FAILURE);
@@ -1661,7 +1931,7 @@ spdk_plus_control_thread(void *arg)
     int32_t epoll_fd = epoll_create1(0);
     if (epoll_fd == -1)
     {
-        SPDK_ERRLOG("Failed to create epoll fd\n");
+        ERRLOG("Failed to create epoll fd\n");
         close(timer_fd);
         close(server_fd);
         return NULL;
@@ -1672,7 +1942,7 @@ spdk_plus_control_thread(void *arg)
     ev.data.fd = server_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &ev) == -1)
     {
-        perror("epoll_ctl failed");
+        ERRLOG("epoll_ctl failed");
         close(server_fd);
         close(timer_fd);
         close(epoll_fd);
@@ -1681,7 +1951,7 @@ spdk_plus_control_thread(void *arg)
     ev.data.fd = timer_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer_fd, &ev) == -1)
     {
-        perror("epoll_ctl failed");
+        ERRLOG("epoll_ctl failed");
         close(server_fd);
         close(timer_fd);
         close(epoll_fd);
@@ -1689,6 +1959,8 @@ spdk_plus_control_thread(void *arg)
     }
 
     struct epoll_event events[EPOLL_SIZE];
+
+    INFOLOG("Control thread started\n");
 
     // 等待事件
     while (!g_spdk_plus_exit)
@@ -1739,12 +2011,16 @@ spdk_plus_control_thread(void *arg)
                     SPDK_ERRLOG("Failed to read from timer fd\n");
                     continue;
                 }
-                spdk_plus_change_ssd_strategy();
+                spdk_plus_update_statistical_data();
+                // spdk_plus_change_ssd_strategy();
+                // spdk_plus_print_statistical_data();
                 // DEBUGLOG("Timer expired %llu times\n", (unsigned long long)expirations);
             }
         }
     }
 
+    INFOLOG("Exiting control thread\n");
+    SPDK_ERRLOG("Exiting control thread\n");
     // 清理资源
     close(server_fd);
     close(timer_fd);
@@ -1979,6 +2255,11 @@ int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
         SPDK_ERRLOG("nvme_device is NULL\n");
         return SPDK_PLUS_ERR_INVALID;
     }
+    if (pthread_rwlock_wrlock(&meta_rwlock) < 0)
+    {
+        SPDK_ERRLOG("Failed to lock mutex\n");
+        return SPDK_PLUS_ERR;
+    }
     if (nvme_device->poll_qpair.qpair)
     {
         rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
@@ -2053,11 +2334,6 @@ int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
     }
 
 failed:
-    if (pthread_mutex_lock(&meta_mutex) < 0)
-    {
-        SPDK_ERRLOG("Failed to lock mutex\n");
-        return SPDK_PLUS_ERR;
-    }
     struct spdk_plus_smart_nvme *smart_nvme = NULL;
     TAILQ_FOREACH(smart_nvme, &g_qpair_list, link)
     {
@@ -2085,7 +2361,7 @@ failed:
             break;
         }
     }
-    pthread_mutex_unlock(&meta_mutex);
+    pthread_rwlock_unlock(&meta_rwlock);
     DEBUGLOG("Free nvme device %p rc = %d\n", nvme_device, rc);
     SPDK_ERRLOG("Free nvme device %p rc = %d thread id = %lu\n", nvme_device, rc, pthread_self());
     return rc;
@@ -2101,7 +2377,7 @@ int spdk_plus_env_fini(void)
     {
         usleep(1000);
         struct spdk_plus_smart_nvme *smart_nvme = NULL;
-        if (pthread_mutex_lock(&meta_mutex) < 0)
+        if (pthread_rwlock_rdlock(&meta_rwlock) < 0)
         {
             SPDK_ERRLOG("Failed to lock mutex\n");
             return SPDK_PLUS_ERR;
@@ -2115,7 +2391,7 @@ int spdk_plus_env_fini(void)
                 break;
             }
         }
-        pthread_mutex_unlock(&meta_mutex);
+        pthread_rwlock_unlock(&meta_rwlock);
     } while (!is_all_free);
     INFOLOG("SPDK Plus env is free, now we will process the backend ssd source\n");
     g_spdk_plus_exit = true;
