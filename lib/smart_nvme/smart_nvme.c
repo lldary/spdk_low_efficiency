@@ -749,14 +749,14 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_INVALID;
         goto failed;
     }
-    smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, opts_size);
-    if (!smart_nvme->poll_qpair.qpair)
-    {
-        SPDK_ERRLOG("Failed to allocate poll qpair\n");
-        *rc = SPDK_PLUS_ERR_SPDK_API_FAILED;
-        goto failed;
-    }
-    // smart_nvme->poll_qpair.qpair = NULL;
+    // smart_nvme->poll_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, opts_size);
+    // if (!smart_nvme->poll_qpair.qpair)
+    // {
+    //     SPDK_ERRLOG("Failed to allocate poll qpair\n");
+    //     *rc = SPDK_PLUS_ERR_SPDK_API_FAILED;
+    //     goto failed;
+    // }
+    smart_nvme->poll_qpair.qpair = NULL;
     smart_nvme->poll_qpair.queue = create_queue();
     if (!smart_nvme->poll_qpair.queue)
     {
@@ -827,32 +827,32 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     // nvme_prepare_uintr_env();
     DEBUGLOG("正常创建uintr env\n");
     opts.interrupt_mode = SPDK_PLUS_UINTR_MODE;
-    // smart_nvme->uintr_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &smart_nvme->uintr_qpair.fd);
-    // if (!smart_nvme->uintr_qpair.qpair)
-    // {
-    //     SPDK_ERRLOG("Failed to allocate uintr qpair\n");
-    //     *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 4;
-    //     goto failed;
-    // }
-    // // smart_nvme->poll_qpair.qpair = smart_nvme->uintr_qpair.qpair;
-    // smart_nvme->poll_qpair.fd = false; // 代表轮询队列中断没有屏蔽
-    // if (smart_nvme->uintr_qpair.fd < 0)
-    // {
-    //     SPDK_ERRLOG("Failed to get uintr qpair fd\n");
-    //     *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 5;
-    //     goto failed;
-    // }
-    // int uipi_index = uintr_register_sender(smart_nvme->uintr_qpair.fd, 0);
-    // if (uipi_index < 0)
-    // {
-    //     ERRLOG("Unable to register sender fd=%d rc=%d\n", smart_nvme->uintr_qpair.fd, uipi_index);
-    //     *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
-    //     goto failed;
-    // // }
-    // smart_nvme->uintr_qpair.uipi_index = uipi_index;
-    // g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
-    // DEBUGLOG("uipi_index: %d\n", uipi_index);
-    // _senduipi(uipi_index);
+    smart_nvme->uintr_qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &smart_nvme->uintr_qpair.fd);
+    if (!smart_nvme->uintr_qpair.qpair)
+    {
+        SPDK_ERRLOG("Failed to allocate uintr qpair\n");
+        *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 4;
+        goto failed;
+    }
+    smart_nvme->poll_qpair.qpair = smart_nvme->uintr_qpair.qpair;
+    smart_nvme->poll_qpair.fd = false; // 代表轮询队列中断没有屏蔽
+    if (smart_nvme->uintr_qpair.fd < 0)
+    {
+        SPDK_ERRLOG("Failed to get uintr qpair fd\n");
+        *rc = SPDK_PLUS_ERR_SPDK_PLUS_API_FAILED - 5;
+        goto failed;
+    }
+    int uipi_index = uintr_register_sender(smart_nvme->uintr_qpair.fd, 0);
+    if (uipi_index < 0)
+    {
+        ERRLOG("Unable to register sender fd=%d rc=%d\n", smart_nvme->uintr_qpair.fd, uipi_index);
+        *rc = SPDK_PLUS_ERR_KERNEL_API_FAILED;
+        goto failed;
+    }
+    smart_nvme->uintr_qpair.uipi_index = uipi_index;
+    g_cpuid_uipi_map[smart_nvme->cpu_id] = uipi_index;
+    DEBUGLOG("uipi_index: %d\n", uipi_index);
+    _senduipi(uipi_index);
     DEBUGLOG("用户中断相关寄存器已预先填充\n");
     smart_nvme->uintr_qpair.queue = create_queue();
     DEBUGLOG("相关队列已创建\n");
@@ -967,7 +967,7 @@ failed:
     {
         if (smart_nvme->poll_qpair.qpair)
         {
-            spdk_nvme_ctrlr_free_io_qpair(smart_nvme->poll_qpair.qpair);
+            // spdk_nvme_ctrlr_free_io_qpair(smart_nvme->poll_qpair.qpair);
         }
         if (smart_nvme->int_qpair.qpair)
         {
@@ -1141,6 +1141,24 @@ static inline void update_uipi_stat(const struct spdk_plus_smart_nvme *nvme_devi
     if (g_cpuid_uipi_map[nvme_device->cpu_id] == 0)
     {
         g_cpuid_uipi_map[nvme_device->cpu_id] = nvme_device->uintr_qpair.uipi_index;
+    }
+    if (queue_size(nvme_device->poll_qpair.queue) > 0 && nvme_device->poll_qpair.fd == false)
+    {
+        int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, true);
+        if (rc != 0)
+        {
+            SPDK_ERRLOG("Failed to disable interrupt for qpair\n");
+            return NULL;
+        }
+    }
+    else if (queue_size(nvme_device->poll_qpair.queue) == 0 && nvme_device->poll_qpair.fd == true)
+    {
+        int rc = spdk_nvme_ctrlr_control_io_qpair_interrupt(nvme_device->poll_qpair.qpair, false);
+        if (rc != 0)
+        {
+            SPDK_ERRLOG("Failed to enable interrupt for qpair\n");
+            return NULL;
+        }
     }
     return;
 }
@@ -2310,7 +2328,7 @@ int spdk_plus_nvme_ctrlr_free_io_qpair(struct spdk_plus_smart_nvme *nvme_device)
     }
     if (nvme_device->poll_qpair.qpair)
     {
-        rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
+        // rc = spdk_nvme_ctrlr_free_io_qpair(nvme_device->poll_qpair.qpair);
         if (rc != 0)
         {
             SPDK_ERRLOG("Failed to free poll qpair\n");
