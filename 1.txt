@@ -1,0 +1,16 @@
+make[1]: 对“all”无需做任何事。
+make[1]: 对“all”无需做任何事。
+  LINK hello_world
+  LINK cmb_copy
+  LINK reconnect
+  LINK arbitration
+  LINK hotplug
+  LINK pmr_persistence
+  LINK abort
+  LINK nvme_manage
+  LINK smart_nvme_hello_world
+  LINK nvme_format
+  CC examples/bdev/hello_world/hello_bdev.o
+  CC examples/bdev/bdevperf/bdevperf.o
+  LINK hello_bdev
+  LINK bdevperf

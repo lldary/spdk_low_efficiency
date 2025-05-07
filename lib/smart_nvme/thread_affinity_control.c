@@ -4,8 +4,14 @@
 #include <spdk/log.h>
 #include <spdk/smart_nvme.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 #define CORE_NUMBER 0XFF
+
+int32_t last_core_id = 0;
 
 uint8_t cpus[CORE_NUMBER] = {0};
 pthread_mutex_t cpu_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -43,6 +49,16 @@ int32_t spdk_plus_get_sutiable_core_id(struct spdk_nvme_ctrlr *ctrlr)
         pthread_mutex_unlock(&cpu_mutex);
         return SPDK_PLUS_ERR_KERNEL_API_FAILED;
     }
+
+    if (last_core_id == 0)
+    {
+        last_core_id = rand() % ((((uint64_t)ctrlr) & 0xf0000) >> 16) + 1;
+    }
+    else
+    {
+        last_core_id++;
+    }
+    core_id = last_core_id;
     cpus[core_id]++;
     pthread_mutex_unlock(&cpu_mutex);
     return core_id;
