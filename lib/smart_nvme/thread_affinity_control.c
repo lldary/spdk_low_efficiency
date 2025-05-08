@@ -11,8 +11,6 @@
 
 #define CORE_NUMBER 0XFF
 
-int32_t last_core_id = 0;
-
 uint8_t cpus[CORE_NUMBER] = {0};
 pthread_mutex_t cpu_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -29,19 +27,27 @@ int32_t spdk_plus_get_sutiable_core_id(struct spdk_nvme_ctrlr *ctrlr)
     INFOLOG("numa_id: %d, cpu_number: %d\n", numa_id, cpu_number);
     SPDK_ERRLOG("numa_id: %d, cpu_number: %d\n", numa_id, cpu_number);
     pthread_mutex_lock(&cpu_mutex);
-    for (int32_t cpu = 0; cpu < cpu_number; cpu++)
+    srand(time(NULL) ^ getpid() ^ (unsigned long)ctrlr);
+    int32_t rand_number = rand() % 0xFF + 1;
+    do
     {
-        int node = numa_node_of_cpu(cpu);
-        if (numa_id == node)
+        for (int32_t cpu = 0; cpu < cpu_number; cpu++)
         {
-            DEBUGLOG("CPU %d is in NUMA node %d\n", cpu, numa_id);
-            SPDK_ERRLOG("[ DEBUG ] CPU %d is in NUMA node %d\n", cpu, numa_id);
-            if (core_id == -1 || cpus[cpu] <= cpus[core_id])
+            int node = numa_node_of_cpu(cpu);
+            if (cpus[cpu] == 0)
             {
+                DEBUGLOG("CPU %d is in NUMA node %d\n", cpu, numa_id);
+                SPDK_ERRLOG("[ DEBUG ] CPU %d is in NUMA node %d\n", cpu, numa_id);
+                if (rand_number == 0)
+                {
+                    core_id = cpu;
+                    break;
+                }
                 core_id = cpu;
+                rand_number--;
             }
         }
-    }
+    } while (rand_number > 0);
     if (core_id == -1)
     {
         ERRLOG("No suitable core found\n");
@@ -50,15 +56,6 @@ int32_t spdk_plus_get_sutiable_core_id(struct spdk_nvme_ctrlr *ctrlr)
         return SPDK_PLUS_ERR_KERNEL_API_FAILED;
     }
 
-    if (last_core_id == 0)
-    {
-        last_core_id = rand() % ((((uint64_t)ctrlr) & 0xf0000) >> 16) + 1;
-    }
-    else
-    {
-        last_core_id++;
-    }
-    core_id = last_core_id;
     cpus[core_id]++;
     pthread_mutex_unlock(&cpu_mutex);
     return core_id;
@@ -74,6 +71,22 @@ void spdk_plus_set_thread_affinity(int32_t core_id)
         ERRLOG("pthread_setaffinity_np failed\n");
         return;
     }
-    DEBUGLOG("Set thread affinity to core %d\n", core_id);
+    DEBUGLOG("Set thread tid: %lu affinity to core %d\n", syscall(SYS_gettid), core_id);
     return;
+}
+
+void spdk_plus_unset_thread_affinity(void)
+{
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    int32_t cpu_number = numa_num_configured_cpus();
+    for (int i = 0; i < cpu_number; i++)
+    {
+        CPU_SET(i, &cpuset);
+    }
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0)
+    {
+        ERRLOG("pthread_setaffinity_np failed\n");
+        return;
+    }
 }

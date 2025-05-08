@@ -4,3 +4,5 @@
 int32_t spdk_plus_get_sutiable_core_id(struct spdk_nvme_ctrlr *ctrlr);
 
 void spdk_plus_set_thread_affinity(int32_t core_id);
+
+void spdk_plus_unset_thread_affinity(void);
