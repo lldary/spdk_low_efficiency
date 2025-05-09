@@ -99,6 +99,13 @@ struct nvme_metadata
     link;
 };
 
+struct power_state_cql
+{
+    uint32_t power_state : 5;
+    uint32_t workhint : 3;
+    uint32_t reserved : 24;
+};
+
 #define local_irq_save(flags) \
     do                        \
     {                         \
@@ -727,6 +734,36 @@ void *spdk_plus_get_cb_arg(const void *task)
     return ((const struct io_task *)task)->cb_arg;
 }
 
+static void
+power_mode_get_complete(void *ctx, const struct spdk_nvme_cpl *cql)
+{
+    if (spdk_nvme_cpl_is_error(cql))
+    {
+        SPDK_ERRLOG("I/O error: %s\n", spdk_nvme_cpl_get_status_string(&cql->status));
+    }
+    uint32_t cdw0 = cql->cdw0;
+    if (ctx == NULL)
+        INFOLOG("before change current power state: %u\n", ((struct power_state_cql *)(&cdw0))->power_state);
+    else
+        INFOLOG("after change current power state: %u\n", ((struct power_state_cql *)(&cdw0))->power_state);
+}
+
+static void
+power_mode_update_complete(void *ctx, const struct spdk_nvme_cpl *cpl)
+{
+    struct spdk_nvme_ctrlr *ctrlr = ctx;
+    if (spdk_nvme_cpl_is_error(cpl))
+    {
+        SPDK_ERRLOG("I/O error: %s\n", spdk_nvme_cpl_get_status_string(&cpl->status));
+    }
+    INFOLOG("Power mode update complete\n");
+    if (spdk_nvme_ctrlr_cmd_get_feature(ctrlr, SPDK_NVME_FEAT_POWER_MANAGEMENT, 0,
+                                        NULL, 0, power_mode_get_complete, (void *)1) != 0)
+    {
+        SPDK_ERRLOG("get power state failed\n");
+    }
+}
+
 struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nvme_ctrlr *ctrlr,
                                                                   const struct spdk_nvme_io_qpair_opts *user_opts,
                                                                   size_t opts_size, int *rc)
@@ -950,6 +987,15 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     memset(nvme_meta, 0, sizeof(struct nvme_metadata));
     smart_nvme->statistics = &(nvme_meta->statistics);
     nvme_meta->ctrlr = ctrlr;
+    // if (spdk_nvme_ctrlr_cmd_set_feature(nvme_meta->ctrlr,
+    //                                     SPDK_NVME_FEAT_POWER_MANAGEMENT,
+    //                                     2, 0,
+    //                                     NULL, 0, power_mode_update_complete, nvme_meta->ctrlr) != 0)
+    // {
+    //     ERRLOG("set power state failed\n");
+    //     *rc = SPDK_PLUS_ERR_SPDK_API_FAILED;
+    //     goto failed;
+    // }
     opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
     nvme_meta->qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &nvme_meta->qpair.fd);
     if (!nvme_meta->qpair.qpair)
