@@ -97,6 +97,22 @@ extern "C"
         uint32_t depth_threshold3; /* 阈值深度 */
     };
 
+    struct spdk_plus_smart_nvme_statistics
+    {
+        int64_t finish_io_count;                                              /* 完成IO数量 (循环统计，预定100微秒清除一次) */
+        uint64_t write_btypes;                                                /* 写入字节数 */
+        uint32_t read_latency;                                                /* 读取延迟 */
+        uint32_t write_latency;                                               /* 写入延迟 */
+        uint32_t read_wait_latency;                                           /* 读取等待延迟 */
+        uint32_t write_wait_latency;                                          /* 写入等待延迟 */
+        uint64_t io_write_btypes;                                             /* 写入字节数 (循环统计，预定100微秒清除一次) */
+        uint64_t io_read_btypes;                                              /* 读取字节数 (循环统计，预定100微秒清除一次) */
+        uint64_t avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];      /* 平均写延迟 ns 用于中断轮询 */
+        uint64_t avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM]; /* 平均写等待延迟 */
+        uint64_t avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];       /* 平均读延迟 ns 用于中断轮询 */
+        uint64_t avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];  /* 平均读等待延迟 */
+    };
+
     /* 读写基本单位数据结构 */
     struct spdk_plus_smart_nvme
     {
@@ -112,22 +128,16 @@ extern "C"
         struct timespec start_wait_timestamp;        /* 开始等待时间戳 */
         uint64_t least_wait_timestamp;
         struct spdk_plus_nvme_threshold_opts threshold_opts;                           /* 阈值选项 */
-        int64_t finish_io_count;                                                       /* 完成IO数量 (循环统计，预定100微秒清除一次) */
         int16_t poll_io_depth;                                                         /* 轮询IO深度 (循环统计，预定100微秒更新一次) */
         int16_t uintr_io_depth;                                                        /* 用户中断IO深度 (循环统计，预定100微秒更新一次) */
         int16_t int_io_depth;                                                          /* 内核中断IO深度 (循环统计，预定100微秒更新一次) */
-        uint64_t io_write_btypes;                                                      /* 写入字节数 (循环统计，预定100微秒清除一次) */
-        uint64_t io_read_btypes;                                                       /* 读取字节数 (循环统计，预定100微秒清除一次) */
         uint8_t write_pos;                                                             /* 写数据统计指针 */
         uint8_t read_pos;                                                              /* 读数据统计指针 */
         uint32_t last_five_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM][5];      /* 最近5次写延迟 (循环统计) */
         uint32_t last_five_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM][5];       /* 最近5次读延迟 (循环统计) */
         uint32_t last_five_write_wait_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM][5]; /* 最近5次写等待延迟 (循环统计) */
         uint32_t last_five_read_wait_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM][5];  /* 最近5次读等待延迟 (循环统计) */
-        uint64_t avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];               /* 平均写延迟 ns 用于中断轮询 */
-        uint64_t avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];          /* 平均写等待延迟 */
-        uint64_t avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];                /* 平均读延迟 ns 用于中断轮询 */
-        uint64_t avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_TOTAL_NUM];           /* 平均读等待延迟 */
+        struct spdk_plus_smart_nvme_statistics *statistics;                            /* NVMe设备统计信息 */
         TAILQ_ENTRY(spdk_plus_smart_nvme)
         link;
     };

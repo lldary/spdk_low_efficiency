@@ -91,7 +91,8 @@ struct spdk_plus_nvme_thread
 struct nvme_metadata
 {
     struct spdk_nvme_ctrlr *ctrlr;
-    struct spdk_plus_nvme_qpair qpair; // 后备队列
+    struct spdk_plus_nvme_qpair qpair;                 // 后备队列
+    struct spdk_plus_smart_nvme_statistics statistics; // 统计信息
     uint64_t cite_number;
     struct spdk_plus_smart_nvme *nvme_qpair[SPDK_PLUS_MAX_QUEUE_NUM]; // NVMe队列对
     TAILQ_ENTRY(nvme_metadata)
@@ -401,11 +402,11 @@ nvme_get_sleep_naonotime_internel(struct spdk_plus_smart_nvme *nvme_device, stru
     }
     if (ts.io_mode == SPDK_PLUS_READ)
     {
-        theoretical_latency = nvme_device->avg_read_latency[ts.io_size] * g_smart_schedule_module_opts.read_sleep_rate;
+        theoretical_latency = nvme_device->statistics->avg_read_latency[ts.io_size] * g_smart_schedule_module_opts.read_sleep_rate;
     }
     else if (ts.io_mode == SPDK_PLUS_WRITE)
     {
-        theoretical_latency = nvme_device->avg_write_latency[ts.io_size] * g_smart_schedule_module_opts.write_sleep_rate;
+        theoretical_latency = nvme_device->statistics->avg_write_latency[ts.io_size] * g_smart_schedule_module_opts.write_sleep_rate;
     }
     else if (ts.io_mode == SPDK_PLUS_FLUSH)
     {
@@ -477,7 +478,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
         switch (task->io_mode)
         {
         case SPDK_PLUS_READ:
-            if (nvme_device->avg_wait_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
+            if (nvme_device->statistics->avg_wait_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
             {
                 qpair = &nvme_device->uintr_qpair;
                 task->notify_mode = SPDK_PLUS_UINTR_MODE;
@@ -489,7 +490,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             }
             break;
         case SPDK_PLUS_WRITE:
-            if (nvme_device->avg_wait_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
+            if (nvme_device->statistics->avg_wait_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
             {
                 qpair = &nvme_device->uintr_qpair;
                 task->notify_mode = SPDK_PLUS_UINTR_MODE;
@@ -534,12 +535,12 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
         switch (task->io_mode)
         {
         case SPDK_PLUS_READ:
-            if (nvme_device->avg_wait_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold1)
+            if (nvme_device->statistics->avg_wait_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold1)
             {
                 qpair = &nvme_device->poll_qpair;
                 task->notify_mode = SPDK_PLUS_POLL_MODE;
             }
-            else if (nvme_device->avg_wait_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
+            else if (nvme_device->statistics->avg_wait_read_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
             {
                 qpair = &nvme_device->uintr_qpair;
                 task->notify_mode = SPDK_PLUS_UINTR_MODE;
@@ -551,12 +552,12 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
             }
             break;
         case SPDK_PLUS_WRITE:
-            if (nvme_device->avg_wait_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold1)
+            if (nvme_device->statistics->avg_wait_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold1)
             {
                 qpair = &nvme_device->poll_qpair;
                 task->notify_mode = SPDK_PLUS_POLL_MODE;
             }
-            else if (nvme_device->avg_wait_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
+            else if (nvme_device->statistics->avg_wait_write_latency[task->io_size] <= nvme_device->threshold_opts.depth_threshold2)
             {
                 qpair = &nvme_device->uintr_qpair;
                 task->notify_mode = SPDK_PLUS_UINTR_MODE;
@@ -596,7 +597,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
     case SPDK_PLUS_READ:
     {
         struct timespec ts = task->start_time;
-        uint64_t total_time = ts.tv_sec * 1000000000 + ts.tv_nsec + nvme_device->avg_read_latency[task->io_size];
+        uint64_t total_time = ts.tv_sec * 1000000000 + ts.tv_nsec + nvme_device->statistics->avg_read_latency[task->io_size];
         if (total_time > nvme_device->least_wait_timestamp)
         {
             nvme_device->least_wait_timestamp = total_time;
@@ -606,7 +607,7 @@ nvme_get_suitable_io_qpair(struct spdk_plus_smart_nvme *nvme_device, struct io_t
     case SPDK_PLUS_WRITE:
     {
         struct timespec ts = task->start_time;
-        uint64_t total_time = ts.tv_sec * 1000000000 + ts.tv_nsec + nvme_device->avg_write_latency[task->io_size];
+        uint64_t total_time = ts.tv_sec * 1000000000 + ts.tv_nsec + nvme_device->statistics->avg_write_latency[task->io_size];
         if (total_time > nvme_device->least_wait_timestamp)
         {
             nvme_device->least_wait_timestamp = total_time;
@@ -906,10 +907,10 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
     memset(smart_nvme->last_five_write_latency, 0, sizeof(smart_nvme->last_five_write_latency));
     memset(smart_nvme->last_five_read_wait_latency, 0, sizeof(smart_nvme->last_five_read_wait_latency));
     memset(smart_nvme->last_five_write_wait_latency, 0, sizeof(smart_nvme->last_five_write_wait_latency));
-    memset(smart_nvme->avg_write_latency, 0, sizeof(smart_nvme->avg_write_latency));
-    memset(smart_nvme->avg_read_latency, 0, sizeof(smart_nvme->avg_read_latency));
-    memset(smart_nvme->avg_wait_read_latency, 0, sizeof(smart_nvme->avg_wait_read_latency));
-    memset(smart_nvme->avg_wait_write_latency, 0, sizeof(smart_nvme->avg_wait_write_latency));
+    // memset(smart_nvme->statistics->avg_write_latency, 0, sizeof(smart_nvme->statistics->avg_write_latency));
+    // memset(smart_nvme->statistics->avg_read_latency, 0, sizeof(smart_nvme->statistics->avg_read_latency));
+    // memset(smart_nvme->statistics->avg_wait_read_latency, 0, sizeof(smart_nvme->statistics->avg_wait_read_latency));
+    // memset(smart_nvme->statistics->avg_wait_write_latency, 0, sizeof(smart_nvme->statistics->avg_wait_write_latency));
     struct nvme_metadata *nvme_meta = NULL;
     if (pthread_rwlock_wrlock(&meta_rwlock) != 0)
     {
@@ -927,6 +928,7 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
             nvme_meta->cite_number++;
             smart_nvme->curr_cite_num = 1;
             nvme_meta->nvme_qpair[smart_nvme->cpu_id % SPDK_PLUS_MAX_QUEUE_NUM] = smart_nvme;
+            smart_nvme->statistics = &(nvme_meta->statistics);
             if (pthread_rwlock_unlock(&meta_rwlock) != 0)
             {
                 SPDK_ERRLOG("Failed to unlock mutex\n");
@@ -945,6 +947,8 @@ struct spdk_plus_smart_nvme *spdk_plus_nvme_ctrlr_alloc_io_device(struct spdk_nv
         *rc = SPDK_PLUS_ERR_NO_MEMORY;
         goto failed;
     }
+    memset(nvme_meta, 0, sizeof(struct nvme_metadata));
+    smart_nvme->statistics = &(nvme_meta->statistics);
     nvme_meta->ctrlr = ctrlr;
     opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
     nvme_meta->qpair.qpair = spdk_nvme_ctrlr_alloc_io_qpair_int(ctrlr, &opts, opts_size, &nvme_meta->qpair.fd);
@@ -1051,7 +1055,7 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
     clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
     uint64_t latency = (end_time.tv_sec - task->start_time.tv_sec) * 1000000000 + (end_time.tv_nsec - task->start_time.tv_nsec);
     struct spdk_plus_smart_nvme *nvme_device = task->nvme_device;
-    nvme_device->finish_io_count++;
+    nvme_device->statistics->finish_io_count++;
     uint64_t wait_latency = (end_time.tv_sec - nvme_device->start_wait_timestamp.tv_sec) * 1000000000 + (end_time.tv_nsec - nvme_device->start_wait_timestamp.tv_nsec);
     if (task->io_mode == SPDK_PLUS_READ)
     {
@@ -1071,10 +1075,10 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
         //                 nvme_device->last_five_read_wait_latency[task->io_size][4]) /
         //                5;
 
-        nvme_device->avg_read_latency[task->io_size] = g_smart_schedule_module_opts.read_alpha * latency +
-                                                       (1 - g_smart_schedule_module_opts.read_alpha) * nvme_device->avg_read_latency[task->io_size]; /* 指数加权移动平均 */
-        nvme_device->avg_wait_read_latency[task->io_size] = g_smart_schedule_module_opts.read_alpha * wait_latency +
-                                                            (1 - g_smart_schedule_module_opts.read_alpha) * nvme_device->avg_wait_read_latency[task->io_size]; /* 指数加权移动平均 */
+        nvme_device->statistics->avg_read_latency[task->io_size] = g_smart_schedule_module_opts.read_alpha * latency +
+                                                                   (1 - g_smart_schedule_module_opts.read_alpha) * nvme_device->statistics->avg_read_latency[task->io_size]; /* 指数加权移动平均 */
+        nvme_device->statistics->avg_wait_read_latency[task->io_size] = g_smart_schedule_module_opts.read_alpha * wait_latency +
+                                                                        (1 - g_smart_schedule_module_opts.read_alpha) * nvme_device->statistics->avg_wait_read_latency[task->io_size]; /* 指数加权移动平均 */
         // nvme_device->avg_read_latency[task->io_size] = nvme_device->avg_read_latency[task->io_size] > latency ? latency : nvme_device->avg_read_latency[task->io_size] + 1000;                          /* 指数加权移动平均 */
         // nvme_device->avg_wait_read_latency[task->io_size] = nvme_device->avg_wait_read_latency[task->io_size] > wait_latency ? wait_latency : nvme_device->avg_wait_read_latency[task->io_size] + 1000; /* 指数加权移动平均 */
     }
@@ -1095,10 +1099,10 @@ static void io_complete(void *t, const struct spdk_nvme_cpl *completion)
         //                 nvme_device->last_five_write_wait_latency[task->io_size][3] +
         //                 nvme_device->last_five_write_wait_latency[task->io_size][4]) /
         //                5;
-        nvme_device->avg_write_latency[task->io_size] = g_smart_schedule_module_opts.write_alpha * latency +
-                                                        (1 - g_smart_schedule_module_opts.write_alpha) * nvme_device->avg_write_latency[task->io_size]; /* 指数加权移动平均 */
-        nvme_device->avg_wait_write_latency[task->io_size] = g_smart_schedule_module_opts.write_alpha * wait_latency +
-                                                             (1 - g_smart_schedule_module_opts.write_alpha) * nvme_device->avg_wait_write_latency[task->io_size]; /* 指数加权移动平均 */
+        nvme_device->statistics->avg_write_latency[task->io_size] = g_smart_schedule_module_opts.write_alpha * latency +
+                                                                    (1 - g_smart_schedule_module_opts.write_alpha) * nvme_device->statistics->avg_write_latency[task->io_size]; /* 指数加权移动平均 */
+        nvme_device->statistics->avg_wait_write_latency[task->io_size] = g_smart_schedule_module_opts.write_alpha * wait_latency +
+                                                                         (1 - g_smart_schedule_module_opts.write_alpha) * nvme_device->statistics->avg_wait_write_latency[task->io_size]; /* 指数加权移动平均 */
         // nvme_device->avg_write_latency[task->io_size] = nvme_device->avg_write_latency[task->io_size] > latency ? latency : nvme_device->avg_write_latency[task->io_size] + 500;                          /* 指数加权移动平均 */
         // nvme_device->avg_wait_write_latency[task->io_size] = nvme_device->avg_wait_write_latency[task->io_size] > wait_latency ? wait_latency : nvme_device->avg_wait_write_latency[task->io_size] + 500; /* 指数加权移动平均 */
     }
@@ -1151,10 +1155,10 @@ static void update_stat(uint32_t lba_count, struct spdk_plus_smart_nvme *nvme_de
             switch (io_mode)
             {
             case SPDK_PLUS_READ:
-                nvme_device->io_read_btypes += lba_count * lba_size;
+                nvme_device->statistics->io_read_btypes += lba_count * lba_size;
                 break;
             case SPDK_PLUS_WRITE:
-                nvme_device->io_write_btypes += lba_count * lba_size;
+                nvme_device->statistics->io_write_btypes += lba_count * lba_size;
                 break;
             case SPDK_PLUS_FLUSH:
                 break;
@@ -1169,10 +1173,10 @@ static void update_stat(uint32_t lba_count, struct spdk_plus_smart_nvme *nvme_de
         switch (io_mode)
         {
         case SPDK_PLUS_READ:
-            nvme_device->io_read_btypes = lba_count * lba_size;
+            nvme_device->statistics->io_read_btypes = lba_count * lba_size;
             break;
         case SPDK_PLUS_WRITE:
-            nvme_device->io_write_btypes = lba_count * lba_size;
+            nvme_device->statistics->io_write_btypes = lba_count * lba_size;
             break;
         case SPDK_PLUS_FLUSH:
             break;
@@ -1766,7 +1770,7 @@ spdk_plus_print_statistical_data(int client_id)
         cJSON_AddNumberToObject(object, "Current Poll Depth", smart_nvme->poll_io_depth);
         cJSON_AddNumberToObject(object, "Current Uintr Depth", smart_nvme->uintr_io_depth);
         cJSON_AddNumberToObject(object, "Current Int Depth", smart_nvme->int_io_depth);
-        cJSON_AddNumberToObject(object, "finish IO Count", smart_nvme->finish_io_count);
+        cJSON_AddNumberToObject(object, "finish IO Count", smart_nvme->statistics->finish_io_count);
         cJSON *read_latency = cJSON_CreateObject();
         if (read_latency == NULL)
         {
@@ -1775,18 +1779,18 @@ spdk_plus_print_statistical_data(int client_id)
             cJSON_Delete(array);
             return;
         }
-        cJSON_AddNumberToObject(read_latency, "4k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
-        cJSON_AddNumberToObject(read_latency, "8k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
-        cJSON_AddNumberToObject(read_latency, "16k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
-        cJSON_AddNumberToObject(read_latency, "32k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
-        cJSON_AddNumberToObject(read_latency, "64k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
-        cJSON_AddNumberToObject(read_latency, "128k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
-        cJSON_AddNumberToObject(read_latency, "256k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
-        cJSON_AddNumberToObject(read_latency, "512k", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
-        cJSON_AddNumberToObject(read_latency, "1M", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
-        cJSON_AddNumberToObject(read_latency, "2M", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
-        cJSON_AddNumberToObject(read_latency, "Over 2M", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
-        cJSON_AddNumberToObject(read_latency, "flush", smart_nvme->avg_read_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddNumberToObject(read_latency, "4k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(read_latency, "8k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(read_latency, "16k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(read_latency, "32k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(read_latency, "64k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(read_latency, "128k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(read_latency, "256k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(read_latency, "512k", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(read_latency, "1M", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(read_latency, "2M", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(read_latency, "Over 2M", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(read_latency, "flush", smart_nvme->statistics->avg_read_latency[SPDK_PLUS_MONITOR_FLUSH]);
         cJSON_AddItemToObject(object, "Read Latency", read_latency);
         cJSON *write_latency = cJSON_CreateObject();
         if (write_latency == NULL)
@@ -1797,18 +1801,18 @@ spdk_plus_print_statistical_data(int client_id)
             cJSON_Delete(array);
             return;
         }
-        cJSON_AddNumberToObject(write_latency, "4k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
-        cJSON_AddNumberToObject(write_latency, "8k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
-        cJSON_AddNumberToObject(write_latency, "16k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
-        cJSON_AddNumberToObject(write_latency, "32k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
-        cJSON_AddNumberToObject(write_latency, "64k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
-        cJSON_AddNumberToObject(write_latency, "128k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
-        cJSON_AddNumberToObject(write_latency, "256k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
-        cJSON_AddNumberToObject(write_latency, "512k", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
-        cJSON_AddNumberToObject(write_latency, "1M", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
-        cJSON_AddNumberToObject(write_latency, "2M", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
-        cJSON_AddNumberToObject(write_latency, "Over 2M", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
-        cJSON_AddNumberToObject(write_latency, "flush", smart_nvme->avg_write_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddNumberToObject(write_latency, "4k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(write_latency, "8k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(write_latency, "16k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(write_latency, "32k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(write_latency, "64k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(write_latency, "128k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(write_latency, "256k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(write_latency, "512k", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(write_latency, "1M", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(write_latency, "2M", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(write_latency, "Over 2M", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(write_latency, "flush", smart_nvme->statistics->avg_write_latency[SPDK_PLUS_MONITOR_FLUSH]);
         cJSON_AddItemToObject(object, "Write Latency", write_latency);
         cJSON *read_wait_latency = cJSON_CreateObject();
         if (read_wait_latency == NULL)
@@ -1820,18 +1824,18 @@ spdk_plus_print_statistical_data(int client_id)
             cJSON_Delete(array);
             return;
         }
-        cJSON_AddNumberToObject(read_wait_latency, "4k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
-        cJSON_AddNumberToObject(read_wait_latency, "8k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
-        cJSON_AddNumberToObject(read_wait_latency, "16k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
-        cJSON_AddNumberToObject(read_wait_latency, "32k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
-        cJSON_AddNumberToObject(read_wait_latency, "64k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
-        cJSON_AddNumberToObject(read_wait_latency, "128k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
-        cJSON_AddNumberToObject(read_wait_latency, "256k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
-        cJSON_AddNumberToObject(read_wait_latency, "512k", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
-        cJSON_AddNumberToObject(read_wait_latency, "1M", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
-        cJSON_AddNumberToObject(read_wait_latency, "2M", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
-        cJSON_AddNumberToObject(read_wait_latency, "Over 2M", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
-        cJSON_AddNumberToObject(read_wait_latency, "flush", smart_nvme->avg_wait_read_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddNumberToObject(read_wait_latency, "4k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(read_wait_latency, "8k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(read_wait_latency, "16k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(read_wait_latency, "32k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(read_wait_latency, "64k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(read_wait_latency, "128k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(read_wait_latency, "256k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(read_wait_latency, "512k", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(read_wait_latency, "1M", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(read_wait_latency, "2M", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(read_wait_latency, "Over 2M", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(read_wait_latency, "flush", smart_nvme->statistics->avg_wait_read_latency[SPDK_PLUS_MONITOR_FLUSH]);
         cJSON_AddItemToObject(object, "Read Wait Latency", read_wait_latency);
         cJSON *write_wait_latency = cJSON_CreateObject();
         if (write_wait_latency == NULL)
@@ -1844,18 +1848,18 @@ spdk_plus_print_statistical_data(int client_id)
             cJSON_Delete(array);
             return;
         }
-        cJSON_AddNumberToObject(write_wait_latency, "4k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
-        cJSON_AddNumberToObject(write_wait_latency, "8k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
-        cJSON_AddNumberToObject(write_wait_latency, "16k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
-        cJSON_AddNumberToObject(write_wait_latency, "32k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
-        cJSON_AddNumberToObject(write_wait_latency, "64k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
-        cJSON_AddNumberToObject(write_wait_latency, "128k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
-        cJSON_AddNumberToObject(write_wait_latency, "256k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
-        cJSON_AddNumberToObject(write_wait_latency, "512k", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
-        cJSON_AddNumberToObject(write_wait_latency, "1M", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
-        cJSON_AddNumberToObject(write_wait_latency, "2M", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
-        cJSON_AddNumberToObject(write_wait_latency, "Over 2M", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
-        cJSON_AddNumberToObject(write_wait_latency, "flush", smart_nvme->avg_wait_write_latency[SPDK_PLUS_MONITOR_FLUSH]);
+        cJSON_AddNumberToObject(write_wait_latency, "4k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_4K]);
+        cJSON_AddNumberToObject(write_wait_latency, "8k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_8K]);
+        cJSON_AddNumberToObject(write_wait_latency, "16k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_16K]);
+        cJSON_AddNumberToObject(write_wait_latency, "32k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_32K]);
+        cJSON_AddNumberToObject(write_wait_latency, "64k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_64K]);
+        cJSON_AddNumberToObject(write_wait_latency, "128k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_128K]);
+        cJSON_AddNumberToObject(write_wait_latency, "256k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_256K]);
+        cJSON_AddNumberToObject(write_wait_latency, "512k", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_512K]);
+        cJSON_AddNumberToObject(write_wait_latency, "1M", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_1M]);
+        cJSON_AddNumberToObject(write_wait_latency, "2M", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_2M]);
+        cJSON_AddNumberToObject(write_wait_latency, "Over 2M", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_IO_SIZE_OVER_2M]);
+        cJSON_AddNumberToObject(write_wait_latency, "flush", smart_nvme->statistics->avg_wait_write_latency[SPDK_PLUS_MONITOR_FLUSH]);
         cJSON_AddItemToObject(object, "Write Wait Latency", write_wait_latency);
         cJSON_AddItemToArray(array, object);
     }
@@ -1967,7 +1971,7 @@ spdk_plus_update_statistical_data(void)
             SPDK_ERRLOG("Controller is NULL\n");
             continue;
         }
-        smart_nvme->finish_io_count = 0;
+        smart_nvme->statistics->finish_io_count = 0;
         smart_nvme->poll_io_depth = (smart_nvme->poll_io_depth + queue_size(smart_nvme->poll_qpair.queue)) / 2;
         smart_nvme->uintr_io_depth = (smart_nvme->uintr_io_depth + queue_size(smart_nvme->uintr_qpair.queue)) / 2;
         smart_nvme->int_io_depth = (smart_nvme->int_io_depth + queue_size(smart_nvme->int_qpair.queue)) / 2;
