@@ -15,6 +15,8 @@ LIBNAME = event
 C_SRCS = app.c reactor.c log_rpc.c \
 	 app_rpc.c scheduler_static.c
 
+AS_SRCS = switch_thread.S
+
 SPDK_MAP_FILE = $(abspath $(CURDIR)/spdk_event.map)
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

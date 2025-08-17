@@ -4163,6 +4163,18 @@ spdk_bdev_set_timeout(struct spdk_bdev_desc *desc, uint64_t timeout_in_sec,
 
 	return 0;
 }
+#include <execinfo.h>
+void print_call_stack() {
+    void *buffer[10];
+    char **callstack;
+    int frames;
+    frames = backtrace(buffer, 10);
+    callstack = backtrace_symbols(buffer, frames);
+    for (int i = 0; i < frames; i++) {
+        SPDK_ERRLOG("%s\n", callstack[i]);
+    }
+    free(callstack);
+}
 
 static int
 bdev_channel_create(void *io_device, void *ctx_buf)
@@ -4176,6 +4188,7 @@ bdev_channel_create(void *io_device, void *ctx_buf)
 
 	bool interrupt = *((uint64_t*)spdk_io_channel_from_ctx(ctx_buf));
 	SPDK_ERRLOG("Creating I/O channel for bdev %s on thread %p interrupt: %d\n", bdev->name, spdk_get_thread(), interrupt);
+	print_call_stack();
 
 	ch->bdev = bdev;
 	if(interrupt){

@@ -28,13 +28,11 @@
 #include "spdk/keyring.h"
 #include "spdk/module/keyring/file.h"
 
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <x86gprintrin.h>
-
 
 #include <pthread.h>
 #include <sched.h>
@@ -42,25 +40,25 @@
 
 #ifndef __NR_uintr_register_handler
 #define __NR_uintr_wait_msix_interrupt 470
-#define __NR_uintr_register_handler	471
-#define __NR_uintr_unregister_handler	472
-#define __NR_uintr_create_fd		473
-#define __NR_uintr_register_sender	474
-#define __NR_uintr_unregister_sender	475
-#define __NR_uintr_wait			476
+#define __NR_uintr_register_handler 471
+#define __NR_uintr_unregister_handler 472
+#define __NR_uintr_create_fd 473
+#define __NR_uintr_register_sender 474
+#define __NR_uintr_unregister_sender 475
+#define __NR_uintr_wait 476
 #endif
 
-#define uintr_wait_msix_interrupt(ptr, flags)   syscall(__NR_uintr_wait_msix_interrupt, ptr, flags)
-#define uintr_register_handler(handler, flags)	syscall(__NR_uintr_register_handler, handler, flags)
-#define uintr_unregister_handler(flags)		syscall(__NR_uintr_unregister_handler, flags)
-#define uintr_create_fd(vector, flags)		syscall(__NR_uintr_create_fd, vector, flags)
-#define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
-#define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
-#define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+#define uintr_wait_msix_interrupt(ptr, flags) syscall(__NR_uintr_wait_msix_interrupt, ptr, flags)
+#define uintr_register_handler(handler, flags) syscall(__NR_uintr_register_handler, handler, flags)
+#define uintr_unregister_handler(flags) syscall(__NR_uintr_unregister_handler, flags)
+#define uintr_create_fd(vector, flags) syscall(__NR_uintr_create_fd, vector, flags)
+#define uintr_register_sender(fd, flags) syscall(__NR_uintr_register_sender, fd, flags)
+#define uintr_unregister_sender(ipi_idx, flags) syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
+#define uintr_wait(usec, flags) syscall(__NR_uintr_wait, usec, flags)
 
-#define DEBUGLOG(fmt, args...) printf("\033[0;33;40m[ DEBUG ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__,##args)
-#define ERRLOG(fmt, args...) printf("\033[0;31;40m[ ERROR ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
-#define INFOLOG(fmt, args...) printf("\033[0;32;40m[ BRIEF ]\033[0m\033[2m %s:%d: \033[0m"fmt,__FUNCTION__,__LINE__, ##args)
+#define DEBUGLOG(fmt, args...) printf("\033[0;33;40m[ DEBUG ]\033[0m\033[2m %s:%d: \033[0m" fmt, __FUNCTION__, __LINE__, ##args)
+#define ERRLOG(fmt, args...) printf("\033[0;31;40m[ ERROR ]\033[0m\033[2m %s:%d: \033[0m" fmt, __FUNCTION__, __LINE__, ##args)
+#define INFOLOG(fmt, args...) printf("\033[0;32;40m[ BRIEF ]\033[0m\033[2m %s:%d: \033[0m" fmt, __FUNCTION__, __LINE__, ##args)
 
 #ifdef SPDK_CONFIG_URING
 #include <liburing.h>
@@ -72,18 +70,21 @@
 
 #define HELP_RETURN_CODE UINT16_MAX
 
-struct ctrlr_entry {
-	struct spdk_nvme_ctrlr			*ctrlr;
-	enum spdk_nvme_transport_type		trtype;
-	struct spdk_nvme_intel_rw_latency_page	*latency_page;
+struct ctrlr_entry
+{
+	struct spdk_nvme_ctrlr *ctrlr;
+	enum spdk_nvme_transport_type trtype;
+	struct spdk_nvme_intel_rw_latency_page *latency_page;
 
-	struct spdk_nvme_qpair			**unused_qpairs;
+	struct spdk_nvme_qpair **unused_qpairs;
 
-	TAILQ_ENTRY(ctrlr_entry)		link;
-	char					name[1024];
+	TAILQ_ENTRY(ctrlr_entry)
+	link;
+	char name[1024];
 };
 
-enum entry_type {
+enum entry_type
+{
 	ENTRY_TYPE_NVME_NS,
 	ENTRY_TYPE_AIO_FILE,
 	ENTRY_TYPE_URING_FILE,
@@ -91,40 +92,46 @@ enum entry_type {
 
 struct ns_fn_table;
 
-struct ns_entry {
-	enum entry_type		type;
-	const struct ns_fn_table	*fn_table;
+struct ns_entry
+{
+	enum entry_type type;
+	const struct ns_fn_table *fn_table;
 
-	union {
-		struct {
-			struct spdk_nvme_ctrlr	*ctrlr;
-			struct spdk_nvme_ns	*ns;
+	union
+	{
+		struct
+		{
+			struct spdk_nvme_ctrlr *ctrlr;
+			struct spdk_nvme_ns *ns;
 		} nvme;
 #ifdef SPDK_CONFIG_URING
-		struct {
-			int			fd;
+		struct
+		{
+			int fd;
 		} uring;
 #endif
 #if HAVE_LIBAIO
-		struct {
-			int                     fd;
+		struct
+		{
+			int fd;
 		} aio;
 #endif
 	} u;
 
-	TAILQ_ENTRY(ns_entry)	link;
-	uint32_t		io_size_blocks;
-	uint32_t		num_io_requests;
-	uint64_t		size_in_ios;
-	uint32_t		block_size;
-	uint32_t		md_size;
-	bool			md_interleave;
-	unsigned int		seed;
-	struct spdk_zipf	*zipf;
-	bool			pi_loc;
-	enum spdk_nvme_pi_type	pi_type;
-	uint32_t		io_flags;
-	char			name[1024];
+	TAILQ_ENTRY(ns_entry)
+	link;
+	uint32_t io_size_blocks;
+	uint32_t num_io_requests;
+	uint64_t size_in_ios;
+	uint32_t block_size;
+	uint32_t md_size;
+	bool md_interleave;
+	unsigned int seed;
+	struct spdk_zipf *zipf;
+	bool pi_loc;
+	enum spdk_nvme_pi_type pi_type;
+	uint32_t io_flags;
+	char name[1024];
 };
 
 static const double g_latency_cutoffs[] = {
@@ -146,103 +153,117 @@ static const double g_latency_cutoffs[] = {
 	-1,
 };
 
-struct ns_worker_stats {
-	uint64_t		io_submitted;
-	uint64_t		io_completed;
-	uint64_t		last_io_completed;
-	uint64_t		total_tsc;
-	uint64_t		min_tsc;
-	uint64_t		max_tsc;
-	uint64_t		last_tsc;
-	uint64_t		busy_tsc;
-	uint64_t		idle_tsc;
-	uint64_t		last_busy_tsc;
-	uint64_t		last_idle_tsc;
+struct ns_worker_stats
+{
+	uint64_t io_submitted;
+	uint64_t io_completed;
+	uint64_t last_io_completed;
+	uint64_t total_tsc;
+	uint64_t min_tsc;
+	uint64_t max_tsc;
+	uint64_t last_tsc;
+	uint64_t busy_tsc;
+	uint64_t idle_tsc;
+	uint64_t last_busy_tsc;
+	uint64_t last_idle_tsc;
 };
 
-struct ns_worker_ctx {
-	struct ns_entry		*entry;
-	struct ns_worker_stats	stats;
-	uint64_t		current_queue_depth;
-	uint64_t		offset_in_ios;
-	bool			is_draining;
+struct ns_worker_ctx
+{
+	struct ns_entry *entry;
+	struct ns_worker_stats stats;
+	uint64_t current_queue_depth;
+	uint64_t offset_in_ios;
+	bool is_draining;
 
-	union {
-		struct {
-			int				num_active_qpairs;
-			int				num_all_qpairs;
-			struct spdk_nvme_qpair		**qpair;
-			struct spdk_nvme_poll_group	*group;
-			int				last_qpair;
+	union
+	{
+		struct
+		{
+			int num_active_qpairs;
+			int num_all_qpairs;
+			struct spdk_nvme_qpair **qpair;
+			struct spdk_nvme_poll_group *group;
+			int last_qpair;
 		} nvme;
 
 #ifdef SPDK_CONFIG_URING
-		struct {
-			struct io_uring		ring;
-			uint64_t		io_inflight;
-			uint64_t		io_pending;
-			struct io_uring_cqe	**cqes;
+		struct
+		{
+			struct io_uring ring;
+			uint64_t io_inflight;
+			uint64_t io_pending;
+			struct io_uring_cqe **cqes;
 
 		} uring;
 #endif
 #if HAVE_LIBAIO
-		struct {
-			struct io_event		*events;
-			io_context_t		ctx;
+		struct
+		{
+			struct io_event *events;
+			io_context_t ctx;
 		} aio;
 #endif
 	} u;
 
-	TAILQ_ENTRY(ns_worker_ctx)	link;
+	TAILQ_ENTRY(ns_worker_ctx)
+	link;
 
-	TAILQ_HEAD(, perf_task)		queued_tasks;
+	TAILQ_HEAD(, perf_task)
+	queued_tasks;
 
-	struct spdk_histogram_data	*histogram;
-	int				status;
+	struct spdk_histogram_data *histogram;
+	int status;
 };
 
-struct perf_task {
-	struct ns_worker_ctx	*ns_ctx;
-	struct iovec		*iovs; /* array of iovecs to transfer. */
-	int			iovcnt; /* Number of iovecs in iovs array. */
-	int			iovpos; /* Current iovec position. */
-	uint32_t		iov_offset; /* Offset in current iovec. */
-	struct iovec		md_iov;
-	uint64_t		submit_tsc;
-	bool			is_read;
-	struct spdk_dif_ctx	dif_ctx;
+struct perf_task
+{
+	struct ns_worker_ctx *ns_ctx;
+	struct iovec *iovs;	 /* array of iovecs to transfer. */
+	int iovcnt;			 /* Number of iovecs in iovs array. */
+	int iovpos;			 /* Current iovec position. */
+	uint32_t iov_offset; /* Offset in current iovec. */
+	struct iovec md_iov;
+	uint64_t submit_tsc;
+	bool is_read;
+	struct spdk_dif_ctx dif_ctx;
 #if HAVE_LIBAIO
-	struct iocb		iocb;
+	struct iocb iocb;
 #endif
-	TAILQ_ENTRY(perf_task)	link;
+	TAILQ_ENTRY(perf_task)
+	link;
 };
 
-struct worker_thread {
-	TAILQ_HEAD(, ns_worker_ctx)	ns_ctx;
-	TAILQ_ENTRY(worker_thread)	link;
+struct worker_thread
+{
+	TAILQ_HEAD(, ns_worker_ctx)
+	ns_ctx;
+	TAILQ_ENTRY(worker_thread)
+	link;
 #if SPDK_CONFIG_UINTR_MODE
 	uint64_t idle_time;
 	uint64_t busy_time;
 	uint64_t last_idle_time;
 	uint64_t last_busy_time;
 #endif
-	unsigned			lcore;
+	unsigned lcore;
 };
 
-struct ns_fn_table {
-	void	(*setup_payload)(struct perf_task *task, uint8_t pattern);
+struct ns_fn_table
+{
+	void (*setup_payload)(struct perf_task *task, uint8_t pattern);
 
-	int	(*submit_io)(struct perf_task *task, struct ns_worker_ctx *ns_ctx,
-			     struct ns_entry *entry, uint64_t offset_in_ios);
+	int (*submit_io)(struct perf_task *task, struct ns_worker_ctx *ns_ctx,
+					 struct ns_entry *entry, uint64_t offset_in_ios);
 
-	int64_t	(*check_io)(struct ns_worker_ctx *ns_ctx);
+	int64_t (*check_io)(struct ns_worker_ctx *ns_ctx);
 
-	void	(*verify_io)(struct perf_task *task, struct ns_entry *entry);
+	void (*verify_io)(struct perf_task *task, struct ns_entry *entry);
 
-	int	(*init_ns_worker_ctx)(struct ns_worker_ctx *ns_ctx);
+	int (*init_ns_worker_ctx)(struct ns_worker_ctx *ns_ctx);
 
-	void	(*cleanup_ns_worker_ctx)(struct ns_worker_ctx *ns_ctx);
-	void	(*dump_transport_stats)(uint32_t lcore, struct ns_worker_ctx *ns_ctx);
+	void (*cleanup_ns_worker_ctx)(struct ns_worker_ctx *ns_ctx);
+	void (*dump_transport_stats)(uint32_t lcore, struct ns_worker_ctx *ns_ctx);
 };
 
 static uint32_t g_io_unit_size = (UINT32_MAX & (~0x03));
@@ -285,8 +306,8 @@ static uint64_t g_elapsed_time_in_usec;
 static int g_warmup_time_in_sec;
 static uint32_t g_max_completions;
 static uint32_t g_disable_sq_cmb;
-static double g_core_utils; // 用于测量CPU利用率
-static uint64_t g_core_util_count; // 用于测量CPU利用率
+static double g_core_utils;			  // 用于测量CPU利用率
+static uint64_t g_core_util_count;	  // 用于测量CPU利用率
 static uint64_t g_ssd_power_max_mode; // 设定ssd最高能耗模式
 static bool g_enable_interrupt;
 static bool g_use_uring;
@@ -319,83 +340,90 @@ static struct spdk_key *g_psk = NULL;
 
 static uint32_t cpuid_uipi_map[0xFF];
 
-struct user_thread {
+struct user_thread
+{
 	uint64_t stack_space[0x10000];
 	uint64_t rsp;
 	uint64_t rip;
 	int64_t flags;
 };
 struct user_thread work_thread[0xFF], idle_thread[0xFF];
-struct user_thread* current_thread[0xFF];
+struct user_thread *current_thread[0xFF];
 uint32_t uintr_count[0xFF] = {0};
 
 void switch_thread(struct user_thread *from, struct user_thread *to);
 #define local_irq_save(flags) \
-    do {                      \
-        flags = _testui();    \
-        _clui();              \
-    } while (0)
+	do                        \
+	{                         \
+		flags = _testui();    \
+		_clui();              \
+	} while (0)
 #define local_irq_restore(flags) \
-    do {                         \
-        if (flags)               \
-            _stui();             \
-    } while (0)
-
+	do                           \
+	{                            \
+		if (flags)               \
+			_stui();             \
+	} while (0)
 
 // 函数声明
 void __attribute__((interrupt)) __attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame, unsigned long long vector);
 
-void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
+void __attribute__((interrupt)) __attribute__((target("general-regs-only", "inline-all-stringops")))
 uintr_get_handler(struct __uintr_frame *ui_frame,
-	      unsigned long long vector)
+				  unsigned long long vector)
 {
 	int flags;
 	local_irq_save(flags);
 	_senduipi(cpuid_uipi_map[vector]);
-	if(current_thread[vector] == idle_thread + vector) {
+	if (current_thread[vector] == idle_thread + vector)
+	{
 		// current_thread[vector] = work_thread + vector;
-		switch_thread(idle_thread + vector, work_thread + vector);	
+		switch_thread(idle_thread + vector, work_thread + vector);
 		current_thread[vector] = idle_thread + vector;
 		// local_irq_restore(flags);
-	} else {
+	}
+	else
+	{
 		uintr_count[vector]++;
 	}
 }
 
-void switch_thread(struct user_thread *from, struct user_thread *to) {
+void switch_thread(struct user_thread *from, struct user_thread *to)
+{
 	asm volatile(
-				"push %%rbx\n\t"
-				"push %%rbp\n\t"
-				"push %%r12\n\t"
-				"push %%r13\n\t"
-				"push %%r14\n\t"
-				"push %%r15\n\t"
-				"mov %%rsp , %0\n\t"
-				"mov %1 , %%rsp\n\t"
-				"pop %%r15\n\t"
-				"pop %%r14\n\t"
-				"pop %%r13\n\t"
-				"pop %%r12\n\t"
-				"pop %%rbp\n\t"
-				"pop %%rbx\n\t"
-				: "=m"(from->rsp)  // 正确存储 from->rsp
-				: "m"(to->rsp) // 正确加载 to->rsp 和 to->rip
-				);
+		"push %%rbx\n\t"
+		"push %%rbp\n\t"
+		"push %%r12\n\t"
+		"push %%r13\n\t"
+		"push %%r14\n\t"
+		"push %%r15\n\t"
+		"mov %%rsp , %0\n\t"
+		"mov %1 , %%rsp\n\t"
+		"pop %%r15\n\t"
+		"pop %%r14\n\t"
+		"pop %%r13\n\t"
+		"pop %%r12\n\t"
+		"pop %%rbp\n\t"
+		"pop %%rbx\n\t"
+		: "=m"(from->rsp) // 正确存储 from->rsp
+		: "m"(to->rsp)	  // 正确加载 to->rsp 和 to->rip
+	);
 	// _stui();
-	asm volatile ("ret");
+	asm volatile("ret");
 }
 
 void idle_thread_func(void);
 
-void idle_thread_func(void) {
+void idle_thread_func(void)
+{
 	uint64_t cpu_id;
 
-    // 使用内联汇编将 %rbx 的值赋给 loop
-    asm volatile(
-        "mov %%rbx, %0"  // 将 %rbx 的值移动到 loop（%0）
-        : "=r"(cpu_id)      // 输出操作数：将 %rbx 的值存储到 loop
-    );
+	// 使用内联汇编将 %rbx 的值赋给 loop
+	asm volatile(
+		"mov %%rbx, %0" // 将 %rbx 的值移动到 loop（%0）
+		: "=r"(cpu_id)	// 输出操作数：将 %rbx 的值存储到 loop
+	);
 
 	{
 		int flags;
@@ -409,13 +437,13 @@ void idle_thread_func(void) {
 	}
 	uint64_t delay = is_write ? 5000 : 10000;
 	delay = g_io_size_bytes == 4096 ? delay << 1 : delay << 3;
-	begin:
-	if(!uintr_count[cpu_id]) {
+begin:
+	if (!uintr_count[cpu_id])
+	{
 		current_thread[cpu_id] = idle_thread + cpu_id;
 		uint64_t sleep_time = _rdtsc() + delay;
 		_tpause(0, sleep_time);
 	}
-
 
 	int flags;
 	local_irq_save(flags);
@@ -441,17 +469,19 @@ void idle_thread_func(void) {
  * Thread-local __count would mean rate-limiting per thread which doesn't
  * seem as useful.
  */
-#define RATELIMIT_LOG(...) \
-	{								\
-		static uint64_t __count = 0;				\
-		if ((__count % g_quiet_count) == 0) {			\
-			if (__count > 0 && g_quiet_count > 1) {		\
-				fprintf(stderr, "Message suppressed %" PRIu32 " times: ",	\
-					g_quiet_count - 1);		\
-			}						\
-			fprintf(stderr, __VA_ARGS__);			\
-		}							\
-		__count++;						\
+#define RATELIMIT_LOG(...)                                                \
+	{                                                                     \
+		static uint64_t __count = 0;                                      \
+		if ((__count % g_quiet_count) == 0)                               \
+		{                                                                 \
+			if (__count > 0 && g_quiet_count > 1)                         \
+			{                                                             \
+				fprintf(stderr, "Message suppressed %" PRIu32 " times: ", \
+						g_quiet_count - 1);                               \
+			}                                                             \
+			fprintf(stderr, __VA_ARGS__);                                 \
+		}                                                                 \
+		__count++;                                                        \
 	}
 
 static bool g_dump_transport_stats;
@@ -460,11 +490,13 @@ static pthread_mutex_t g_stats_mutex;
 #define MAX_ALLOWED_PCI_DEVICE_NUM 128
 static struct spdk_pci_addr g_allowed_pci_addr[MAX_ALLOWED_PCI_DEVICE_NUM];
 
-struct trid_entry {
-	struct spdk_nvme_transport_id	trid;
-	uint16_t			nsid;
-	char				hostnqn[SPDK_NVMF_NQN_MAX_LEN + 1];
-	TAILQ_ENTRY(trid_entry)		tailq;
+struct trid_entry
+{
+	struct spdk_nvme_transport_id trid;
+	uint16_t nsid;
+	char hostnqn[SPDK_NVMF_NQN_MAX_LEN + 1];
+	TAILQ_ENTRY(trid_entry)
+	tailq;
 };
 
 static TAILQ_HEAD(, trid_entry) g_trid_list = TAILQ_HEAD_INITIALIZER(g_trid_list);
@@ -481,41 +513,58 @@ perf_set_sock_opts(const char *impl_name, const char *field, uint32_t val, const
 	int rc;
 
 	rc = spdk_sock_impl_get_opts(impl_name, &sock_opts, &opts_size);
-	if (rc != 0) {
-		if (errno == EINVAL) {
+	if (rc != 0)
+	{
+		if (errno == EINVAL)
+		{
 			fprintf(stderr, "Unknown sock impl %s\n", impl_name);
-		} else {
+		}
+		else
+		{
 			fprintf(stderr, "Failed to get opts for sock impl %s: error %d (%s)\n", impl_name, errno,
-				strerror(errno));
+					strerror(errno));
 		}
 		return;
 	}
 
-	if (opts_size != sizeof(sock_opts)) {
+	if (opts_size != sizeof(sock_opts))
+	{
 		fprintf(stderr, "Warning: sock_opts size mismatch. Expected %zu, received %zu\n",
-			sizeof(sock_opts), opts_size);
+				sizeof(sock_opts), opts_size);
 		opts_size = sizeof(sock_opts);
 	}
 
-	if (!field) {
+	if (!field)
+	{
 		fprintf(stderr, "Warning: no socket opts field specified\n");
 		return;
-	} else if (strcmp(field, "enable_zerocopy_send_client") == 0) {
+	}
+	else if (strcmp(field, "enable_zerocopy_send_client") == 0)
+	{
 		sock_opts.enable_zerocopy_send_client = val;
-	} else if (strcmp(field, "tls_version") == 0) {
+	}
+	else if (strcmp(field, "tls_version") == 0)
+	{
 		sock_opts.tls_version = val;
-	} else if (strcmp(field, "ktls") == 0) {
+	}
+	else if (strcmp(field, "ktls") == 0)
+	{
 		sock_opts.enable_ktls = val;
-	} else if (strcmp(field, "zerocopy_threshold") == 0) {
+	}
+	else if (strcmp(field, "zerocopy_threshold") == 0)
+	{
 		sock_opts.zerocopy_threshold = val;
-	} else {
+	}
+	else
+	{
 		fprintf(stderr, "Warning: invalid or unprocessed socket opts field: %s\n", field);
 		return;
 	}
 
-	if (spdk_sock_impl_set_opts(impl_name, &sock_opts, opts_size)) {
+	if (spdk_sock_impl_set_opts(impl_name, &sock_opts, opts_size))
+	{
 		fprintf(stderr, "Failed to set %s: %d for sock impl %s : error %d (%s)\n", field, val, impl_name,
-			errno, strerror(errno));
+				errno, strerror(errno));
 	}
 }
 
@@ -526,9 +575,11 @@ nvme_perf_reset_sgl(void *ref, uint32_t sgl_offset)
 	struct perf_task *task = (struct perf_task *)ref;
 
 	task->iov_offset = sgl_offset;
-	for (task->iovpos = 0; task->iovpos < task->iovcnt; task->iovpos++) {
+	for (task->iovpos = 0; task->iovpos < task->iovcnt; task->iovpos++)
+	{
 		iov = &task->iovs[task->iovpos];
-		if (task->iov_offset < iov->iov_len) {
+		if (task->iov_offset < iov->iov_len)
+		{
 			break;
 		}
 
@@ -564,11 +615,13 @@ nvme_perf_allocate_iovs(struct perf_task *task, void *buf, uint32_t length)
 
 	task->iovcnt = SPDK_CEIL_DIV(length, (uint64_t)g_io_unit_size);
 	task->iovs = calloc(task->iovcnt, sizeof(struct iovec));
-	if (!task->iovs) {
+	if (!task->iovs)
+	{
 		return -1;
 	}
 
-	while (length > 0) {
+	while (length > 0)
+	{
 		iov = &task->iovs[iovpos];
 		iov->iov_len = spdk_min(length, g_io_unit_size);
 		iov->iov_base = buf + offset;
@@ -588,7 +641,8 @@ uring_setup_payload(struct perf_task *task, uint8_t pattern)
 	struct iovec *iov;
 
 	task->iovs = calloc(1, sizeof(struct iovec));
-	if (!task->iovs) {
+	if (!task->iovs)
+	{
 		fprintf(stderr, "perf task failed to allocate iovs\n");
 		exit(1);
 	}
@@ -597,7 +651,8 @@ uring_setup_payload(struct perf_task *task, uint8_t pattern)
 	iov = &task->iovs[0];
 	iov->iov_base = spdk_dma_zmalloc(g_io_size_bytes, g_io_align, NULL);
 	iov->iov_len = g_io_size_bytes;
-	if (iov->iov_base == NULL) {
+	if (iov->iov_base == NULL)
+	{
 		fprintf(stderr, "spdk_dma_zmalloc() for task->iovs[0].iov_base failed\n");
 		free(task->iovs);
 		exit(1);
@@ -607,19 +662,23 @@ uring_setup_payload(struct perf_task *task, uint8_t pattern)
 
 static int
 uring_submit_io(struct perf_task *task, struct ns_worker_ctx *ns_ctx,
-		struct ns_entry *entry, uint64_t offset_in_ios)
+				struct ns_entry *entry, uint64_t offset_in_ios)
 {
 	struct io_uring_sqe *sqe;
 
 	sqe = io_uring_get_sqe(&ns_ctx->u.uring.ring);
-	if (!sqe) {
+	if (!sqe)
+	{
 		fprintf(stderr, "Cannot get sqe\n");
 		return -1;
 	}
 
-	if (task->is_read) {
+	if (task->is_read)
+	{
 		io_uring_prep_readv(sqe, entry->u.uring.fd, task->iovs, 1, offset_in_ios * task->iovs[0].iov_len);
-	} else {
+	}
+	else
+	{
 		io_uring_prep_writev(sqe, entry->u.uring.fd, task->iovs, 1, offset_in_ios * task->iovs[0].iov_len);
 	}
 
@@ -637,11 +696,13 @@ uring_check_io(struct ns_worker_ctx *ns_ctx)
 
 	to_submit = ns_ctx->u.uring.io_pending;
 
-	if (to_submit > 0) {
+	if (to_submit > 0)
+	{
 		/* If there are I/O to submit, use io_uring_submit here.
 		 * It will automatically call spdk_io_uring_enter appropriately. */
 		ret = io_uring_submit(&ns_ctx->u.uring.ring);
-		if (ret < 0) {
+		if (ret < 0)
+		{
 			ns_ctx->status = 1;
 			return -1;
 		}
@@ -650,20 +711,24 @@ uring_check_io(struct ns_worker_ctx *ns_ctx)
 	}
 
 	to_complete = ns_ctx->u.uring.io_inflight;
-	if (to_complete > 0) {
+	if (to_complete > 0)
+	{
 		count = io_uring_peek_batch_cqe(&ns_ctx->u.uring.ring, ns_ctx->u.uring.cqes, to_complete);
 		ns_ctx->u.uring.io_inflight -= count;
-		for (i = 0; i < count; i++) {
+		for (i = 0; i < count; i++)
+		{
 			int res;
 
 			assert(ns_ctx->u.uring.cqes[i] != NULL);
 			task = (struct perf_task *)ns_ctx->u.uring.cqes[i]->user_data;
 			res = ns_ctx->u.uring.cqes[i]->res;
-			if (res != (int)task->iovs[0].iov_len) {
+			if (res != (int)task->iovs[0].iov_len)
+			{
 				fprintf(stderr, "cqe->status=%d, iov_len=%d\n", res,
-					(int)task->iovs[0].iov_len);
+						(int)task->iovs[0].iov_len);
 				ns_ctx->status = 1;
-				if (res == -EIO) {
+				if (res == -EIO)
+				{
 					/* The block device has been removed.
 					 * Stop trying to send I/O to it.
 					 */
@@ -685,13 +750,15 @@ uring_verify_io(struct perf_task *task, struct ns_entry *entry)
 static int
 uring_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 {
-	if (io_uring_queue_init(g_queue_depth, &ns_ctx->u.uring.ring, 0) < 0) {
+	if (io_uring_queue_init(g_queue_depth, &ns_ctx->u.uring.ring, 0) < 0)
+	{
 		SPDK_ERRLOG("uring I/O context setup failure\n");
 		return -1;
 	}
 
 	ns_ctx->u.uring.cqes = calloc(g_queue_depth, sizeof(struct io_uring_cqe *));
-	if (!ns_ctx->u.uring.cqes) {
+	if (!ns_ctx->u.uring.cqes)
+	{
 		io_uring_queue_exit(&ns_ctx->u.uring.ring);
 		return -1;
 	}
@@ -707,12 +774,12 @@ uring_cleanup_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 }
 
 static const struct ns_fn_table uring_fn_table = {
-	.setup_payload          = uring_setup_payload,
-	.submit_io              = uring_submit_io,
-	.check_io               = uring_check_io,
-	.verify_io              = uring_verify_io,
-	.init_ns_worker_ctx     = uring_init_ns_worker_ctx,
-	.cleanup_ns_worker_ctx  = uring_cleanup_ns_worker_ctx,
+	.setup_payload = uring_setup_payload,
+	.submit_io = uring_submit_io,
+	.check_io = uring_check_io,
+	.verify_io = uring_verify_io,
+	.init_ns_worker_ctx = uring_init_ns_worker_ctx,
+	.cleanup_ns_worker_ctx = uring_cleanup_ns_worker_ctx,
 };
 
 #endif
@@ -724,7 +791,8 @@ aio_setup_payload(struct perf_task *task, uint8_t pattern)
 	struct iovec *iov;
 
 	task->iovs = calloc(1, sizeof(struct iovec));
-	if (!task->iovs) {
+	if (!task->iovs)
+	{
 		fprintf(stderr, "perf task failed to allocate iovs\n");
 		exit(1);
 	}
@@ -733,7 +801,8 @@ aio_setup_payload(struct perf_task *task, uint8_t pattern)
 	iov = &task->iovs[0];
 	iov->iov_base = spdk_dma_zmalloc(g_io_size_bytes, g_io_align, NULL);
 	iov->iov_len = g_io_size_bytes;
-	if (iov->iov_base == NULL) {
+	if (iov->iov_base == NULL)
+	{
 		fprintf(stderr, "spdk_dma_zmalloc() for task->iovs[0].iov_base failed\n");
 		free(task->iovs);
 		exit(1);
@@ -743,7 +812,7 @@ aio_setup_payload(struct perf_task *task, uint8_t pattern)
 
 static int
 aio_submit(io_context_t aio_ctx, struct iocb *iocb, int fd, enum io_iocb_cmd cmd,
-	   struct iovec *iov, uint64_t offset, void *cb_ctx)
+		   struct iovec *iov, uint64_t offset, void *cb_ctx)
 {
 	iocb->aio_fildes = fd;
 	iocb->aio_reqprio = 0;
@@ -753,7 +822,8 @@ aio_submit(io_context_t aio_ctx, struct iocb *iocb, int fd, enum io_iocb_cmd cmd
 	iocb->u.c.offset = offset * iov->iov_len;
 	iocb->data = cb_ctx;
 
-	if (io_submit(aio_ctx, 1, &iocb) < 0) {
+	if (io_submit(aio_ctx, 1, &iocb) < 0)
+	{
 		printf("io_submit");
 		return -1;
 	}
@@ -763,14 +833,17 @@ aio_submit(io_context_t aio_ctx, struct iocb *iocb, int fd, enum io_iocb_cmd cmd
 
 static int
 aio_submit_io(struct perf_task *task, struct ns_worker_ctx *ns_ctx,
-	      struct ns_entry *entry, uint64_t offset_in_ios)
+			  struct ns_entry *entry, uint64_t offset_in_ios)
 {
-	if (task->is_read) {
+	if (task->is_read)
+	{
 		return aio_submit(ns_ctx->u.aio.ctx, &task->iocb, entry->u.aio.fd, IO_CMD_PREAD,
-				  task->iovs, offset_in_ios, task);
-	} else {
+						  task->iovs, offset_in_ios, task);
+	}
+	else
+	{
 		return aio_submit(ns_ctx->u.aio.ctx, &task->iocb, entry->u.aio.fd, IO_CMD_PWRITE,
-				  task->iovs, offset_in_ios, task);
+						  task->iovs, offset_in_ios, task);
 	}
 }
 
@@ -785,22 +858,26 @@ aio_check_io(struct ns_worker_ctx *ns_ctx)
 	timeout.tv_nsec = 0;
 
 	count = io_getevents(ns_ctx->u.aio.ctx, 1, g_queue_depth, ns_ctx->u.aio.events, &timeout);
-	if (count < 0) {
+	if (count < 0)
+	{
 		fprintf(stderr, "io_getevents error\n");
 		ns_ctx->status = 1;
 		return -1;
 	}
 
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count; i++)
+	{
 		unsigned long res;
 
 		task = (struct perf_task *)ns_ctx->u.aio.events[i].data;
 		res = ns_ctx->u.aio.events[i].res;
-		if (res != (uint64_t)task->iovs[0].iov_len) {
+		if (res != (uint64_t)task->iovs[0].iov_len)
+		{
 			fprintf(stderr, "event->res=%ld, iov_len=%lu\n", (long)res,
-				(uint64_t)task->iovs[0].iov_len);
+					(uint64_t)task->iovs[0].iov_len);
 			ns_ctx->status = 1;
-			if ((long)res == -EIO) {
+			if ((long)res == -EIO)
+			{
 				/* The block device has been removed.  Stop trying to send I/O to it. */
 				ns_ctx->is_draining = true;
 			}
@@ -819,11 +896,13 @@ static int
 aio_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 {
 	ns_ctx->u.aio.events = calloc(g_queue_depth, sizeof(struct io_event));
-	if (!ns_ctx->u.aio.events) {
+	if (!ns_ctx->u.aio.events)
+	{
 		return -1;
 	}
 	ns_ctx->u.aio.ctx = 0;
-	if (io_setup(g_queue_depth, &ns_ctx->u.aio.ctx) < 0) {
+	if (io_setup(g_queue_depth, &ns_ctx->u.aio.ctx) < 0)
+	{
 		free(ns_ctx->u.aio.events);
 		perror("io_setup");
 		return -1;
@@ -839,12 +918,12 @@ aio_cleanup_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 }
 
 static const struct ns_fn_table aio_fn_table = {
-	.setup_payload		= aio_setup_payload,
-	.submit_io		= aio_submit_io,
-	.check_io		= aio_check_io,
-	.verify_io		= aio_verify_io,
-	.init_ns_worker_ctx	= aio_init_ns_worker_ctx,
-	.cleanup_ns_worker_ctx	= aio_cleanup_ns_worker_ctx,
+	.setup_payload = aio_setup_payload,
+	.submit_io = aio_submit_io,
+	.check_io = aio_check_io,
+	.verify_io = aio_verify_io,
+	.init_ns_worker_ctx = aio_init_ns_worker_ctx,
+	.cleanup_ns_worker_ctx = aio_cleanup_ns_worker_ctx,
 };
 
 #endif /* HAVE_LIBAIO */
@@ -860,31 +939,39 @@ register_file(const char *path)
 	uint64_t size;
 	uint32_t blklen;
 
-	if (g_rw_percentage == 100) {
+	if (g_rw_percentage == 100)
+	{
 		flags = O_RDONLY;
-	} else if (g_rw_percentage == 0) {
+	}
+	else if (g_rw_percentage == 0)
+	{
 		flags = O_WRONLY;
-	} else {
+	}
+	else
+	{
 		flags = O_RDWR;
 	}
 
 	flags |= O_DIRECT;
 
 	fd = open(path, flags);
-	if (fd < 0) {
+	if (fd < 0)
+	{
 		fprintf(stderr, "Could not open device %s: %s\n", path, strerror(errno));
 		return -1;
 	}
 
 	size = spdk_fd_get_size(fd);
-	if (size == 0) {
+	if (size == 0)
+	{
 		fprintf(stderr, "Could not determine size of device %s\n", path);
 		close(fd);
 		return -1;
 	}
 
 	blklen = spdk_fd_get_blocklen(fd);
-	if (blklen == 0) {
+	if (blklen == 0)
+	{
 		fprintf(stderr, "Could not determine block size of device %s\n", path);
 		close(fd);
 		return -1;
@@ -894,10 +981,12 @@ register_file(const char *path)
 	 * TODO: This should really calculate the LCM of the current g_io_align and blklen.
 	 * For now, it's fairly safe to just assume all block sizes are powers of 2.
 	 */
-	if (g_io_align < blklen) {
-		if (g_io_align_specified) {
+	if (g_io_align < blklen)
+	{
+		if (g_io_align_specified)
+		{
 			fprintf(stderr, "Wrong IO alignment (%u). aio requires block-sized alignment (%u)\n", g_io_align,
-				blklen);
+					blklen);
 			close(fd);
 			return -1;
 		}
@@ -906,19 +995,23 @@ register_file(const char *path)
 	}
 
 	entry = calloc(1, sizeof(struct ns_entry));
-	if (entry == NULL) {
+	if (entry == NULL)
+	{
 		close(fd);
 		perror("ns_entry malloc");
 		return -1;
 	}
 
-	if (g_use_uring) {
+	if (g_use_uring)
+	{
 #ifdef SPDK_CONFIG_URING
 		entry->type = ENTRY_TYPE_URING_FILE;
 		entry->fn_table = &uring_fn_table;
 		entry->u.uring.fd = fd;
 #endif
-	} else {
+	}
+	else
+	{
 #if HAVE_LIBAIO
 		entry->type = ENTRY_TYPE_AIO_FILE;
 		entry->fn_table = &aio_fn_table;
@@ -928,9 +1021,11 @@ register_file(const char *path)
 	entry->size_in_ios = size / g_io_size_bytes;
 	entry->io_size_blocks = g_io_size_bytes / blklen;
 
-	if (g_is_random) {
+	if (g_is_random)
+	{
 		entry->seed = rand();
-		if (g_zipf_theta > 0) {
+		if (g_zipf_theta > 0)
+		{
 			entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, 0);
 		}
 	}
@@ -949,8 +1044,10 @@ register_files(int argc, char **argv)
 	int i;
 
 	/* Treat everything after the options as files for AIO/URING */
-	for (i = g_file_optind; i < argc; i++) {
-		if (register_file(argv[i]) != 0) {
+	for (i = g_file_optind; i < argc; i++)
+	{
+		if (register_file(argv[i]) != 0)
+		{
 			return 1;
 		}
 	}
@@ -978,24 +1075,28 @@ nvme_setup_payload(struct perf_task *task, uint8_t pattern)
 	 */
 	max_io_size_bytes = g_io_size_bytes + g_max_io_md_size * g_max_io_size_blocks;
 	buf = spdk_dma_zmalloc_socket(max_io_size_bytes, g_io_align, NULL, numa_id);
-	if (buf == NULL) {
+	if (buf == NULL)
+	{
 		fprintf(stderr, "task->buf spdk_dma_zmalloc failed\n");
 		exit(1);
 	}
 	memset(buf, pattern, max_io_size_bytes);
 
 	rc = nvme_perf_allocate_iovs(task, buf, max_io_size_bytes);
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		fprintf(stderr, "perf task failed to allocate iovs\n");
 		spdk_dma_free(buf);
 		exit(1);
 	}
 
 	max_io_md_size = g_max_io_md_size * g_max_io_size_blocks;
-	if (max_io_md_size != 0) {
+	if (max_io_md_size != 0)
+	{
 		task->md_iov.iov_base = spdk_dma_zmalloc(max_io_md_size, g_io_align, NULL);
 		task->md_iov.iov_len = max_io_md_size;
-		if (task->md_iov.iov_base == NULL) {
+		if (task->md_iov.iov_base == NULL)
+		{
 			fprintf(stderr, "task->md_buf spdk_dma_zmalloc failed\n");
 			spdk_dma_free(task->iovs[0].iov_base);
 			free(task->iovs);
@@ -1006,77 +1107,94 @@ nvme_setup_payload(struct perf_task *task, uint8_t pattern)
 
 static int
 nvme_submit_io(struct perf_task *task, struct ns_worker_ctx *ns_ctx,
-	       struct ns_entry *entry, uint64_t offset_in_ios)
+			   struct ns_entry *entry, uint64_t offset_in_ios)
 {
 	uint64_t lba;
 	int rc;
 	int qp_num;
 	struct spdk_dif_ctx_init_ext_opts dif_opts;
 
-	enum dif_mode {
+	enum dif_mode
+	{
 		DIF_MODE_NONE = 0,
 		DIF_MODE_DIF = 1,
 		DIF_MODE_DIX = 2,
-	}  mode = DIF_MODE_NONE;
+	} mode = DIF_MODE_NONE;
 
 	lba = offset_in_ios * entry->io_size_blocks;
 
-	if (entry->md_size != 0 && !(entry->io_flags & SPDK_NVME_IO_FLAGS_PRACT)) {
-		if (entry->md_interleave) {
+	if (entry->md_size != 0 && !(entry->io_flags & SPDK_NVME_IO_FLAGS_PRACT))
+	{
+		if (entry->md_interleave)
+		{
 			mode = DIF_MODE_DIF;
-		} else {
+		}
+		else
+		{
 			mode = DIF_MODE_DIX;
 		}
 	}
 
 	qp_num = ns_ctx->u.nvme.last_qpair;
 	ns_ctx->u.nvme.last_qpair++;
-	if (ns_ctx->u.nvme.last_qpair == ns_ctx->u.nvme.num_active_qpairs) {
+	if (ns_ctx->u.nvme.last_qpair == ns_ctx->u.nvme.num_active_qpairs)
+	{
 		ns_ctx->u.nvme.last_qpair = 0;
 	}
 
-	if (mode != DIF_MODE_NONE) {
+	if (mode != DIF_MODE_NONE)
+	{
 		dif_opts.size = SPDK_SIZEOF(&dif_opts, dif_pi_format);
 		dif_opts.dif_pi_format = SPDK_DIF_PI_FORMAT_16;
 		rc = spdk_dif_ctx_init(&task->dif_ctx, entry->block_size, entry->md_size,
-				       entry->md_interleave, entry->pi_loc,
-				       (enum spdk_dif_type)entry->pi_type, entry->io_flags,
-				       lba, 0xFFFF, (uint16_t)entry->io_size_blocks, 0, 0, &dif_opts);
-		if (rc != 0) {
+							   entry->md_interleave, entry->pi_loc,
+							   (enum spdk_dif_type)entry->pi_type, entry->io_flags,
+							   lba, 0xFFFF, (uint16_t)entry->io_size_blocks, 0, 0, &dif_opts);
+		if (rc != 0)
+		{
 			fprintf(stderr, "Initialization of DIF context failed\n");
 			exit(1);
 		}
 	}
 
-	if (task->is_read) {
-		if (task->iovcnt == 1) {
+	if (task->is_read)
+	{
+		if (task->iovcnt == 1)
+		{
 			return spdk_nvme_ns_cmd_read_with_md(entry->u.nvme.ns, ns_ctx->u.nvme.qpair[qp_num],
-							     task->iovs[0].iov_base, task->md_iov.iov_base,
-							     lba,
-							     entry->io_size_blocks, io_complete,
-							     task, entry->io_flags,
-							     task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
-		} else {
-			return spdk_nvme_ns_cmd_readv_with_md(entry->u.nvme.ns, ns_ctx->u.nvme.qpair[qp_num],
-							      lba, entry->io_size_blocks,
-							      io_complete, task, entry->io_flags,
-							      nvme_perf_reset_sgl, nvme_perf_next_sge,
-							      task->md_iov.iov_base,
-							      task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
+												 task->iovs[0].iov_base, task->md_iov.iov_base,
+												 lba,
+												 entry->io_size_blocks, io_complete,
+												 task, entry->io_flags,
+												 task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
 		}
-	} else {
-		switch (mode) {
+		else
+		{
+			return spdk_nvme_ns_cmd_readv_with_md(entry->u.nvme.ns, ns_ctx->u.nvme.qpair[qp_num],
+												  lba, entry->io_size_blocks,
+												  io_complete, task, entry->io_flags,
+												  nvme_perf_reset_sgl, nvme_perf_next_sge,
+												  task->md_iov.iov_base,
+												  task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
+		}
+	}
+	else
+	{
+		switch (mode)
+		{
 		case DIF_MODE_DIF:
 			rc = spdk_dif_generate(task->iovs, task->iovcnt, entry->io_size_blocks, &task->dif_ctx);
-			if (rc != 0) {
+			if (rc != 0)
+			{
 				fprintf(stderr, "Generation of DIF failed\n");
 				return rc;
 			}
 			break;
 		case DIF_MODE_DIX:
 			rc = spdk_dix_generate(task->iovs, task->iovcnt, &task->md_iov, entry->io_size_blocks,
-					       &task->dif_ctx);
-			if (rc != 0) {
+								   &task->dif_ctx);
+			if (rc != 0)
+			{
 				fprintf(stderr, "Generation of DIX failed\n");
 				return rc;
 			}
@@ -1085,20 +1203,23 @@ nvme_submit_io(struct perf_task *task, struct ns_worker_ctx *ns_ctx,
 			break;
 		}
 
-		if (task->iovcnt == 1) {
+		if (task->iovcnt == 1)
+		{
 			return spdk_nvme_ns_cmd_write_with_md(entry->u.nvme.ns, ns_ctx->u.nvme.qpair[qp_num],
-							      task->iovs[0].iov_base, task->md_iov.iov_base,
-							      lba,
-							      entry->io_size_blocks, io_complete,
-							      task, entry->io_flags,
-							      task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
-		} else {
+												  task->iovs[0].iov_base, task->md_iov.iov_base,
+												  lba,
+												  entry->io_size_blocks, io_complete,
+												  task, entry->io_flags,
+												  task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
+		}
+		else
+		{
 			return spdk_nvme_ns_cmd_writev_with_md(entry->u.nvme.ns, ns_ctx->u.nvme.qpair[qp_num],
-							       lba, entry->io_size_blocks,
-							       io_complete, task, entry->io_flags,
-							       nvme_perf_reset_sgl, nvme_perf_next_sge,
-							       task->md_iov.iov_base,
-							       task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
+												   lba, entry->io_size_blocks,
+												   io_complete, task, entry->io_flags,
+												   nvme_perf_reset_sgl, nvme_perf_next_sge,
+												   task->md_iov.iov_base,
+												   task->dif_ctx.apptag_mask, task->dif_ctx.app_tag);
 		}
 	}
 }
@@ -1117,13 +1238,17 @@ nvme_check_io(struct ns_worker_ctx *ns_ctx)
 {
 	int64_t rc;
 
-	if (g_enable_interrupt) {
+	if (g_enable_interrupt)
+	{
 		rc = spdk_nvme_poll_group_wait(ns_ctx->u.nvme.group, perf_disconnect_cb);
-	} else {
-		rc = spdk_nvme_poll_group_process_completions(ns_ctx->u.nvme.group, g_max_completions,
-				perf_disconnect_cb);
 	}
-	if (rc < 0) {
+	else
+	{
+		rc = spdk_nvme_poll_group_process_completions(ns_ctx->u.nvme.group, g_max_completions,
+													  perf_disconnect_cb);
+	}
+	if (rc < 0)
+	{
 		fprintf(stderr, "NVMe io qpair process completion error\n");
 		ns_ctx->status = 1;
 		return -1;
@@ -1139,10 +1264,11 @@ nvme_new_check_io(struct ns_worker_ctx *ns_ctx)
 	// if (g_enable_interrupt) {
 	// 	rc = spdk_nvme_poll_group_wait(ns_ctx->u.nvme.group, perf_disconnect_cb);
 	// } else {
-		rc = spdk_nvme_poll_group_check_completions(ns_ctx->u.nvme.group, g_max_completions,
-				perf_disconnect_cb);
+	rc = spdk_nvme_poll_group_check_completions(ns_ctx->u.nvme.group, g_max_completions,
+												perf_disconnect_cb);
 	// }
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		fprintf(stderr, "NVMe io qpair process completion error\n");
 		ns_ctx->status = 1;
 		return -1;
@@ -1156,55 +1282,66 @@ nvme_verify_io(struct perf_task *task, struct ns_entry *entry)
 	struct spdk_dif_error err_blk = {};
 	int rc;
 
-	if (!task->is_read || (entry->io_flags & SPDK_NVME_IO_FLAGS_PRACT)) {
+	if (!task->is_read || (entry->io_flags & SPDK_NVME_IO_FLAGS_PRACT))
+	{
 		return;
 	}
 
-	if (entry->md_interleave) {
+	if (entry->md_interleave)
+	{
 		rc = spdk_dif_verify(task->iovs, task->iovcnt, entry->io_size_blocks, &task->dif_ctx,
-				     &err_blk);
-		if (rc != 0) {
+							 &err_blk);
+		if (rc != 0)
+		{
 			fprintf(stderr, "DIF error detected. type=%d, offset=%" PRIu32 "\n",
-				err_blk.err_type, err_blk.err_offset);
+					err_blk.err_type, err_blk.err_offset);
 		}
-	} else {
+	}
+	else
+	{
 		rc = spdk_dix_verify(task->iovs, task->iovcnt, &task->md_iov, entry->io_size_blocks,
-				     &task->dif_ctx, &err_blk);
-		if (rc != 0) {
+							 &task->dif_ctx, &err_blk);
+		if (rc != 0)
+		{
 			fprintf(stderr, "DIX error detected. type=%d, offset=%" PRIu32 "\n",
-				err_blk.err_type, err_blk.err_offset);
+					err_blk.err_type, err_blk.err_offset);
 		}
 	}
 }
 
-struct power_state_cql {
+struct power_state_cql
+{
 	uint32_t power_state : 5;
 	uint32_t workhint : 3;
 	uint32_t reserved : 24;
 };
 
 static void
-power_mode_get_complete(void *ctx, const struct spdk_nvme_cpl *cql) {
-	if(spdk_nvme_cpl_is_error(cql)) {
+power_mode_get_complete(void *ctx, const struct spdk_nvme_cpl *cql)
+{
+	if (spdk_nvme_cpl_is_error(cql))
+	{
 		SPDK_ERRLOG("I/O error: %s\n", spdk_nvme_cpl_get_status_string(&cql->status));
 	}
 	uint32_t cdw0 = cql->cdw0;
 	if (ctx == NULL)
-		INFOLOG("before change current power state: %u\n", ((struct power_state_cql*)(&cdw0))->power_state);
+		INFOLOG("before change current power state: %u\n", ((struct power_state_cql *)(&cdw0))->power_state);
 	else
-		INFOLOG("after change current power state: %u\n", ((struct power_state_cql*)(&cdw0))->power_state);
+		INFOLOG("after change current power state: %u\n", ((struct power_state_cql *)(&cdw0))->power_state);
 }
 
 static void
 power_mode_update_complete(void *ctx, const struct spdk_nvme_cpl *cpl)
 {
 	struct spdk_nvme_ctrlr *ctrlr = ctx;
-	if (spdk_nvme_cpl_is_error(cpl)) {
+	if (spdk_nvme_cpl_is_error(cpl))
+	{
 		SPDK_ERRLOG("I/O error: %s\n", spdk_nvme_cpl_get_status_string(&cpl->status));
 	}
 	INFOLOG("Power mode update complete\n");
 	if (spdk_nvme_ctrlr_cmd_get_feature(ctrlr, SPDK_NVME_FEAT_POWER_MANAGEMENT, 0,
-					   NULL, 0, power_mode_get_complete, (void*)1) != 0) {
+										NULL, 0, power_mode_get_complete, (void *)1) != 0)
+	{
 		SPDK_ERRLOG("get power state failed\n");
 	}
 }
@@ -1227,82 +1364,97 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 	ns_ctx->u.nvme.num_active_qpairs = g_nr_io_queues_per_ns;
 	ns_ctx->u.nvme.num_all_qpairs = g_nr_io_queues_per_ns + g_nr_unused_io_queues;
 	ns_ctx->u.nvme.qpair = calloc(ns_ctx->u.nvme.num_all_qpairs, sizeof(struct spdk_nvme_qpair *));
-	if (!ns_ctx->u.nvme.qpair) {
+	if (!ns_ctx->u.nvme.qpair)
+	{
 		return -1;
 	}
 
 	spdk_nvme_ctrlr_get_default_io_qpair_opts(entry->u.nvme.ctrlr, &opts, sizeof(opts));
-	if (opts.io_queue_requests < entry->num_io_requests) {
+	if (opts.io_queue_requests < entry->num_io_requests)
+	{
 		opts.io_queue_requests = entry->num_io_requests;
 	}
 
 	opts.delay_cmd_submit = g_enable_interrupt || g_enable_uintr ? false : true;
 	opts.create_only = true;
 
-	if(g_enable_uintr)
+	if (g_enable_uintr)
 		opts.interrupt_mode = SPDK_PLUS_UINTR_MODE;
-	if(g_enable_interrupt)
+	if (g_enable_interrupt)
 		opts.interrupt_mode = SPDK_PLUS_INTERRUPT_MODE;
 
 	ctrlr_opts = spdk_nvme_ctrlr_get_opts(entry->u.nvme.ctrlr);
 	opts.async_mode = !(spdk_nvme_ctrlr_get_transport_id(entry->u.nvme.ctrlr)->trtype ==
-			    SPDK_NVME_TRANSPORT_PCIE
-			    && ns_ctx->u.nvme.num_all_qpairs > ctrlr_opts->admin_queue_size);
+							SPDK_NVME_TRANSPORT_PCIE &&
+						ns_ctx->u.nvme.num_all_qpairs > ctrlr_opts->admin_queue_size);
 
 	ns_ctx->u.nvme.group = spdk_nvme_poll_group_create(ns_ctx, NULL);
-	if (ns_ctx->u.nvme.group == NULL) {
+	if (ns_ctx->u.nvme.group == NULL)
+	{
 		goto poll_group_failed;
 	}
 
 	/* 显示当前ssd电源状态 */
 	if (spdk_nvme_ctrlr_cmd_get_feature(entry->u.nvme.ctrlr, SPDK_NVME_FEAT_POWER_MANAGEMENT, 0,
-		NULL, 0, power_mode_get_complete, 0) != 0) {
+										NULL, 0, power_mode_get_complete, 0) != 0)
+	{
 		SPDK_ERRLOG("get power state failed\n");
 	}
 	/* 设置ssd电源状态 */
-	if (g_ssd_power_max_mode != 0) {
+	if (g_ssd_power_max_mode != 0)
+	{
 		if (spdk_nvme_ctrlr_cmd_set_feature(entry->u.nvme.ctrlr,
-				SPDK_NVME_FEAT_POWER_MANAGEMENT,
-				g_ssd_power_max_mode, 0,
-				NULL, 0, power_mode_update_complete, entry->u.nvme.ctrlr) != 0) {
+											SPDK_NVME_FEAT_POWER_MANAGEMENT,
+											g_ssd_power_max_mode, 0,
+											NULL, 0, power_mode_update_complete, entry->u.nvme.ctrlr) != 0)
+		{
 			fprintf(stderr, "set power state failed\n");
 			goto poll_group_failed;
 		}
-		if(g_ssd_power_max_mode > 2)
+		if (g_ssd_power_max_mode > 2)
 			INFOLOG("set power state may failed because power state is not supported %d\n", g_ssd_power_max_mode);
 	}
 
 	group = ns_ctx->u.nvme.group;
-	for (i = 0; i < ns_ctx->u.nvme.num_all_qpairs; i++) {
+	for (i = 0; i < ns_ctx->u.nvme.num_all_qpairs; i++)
+	{
 		int efd = 0; // 只有uintr会用到
-		if(g_enable_uintr || g_enable_interrupt) {
+		if (g_enable_uintr || g_enable_interrupt)
+		{
 			ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair_int(entry->u.nvme.ctrlr, &opts,
-				sizeof(opts), &efd);
-		} else {
+																		 sizeof(opts), &efd);
+		}
+		else
+		{
 			ns_ctx->u.nvme.qpair[i] = spdk_nvme_ctrlr_alloc_io_qpair(entry->u.nvme.ctrlr, &opts,
-				sizeof(opts));
+																	 sizeof(opts));
 		}
 		qpair = ns_ctx->u.nvme.qpair[i];
-		if (!qpair) {
+		if (!qpair)
+		{
 			printf("ERROR: spdk_nvme_ctrlr_alloc_io_qpair failed\n");
 			goto qpair_failed;
 		}
 
-		if (spdk_nvme_poll_group_add(group, qpair)) {
+		if (spdk_nvme_poll_group_add(group, qpair))
+		{
 			printf("ERROR: unable to add I/O qpair to poll group.\n");
 			spdk_nvme_ctrlr_free_io_qpair(qpair);
 			goto qpair_failed;
 		}
 
-		if (spdk_nvme_ctrlr_connect_io_qpair(entry->u.nvme.ctrlr, qpair)) {
+		if (spdk_nvme_ctrlr_connect_io_qpair(entry->u.nvme.ctrlr, qpair))
+		{
 			printf("ERROR: unable to connect I/O qpair.\n");
 			spdk_nvme_ctrlr_free_io_qpair(qpair);
 			goto qpair_failed;
 		}
 
-		if(g_enable_uintr) {
+		if (g_enable_uintr)
+		{
 			int uipi_index = uintr_register_sender(efd, 0);
-			if(uipi_index < 0) {
+			if (uipi_index < 0)
+			{
 				SPDK_ERRLOG("Unable to register sender\n");
 				goto qpair_failed;
 			}
@@ -1318,10 +1470,12 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 	 */
 	poll_timeout_tsc = spdk_get_ticks() + 10 * spdk_get_ticks_hz();
 	rc = -EAGAIN;
-	while (spdk_get_ticks() < poll_timeout_tsc && rc == -EAGAIN) {
+	while (spdk_get_ticks() < poll_timeout_tsc && rc == -EAGAIN)
+	{
 		spdk_nvme_poll_group_process_completions(group, 0, perf_disconnect_cb);
 		rc = spdk_nvme_poll_group_all_connected(group);
-		if (rc == 0) {
+		if (rc == 0)
+		{
 			return 0;
 		}
 	}
@@ -1330,7 +1484,8 @@ nvme_init_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 	assert(spdk_get_ticks() > poll_timeout_tsc || rc == -EIO);
 
 qpair_failed:
-	for (; i > 0; --i) {
+	for (; i > 0; --i)
+	{
 		spdk_nvme_ctrlr_free_io_qpair(ns_ctx->u.nvme.qpair[i - 1]);
 	}
 
@@ -1345,7 +1500,8 @@ nvme_cleanup_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 {
 	int i;
 
-	for (i = 0; i < ns_ctx->u.nvme.num_all_qpairs; i++) {
+	for (i = 0; i < ns_ctx->u.nvme.num_all_qpairs; i++)
+	{
 		spdk_nvme_ctrlr_free_io_qpair(ns_ctx->u.nvme.qpair[i]);
 	}
 
@@ -1360,17 +1516,18 @@ nvme_dump_rdma_statistics(struct spdk_nvme_transport_poll_group_stat *stat)
 	uint32_t i;
 
 	printf("RDMA transport:\n");
-	for (i = 0; i < stat->rdma.num_devices; i++) {
+	for (i = 0; i < stat->rdma.num_devices; i++)
+	{
 		device_stats = &stat->rdma.device_stats[i];
 		printf("\tdev name:              %s\n", device_stats->name);
-		printf("\tpolls:                 %"PRIu64"\n", device_stats->polls);
-		printf("\tidle_polls:            %"PRIu64"\n", device_stats->idle_polls);
-		printf("\tcompletions:           %"PRIu64"\n", device_stats->completions);
-		printf("\tqueued_requests:       %"PRIu64"\n", device_stats->queued_requests);
-		printf("\ttotal_send_wrs:        %"PRIu64"\n", device_stats->total_send_wrs);
-		printf("\tsend_doorbell_updates: %"PRIu64"\n", device_stats->send_doorbell_updates);
-		printf("\ttotal_recv_wrs:        %"PRIu64"\n", device_stats->total_recv_wrs);
-		printf("\trecv_doorbell_updates: %"PRIu64"\n", device_stats->recv_doorbell_updates);
+		printf("\tpolls:                 %" PRIu64 "\n", device_stats->polls);
+		printf("\tidle_polls:            %" PRIu64 "\n", device_stats->idle_polls);
+		printf("\tcompletions:           %" PRIu64 "\n", device_stats->completions);
+		printf("\tqueued_requests:       %" PRIu64 "\n", device_stats->queued_requests);
+		printf("\ttotal_send_wrs:        %" PRIu64 "\n", device_stats->total_send_wrs);
+		printf("\tsend_doorbell_updates: %" PRIu64 "\n", device_stats->send_doorbell_updates);
+		printf("\ttotal_recv_wrs:        %" PRIu64 "\n", device_stats->total_recv_wrs);
+		printf("\trecv_doorbell_updates: %" PRIu64 "\n", device_stats->recv_doorbell_updates);
 		printf("\t---------------------------------\n");
 	}
 }
@@ -1383,15 +1540,15 @@ nvme_dump_pcie_statistics(struct spdk_nvme_transport_poll_group_stat *stat)
 	pcie_stat = &stat->pcie;
 
 	printf("PCIE transport:\n");
-	printf("\tpolls:               %"PRIu64"\n", pcie_stat->polls);
-	printf("\tidle_polls:          %"PRIu64"\n", pcie_stat->idle_polls);
-	printf("\tcompletions:         %"PRIu64"\n", pcie_stat->completions);
-	printf("\tcq_mmio_doorbell_updates: %"PRIu64"\n", pcie_stat->cq_mmio_doorbell_updates);
-	printf("\tcq_shadow_doorbell_updates: %"PRIu64"\n", pcie_stat->cq_shadow_doorbell_updates);
-	printf("\tsubmitted_requests:  %"PRIu64"\n", pcie_stat->submitted_requests);
-	printf("\tsq_mmio_doorbell_updates:  %"PRIu64"\n", pcie_stat->sq_mmio_doorbell_updates);
-	printf("\tsq_shadow_doorbell_updates:  %"PRIu64"\n", pcie_stat->sq_shadow_doorbell_updates);
-	printf("\tqueued_requests:     %"PRIu64"\n", pcie_stat->queued_requests);
+	printf("\tpolls:               %" PRIu64 "\n", pcie_stat->polls);
+	printf("\tidle_polls:          %" PRIu64 "\n", pcie_stat->idle_polls);
+	printf("\tcompletions:         %" PRIu64 "\n", pcie_stat->completions);
+	printf("\tcq_mmio_doorbell_updates: %" PRIu64 "\n", pcie_stat->cq_mmio_doorbell_updates);
+	printf("\tcq_shadow_doorbell_updates: %" PRIu64 "\n", pcie_stat->cq_shadow_doorbell_updates);
+	printf("\tsubmitted_requests:  %" PRIu64 "\n", pcie_stat->submitted_requests);
+	printf("\tsq_mmio_doorbell_updates:  %" PRIu64 "\n", pcie_stat->sq_mmio_doorbell_updates);
+	printf("\tsq_shadow_doorbell_updates:  %" PRIu64 "\n", pcie_stat->sq_shadow_doorbell_updates);
+	printf("\tqueued_requests:     %" PRIu64 "\n", pcie_stat->queued_requests);
 }
 
 static void
@@ -1402,12 +1559,12 @@ nvme_dump_tcp_statistics(struct spdk_nvme_transport_poll_group_stat *stat)
 	tcp_stat = &stat->tcp;
 
 	printf("TCP transport:\n");
-	printf("\tpolls:              %"PRIu64"\n", tcp_stat->polls);
-	printf("\tidle_polls:         %"PRIu64"\n", tcp_stat->idle_polls);
-	printf("\tsock_completions:   %"PRIu64"\n", tcp_stat->socket_completions);
-	printf("\tnvme_completions:   %"PRIu64"\n", tcp_stat->nvme_completions);
-	printf("\tsubmitted_requests: %"PRIu64"\n", tcp_stat->submitted_requests);
-	printf("\tqueued_requests:    %"PRIu64"\n", tcp_stat->queued_requests);
+	printf("\tpolls:              %" PRIu64 "\n", tcp_stat->polls);
+	printf("\tidle_polls:         %" PRIu64 "\n", tcp_stat->idle_polls);
+	printf("\tsock_completions:   %" PRIu64 "\n", tcp_stat->socket_completions);
+	printf("\tnvme_completions:   %" PRIu64 "\n", tcp_stat->nvme_completions);
+	printf("\tsubmitted_requests: %" PRIu64 "\n", tcp_stat->submitted_requests);
+	printf("\tqueued_requests:    %" PRIu64 "\n", tcp_stat->queued_requests);
 }
 
 static void
@@ -1419,12 +1576,14 @@ nvme_dump_transport_stats(uint32_t lcore, struct ns_worker_ctx *ns_ctx)
 	int rc;
 
 	group = ns_ctx->u.nvme.group;
-	if (group == NULL) {
+	if (group == NULL)
+	{
 		return;
 	}
 
 	rc = spdk_nvme_poll_group_get_stats(group, &stat);
-	if (rc) {
+	if (rc)
+	{
 		fprintf(stderr, "Can't get transport stats, error %d\n", rc);
 		return;
 	}
@@ -1432,8 +1591,10 @@ nvme_dump_transport_stats(uint32_t lcore, struct ns_worker_ctx *ns_ctx)
 	printf("\n====================\n");
 	printf("lcore %u, ns %s statistics:\n", lcore, ns_ctx->entry->name);
 
-	for (i = 0; i < stat->num_transports; i++) {
-		switch (stat->transport_stat[i]->trtype) {
+	for (i = 0; i < stat->num_transports; i++)
+	{
+		switch (stat->transport_stat[i]->trtype)
+		{
 		case SPDK_NVME_TRANSPORT_RDMA:
 			nvme_dump_rdma_statistics(stat->transport_stat[i]);
 			break;
@@ -1445,7 +1606,7 @@ nvme_dump_transport_stats(uint32_t lcore, struct ns_worker_ctx *ns_ctx)
 			break;
 		default:
 			fprintf(stderr, "Unknown transport statistics %d %s\n", stat->transport_stat[i]->trtype,
-				spdk_nvme_transport_id_trtype_str(stat->transport_stat[i]->trtype));
+					spdk_nvme_transport_id_trtype_str(stat->transport_stat[i]->trtype));
 		}
 	}
 
@@ -1453,14 +1614,13 @@ nvme_dump_transport_stats(uint32_t lcore, struct ns_worker_ctx *ns_ctx)
 }
 
 static const struct ns_fn_table nvme_fn_table = {
-	.setup_payload		= nvme_setup_payload,
-	.submit_io		= nvme_submit_io,
-	.check_io		= nvme_check_io,
-	.verify_io		= nvme_verify_io,
-	.init_ns_worker_ctx	= nvme_init_ns_worker_ctx,
-	.cleanup_ns_worker_ctx	= nvme_cleanup_ns_worker_ctx,
-	.dump_transport_stats	= nvme_dump_transport_stats
-};
+	.setup_payload = nvme_setup_payload,
+	.submit_io = nvme_submit_io,
+	.check_io = nvme_check_io,
+	.verify_io = nvme_verify_io,
+	.init_ns_worker_ctx = nvme_init_ns_worker_ctx,
+	.cleanup_ns_worker_ctx = nvme_cleanup_ns_worker_ctx,
+	.dump_transport_stats = nvme_dump_transport_stats};
 
 static int
 build_nvme_name(char *name, size_t length, struct spdk_nvme_ctrlr *ctrlr)
@@ -1470,7 +1630,8 @@ build_nvme_name(char *name, size_t length, struct spdk_nvme_ctrlr *ctrlr)
 
 	trid = spdk_nvme_ctrlr_get_transport_id(ctrlr);
 
-	switch (trid->trtype) {
+	switch (trid->trtype)
+	{
 	case SPDK_NVME_TRANSPORT_PCIE:
 		res = snprintf(name, length, "PCIE (%s)", trid->traddr);
 		break;
@@ -1500,10 +1661,10 @@ build_nvme_ns_name(char *name, size_t length, struct spdk_nvme_ctrlr *ctrlr, uin
 	int res = 0;
 
 	res = build_nvme_name(name, length, ctrlr);
-	if (res > 0) {
+	if (res > 0)
+	{
 		snprintf(name + res, length - res, " NSID %u", nsid);
 	}
-
 }
 
 static void
@@ -1517,10 +1678,11 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 
 	cdata = spdk_nvme_ctrlr_get_data(ctrlr);
 
-	if (!spdk_nvme_ns_is_active(ns)) {
+	if (!spdk_nvme_ns_is_active(ns))
+	{
 		printf("Controller %-20.20s (%-20.20s): Skipping inactive NS %u\n",
-		       cdata->mn, cdata->sn,
-		       spdk_nvme_ns_get_id(ns));
+			   cdata->mn, cdata->sn,
+			   spdk_nvme_ns_get_id(ns));
 		g_warn = true;
 		return;
 	}
@@ -1528,11 +1690,12 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	ns_size = spdk_nvme_ns_get_size(ns);
 	sector_size = spdk_nvme_ns_get_sector_size(ns);
 
-	if (ns_size < g_io_size_bytes || sector_size > g_io_size_bytes) {
+	if (ns_size < g_io_size_bytes || sector_size > g_io_size_bytes)
+	{
 		printf("WARNING: controller %-20.20s (%-20.20s) ns %u has invalid "
-		       "ns size %" PRIu64 " / block size %u for I/O size %u\n",
-		       cdata->mn, cdata->sn, spdk_nvme_ns_get_id(ns),
-		       ns_size, spdk_nvme_ns_get_sector_size(ns), g_io_size_bytes);
+			   "ns size %" PRIu64 " / block size %u for I/O size %u\n",
+			   cdata->mn, cdata->sn, spdk_nvme_ns_get_id(ns),
+			   ns_size, spdk_nvme_ns_get_sector_size(ns), g_io_size_bytes);
 		g_warn = true;
 		return;
 	}
@@ -1544,11 +1707,12 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	 * 1 more entry be used for stripe.
 	 */
 	entries = (g_io_size_bytes - 1) / max_xfer_size + 2;
-	if ((g_queue_depth * entries) > opts.io_queue_size) {
+	if ((g_queue_depth * entries) > opts.io_queue_size)
+	{
 		printf("Controller IO queue size %u, less than required.\n",
-		       opts.io_queue_size);
+			   opts.io_queue_size);
 		printf("Consider using lower queue depth or smaller IO size, because "
-		       "IO requests may be queued at the NVMe driver.\n");
+			   "IO requests may be queued at the NVMe driver.\n");
 	}
 	/* For requests which have children requests, parent request itself
 	 * will also occupy 1 entry.
@@ -1556,7 +1720,8 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	entries += 1;
 
 	entry = calloc(1, sizeof(struct ns_entry));
-	if (entry == NULL) {
+	if (entry == NULL)
+	{
 		perror("ns_entry malloc");
 		exit(1);
 	}
@@ -1570,9 +1735,11 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	entry->size_in_ios = ns_size / g_io_size_bytes;
 	entry->io_size_blocks = g_io_size_bytes / sector_size;
 
-	if (g_is_random) {
+	if (g_is_random)
+	{
 		entry->seed = rand();
-		if (g_zipf_theta > 0) {
+		if (g_zipf_theta > 0)
+		{
 			entry->zipf = spdk_zipf_create(entry->size_in_ios, g_zipf_theta, 0);
 		}
 	}
@@ -1583,7 +1750,8 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	entry->pi_loc = spdk_nvme_ns_get_data(ns)->dps.md_start;
 	entry->pi_type = spdk_nvme_ns_get_pi_type(ns);
 
-	if (spdk_nvme_ns_get_flags(ns) & SPDK_NVME_NS_DPS_PI_SUPPORTED) {
+	if (spdk_nvme_ns_get_flags(ns) & SPDK_NVME_NS_DPS_PI_SUPPORTED)
+	{
 		entry->io_flags = g_metacfg_pract_flag | g_metacfg_prchk_flags;
 	}
 
@@ -1592,24 +1760,29 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	 *  PI is passed (read) or replaced (write).  So block size is not necessary
 	 *  to change.)
 	 */
-	if ((entry->io_flags & SPDK_NVME_IO_FLAGS_PRACT) && (entry->md_size == 8)) {
+	if ((entry->io_flags & SPDK_NVME_IO_FLAGS_PRACT) && (entry->md_size == 8))
+	{
 		entry->block_size = spdk_nvme_ns_get_sector_size(ns);
 	}
 
-	if (g_io_size_bytes % entry->block_size != 0) {
+	if (g_io_size_bytes % entry->block_size != 0)
+	{
 		printf("WARNING: IO size %u (-o) is not a multiple of nsid %u sector size %u."
-		       " Removing this ns from test\n", g_io_size_bytes, spdk_nvme_ns_get_id(ns), entry->block_size);
+			   " Removing this ns from test\n",
+			   g_io_size_bytes, spdk_nvme_ns_get_id(ns), entry->block_size);
 		g_warn = true;
 		spdk_zipf_free(&entry->zipf);
 		free(entry);
 		return;
 	}
 
-	if (g_max_io_md_size < entry->md_size) {
+	if (g_max_io_md_size < entry->md_size)
+	{
 		g_max_io_md_size = entry->md_size;
 	}
 
-	if (g_max_io_size_blocks < entry->io_size_blocks) {
+	if (g_max_io_size_blocks < entry->io_size_blocks)
+	{
 		g_max_io_size_blocks = entry->io_size_blocks;
 	}
 
@@ -1624,14 +1797,18 @@ unregister_namespaces(void)
 {
 	struct ns_entry *entry, *tmp;
 
-	TAILQ_FOREACH_SAFE(entry, &g_namespaces, link, tmp) {
+	TAILQ_FOREACH_SAFE(entry, &g_namespaces, link, tmp)
+	{
 		TAILQ_REMOVE(&g_namespaces, entry, link);
 		spdk_zipf_free(&entry->zipf);
-		if (g_use_uring) {
+		if (g_use_uring)
+		{
 #ifdef SPDK_CONFIG_URING
 			close(entry->u.uring.fd);
 #endif
-		} else {
+		}
+		else
+		{
 #if HAVE_LIBAIO
 			close(entry->u.aio.fd);
 #endif
@@ -1643,7 +1820,8 @@ unregister_namespaces(void)
 static void
 enable_latency_tracking_complete(void *cb_arg, const struct spdk_nvme_cpl *cpl)
 {
-	if (spdk_nvme_cpl_is_error(cpl)) {
+	if (spdk_nvme_cpl_is_error(cpl))
+	{
 		printf("enable_latency_tracking_complete failed\n");
 	}
 	g_outstanding_commands--;
@@ -1655,21 +1833,26 @@ set_latency_tracking_feature(struct spdk_nvme_ctrlr *ctrlr, bool enable)
 	int res;
 	union spdk_nvme_intel_feat_latency_tracking latency_tracking;
 
-	if (enable) {
+	if (enable)
+	{
 		latency_tracking.bits.enable = 0x01;
-	} else {
+	}
+	else
+	{
 		latency_tracking.bits.enable = 0x00;
 	}
 
 	res = spdk_nvme_ctrlr_cmd_set_feature(ctrlr, SPDK_NVME_INTEL_FEAT_LATENCY_TRACKING,
-					      latency_tracking.raw, 0, NULL, 0, enable_latency_tracking_complete, NULL);
-	if (res) {
+										  latency_tracking.raw, 0, NULL, 0, enable_latency_tracking_complete, NULL);
+	if (res)
+	{
 		printf("fail to allocate nvme request.\n");
 		return;
 	}
 	g_outstanding_commands++;
 
-	while (g_outstanding_commands) {
+	while (g_outstanding_commands)
+	{
 		spdk_nvme_ctrlr_process_admin_completions(ctrlr);
 	}
 }
@@ -1681,14 +1864,16 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct trid_entry *trid_entry)
 	struct ctrlr_entry *entry = malloc(sizeof(struct ctrlr_entry));
 	uint32_t nsid;
 
-	if (entry == NULL) {
+	if (entry == NULL)
+	{
 		perror("ctrlr_entry malloc");
 		exit(1);
 	}
 
 	entry->latency_page = spdk_dma_zmalloc(sizeof(struct spdk_nvme_intel_rw_latency_page),
-					       4096, NULL);
-	if (entry->latency_page == NULL) {
+										   4096, NULL);
+	if (entry->latency_page == NULL)
+	{
 		printf("Allocation error (latency page)\n");
 		exit(1);
 	}
@@ -1700,22 +1885,29 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct trid_entry *trid_entry)
 	TAILQ_INSERT_TAIL(&g_controllers, entry, link);
 
 	if (g_latency_ssd_tracking_enable &&
-	    spdk_nvme_ctrlr_is_feature_supported(ctrlr, SPDK_NVME_INTEL_FEAT_LATENCY_TRACKING)) {
+		spdk_nvme_ctrlr_is_feature_supported(ctrlr, SPDK_NVME_INTEL_FEAT_LATENCY_TRACKING))
+	{
 		set_latency_tracking_feature(ctrlr, true);
 	}
 
-	if (trid_entry->nsid == 0) {
+	if (trid_entry->nsid == 0)
+	{
 		for (nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr);
-		     nsid != 0; nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid)) {
+			 nsid != 0; nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid))
+		{
 			ns = spdk_nvme_ctrlr_get_ns(ctrlr, nsid);
-			if (ns == NULL) {
+			if (ns == NULL)
+			{
 				continue;
 			}
 			register_ns(ctrlr, ns);
 		}
-	} else {
+	}
+	else
+	{
 		ns = spdk_nvme_ctrlr_get_ns(ctrlr, trid_entry->nsid);
-		if (!ns) {
+		if (!ns)
+		{
 			perror("Namespace does not exist.");
 			exit(1);
 		}
@@ -1727,27 +1919,33 @@ register_ctrlr(struct spdk_nvme_ctrlr *ctrlr, struct trid_entry *trid_entry)
 static inline void
 submit_single_io(struct perf_task *task)
 {
-	uint64_t		rand_value, offset_in_ios;
-	int			rc;
-	struct ns_worker_ctx	*ns_ctx = task->ns_ctx;
-	struct ns_entry		*entry = ns_ctx->entry;
+	uint64_t rand_value, offset_in_ios;
+	int rc;
+	struct ns_worker_ctx *ns_ctx = task->ns_ctx;
+	struct ns_entry *entry = ns_ctx->entry;
 
 	assert(!ns_ctx->is_draining);
 
-	if (entry->zipf) {
+	if (entry->zipf)
+	{
 		offset_in_ios = spdk_zipf_generate(entry->zipf);
-	} else if (g_is_random) {
+	}
+	else if (g_is_random)
+	{
 		/* rand_r() returns int, so we need to use two calls to ensure
 		 * we get a large enough value to cover a very large block
 		 * device.
 		 */
 		rand_value = (uint64_t)rand_r(&entry->seed) *
-			     ((uint64_t)RAND_MAX + 1) +
-			     rand_r(&entry->seed);
+						 ((uint64_t)RAND_MAX + 1) +
+					 rand_r(&entry->seed);
 		offset_in_ios = rand_value % entry->size_in_ios;
-	} else {
+	}
+	else
+	{
 		offset_in_ios = ns_ctx->offset_in_ios++;
-		if (ns_ctx->offset_in_ios == entry->size_in_ios) {
+		if (ns_ctx->offset_in_ios == entry->size_in_ios)
+		{
 			ns_ctx->offset_in_ios = 0;
 		}
 	}
@@ -1755,20 +1953,27 @@ submit_single_io(struct perf_task *task)
 	task->submit_tsc = spdk_get_ticks();
 
 	if ((g_rw_percentage == 100) ||
-	    (g_rw_percentage != 0 && ((rand_r(&entry->seed) % 100) < g_rw_percentage))) {
+		(g_rw_percentage != 0 && ((rand_r(&entry->seed) % 100) < g_rw_percentage)))
+	{
 		task->is_read = true;
-	} else {
+	}
+	else
+	{
 		task->is_read = false;
 	}
 
 	rc = entry->fn_table->submit_io(task, ns_ctx, entry, offset_in_ios);
 
-	if (spdk_unlikely(rc != 0)) {
-		if (g_continue_on_error) {
+	if (spdk_unlikely(rc != 0))
+	{
+		if (g_continue_on_error)
+		{
 			/* We can't just resubmit here or we can get in a loop that
 			 * stack overflows. */
 			TAILQ_INSERT_TAIL(&ns_ctx->queued_tasks, task, link);
-		} else {
+		}
+		else
+		{
 			RATELIMIT_LOG("starting I/O failed: %d\n", rc);
 			spdk_dma_free(task->iovs[0].iov_base);
 			free(task->iovs);
@@ -1776,12 +1981,15 @@ submit_single_io(struct perf_task *task)
 			task->ns_ctx->status = 1;
 			free(task);
 		}
-	} else {
+	}
+	else
+	{
 		ns_ctx->current_queue_depth++;
 		ns_ctx->stats.io_submitted++;
 	}
 
-	if (spdk_unlikely(g_number_ios && ns_ctx->stats.io_submitted >= g_number_ios)) {
+	if (spdk_unlikely(g_number_ios && ns_ctx->stats.io_submitted >= g_number_ios))
+	{
 		ns_ctx->is_draining = true;
 	}
 }
@@ -1789,9 +1997,9 @@ submit_single_io(struct perf_task *task)
 static inline void
 task_complete(struct perf_task *task)
 {
-	struct ns_worker_ctx	*ns_ctx;
-	uint64_t		tsc_diff;
-	struct ns_entry		*entry;
+	struct ns_worker_ctx *ns_ctx;
+	uint64_t tsc_diff;
+	struct ns_entry *entry;
 
 	ns_ctx = task->ns_ctx;
 	entry = ns_ctx->entry;
@@ -1799,17 +2007,21 @@ task_complete(struct perf_task *task)
 	ns_ctx->stats.io_completed++;
 	tsc_diff = spdk_get_ticks() - task->submit_tsc;
 	ns_ctx->stats.total_tsc += tsc_diff;
-	if (spdk_unlikely(ns_ctx->stats.min_tsc > tsc_diff)) {
+	if (spdk_unlikely(ns_ctx->stats.min_tsc > tsc_diff))
+	{
 		ns_ctx->stats.min_tsc = tsc_diff;
 	}
-	if (spdk_unlikely(ns_ctx->stats.max_tsc < tsc_diff)) {
+	if (spdk_unlikely(ns_ctx->stats.max_tsc < tsc_diff))
+	{
 		ns_ctx->stats.max_tsc = tsc_diff;
 	}
-	if (spdk_unlikely(g_latency_sw_tracking_level > 0)) {
+	if (spdk_unlikely(g_latency_sw_tracking_level > 0))
+	{
 		spdk_histogram_data_tally(ns_ctx->histogram, tsc_diff);
 	}
 
-	if (spdk_unlikely(entry->md_size > 0)) {
+	if (spdk_unlikely(entry->md_size > 0))
+	{
 		/* add application level verification for end-to-end data protection */
 		entry->fn_table->verify_io(task, entry);
 	}
@@ -1820,12 +2032,15 @@ task_complete(struct perf_task *task)
 	 * submitted I/O to complete. In this case, do not submit a new I/O to
 	 * replace the one just completed.
 	 */
-	if (spdk_unlikely(ns_ctx->is_draining)) {
+	if (spdk_unlikely(ns_ctx->is_draining))
+	{
 		spdk_dma_free(task->iovs[0].iov_base);
 		free(task->iovs);
 		spdk_dma_free(task->md_iov.iov_base);
 		free(task);
-	} else {
+	}
+	else
+	{
 		submit_single_io(task);
 	}
 }
@@ -1835,17 +2050,23 @@ io_complete(void *ctx, const struct spdk_nvme_cpl *cpl)
 {
 	struct perf_task *task = ctx;
 
-	if (spdk_unlikely(spdk_nvme_cpl_is_error(cpl))) {
-		if (task->is_read) {
+	if (spdk_unlikely(spdk_nvme_cpl_is_error(cpl)))
+	{
+		if (task->is_read)
+		{
 			RATELIMIT_LOG("Read completed with error (sct=%d, sc=%d)\n",
-				      cpl->status.sct, cpl->status.sc);
-		} else {
-			RATELIMIT_LOG("Write completed with error (sct=%d, sc=%d)\n",
-				      cpl->status.sct, cpl->status.sc);
+						  cpl->status.sct, cpl->status.sc);
 		}
-		if (!g_continue_on_error) {
+		else
+		{
+			RATELIMIT_LOG("Write completed with error (sct=%d, sc=%d)\n",
+						  cpl->status.sct, cpl->status.sc);
+		}
+		if (!g_continue_on_error)
+		{
 			if (cpl->status.sct == SPDK_NVME_SCT_GENERIC &&
-			    cpl->status.sc == SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT) {
+				cpl->status.sc == SPDK_NVME_SC_INVALID_NAMESPACE_OR_FORMAT)
+			{
 				/* The namespace was hotplugged.  Stop trying to send I/O to it. */
 				task->ns_ctx->is_draining = true;
 			}
@@ -1863,7 +2084,8 @@ allocate_task(struct ns_worker_ctx *ns_ctx, int queue_depth)
 	struct perf_task *task;
 
 	task = calloc(1, sizeof(*task));
-	if (task == NULL) {
+	if (task == NULL)
+	{
 		fprintf(stderr, "Out of memory allocating tasks\n");
 		exit(1);
 	}
@@ -1879,7 +2101,8 @@ submit_io(struct ns_worker_ctx *ns_ctx, int queue_depth)
 {
 	struct perf_task *task;
 
-	while (queue_depth-- > 0) {
+	while (queue_depth-- > 0)
+	{
 		task = allocate_task(ns_ctx, queue_depth);
 		submit_single_io(task);
 	}
@@ -1897,7 +2120,8 @@ cleanup_ns_worker_ctx(struct ns_worker_ctx *ns_ctx)
 {
 	struct perf_task *task, *ttask;
 
-	TAILQ_FOREACH_SAFE(task, &ns_ctx->queued_tasks, link, ttask) {
+	TAILQ_FOREACH_SAFE(task, &ns_ctx->queued_tasks, link, ttask)
+	{
 		TAILQ_REMOVE(&ns_ctx->queued_tasks, task, link);
 		task_complete(task);
 	}
@@ -1917,32 +2141,40 @@ print_periodic_performance(bool warmup)
 	uint64_t core_idle_tsc = 0;
 	double core_busy_perc = 0;
 
-	if (!isatty(STDOUT_FILENO)) {
+	if (!isatty(STDOUT_FILENO))
+	{
 		/* Don't print periodic stats if output is not going
 		 * to a terminal.
 		 */
 		return;
 	}
 	io_this_second = 0;
-	TAILQ_FOREACH(worker, &g_workers, link) {
+	TAILQ_FOREACH(worker, &g_workers, link)
+	{
 		busy_tsc = 0;
 		idle_tsc = 0;
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
 			io_this_second += ns_ctx->stats.io_completed - ns_ctx->stats.last_io_completed;
 			ns_ctx->stats.last_io_completed = ns_ctx->stats.io_completed;
 
-			if (g_monitor_perf_cores) {
+			if (g_monitor_perf_cores)
+			{
 				busy_tsc += ns_ctx->stats.busy_tsc - ns_ctx->stats.last_busy_tsc;
 				idle_tsc += ns_ctx->stats.idle_tsc - ns_ctx->stats.last_idle_tsc;
 				ns_ctx->stats.last_busy_tsc = ns_ctx->stats.busy_tsc;
 				ns_ctx->stats.last_idle_tsc = ns_ctx->stats.idle_tsc;
 			}
 		}
-		if (g_monitor_perf_cores) {
-			if(!g_enable_uintr) {
+		if (g_monitor_perf_cores)
+		{
+			if (!g_enable_uintr)
+			{
 				core_busy_tsc += busy_tsc;
 				core_idle_tsc += idle_tsc;
-			} else {
+			}
+			else
+			{
 				core_busy_tsc += worker->busy_time - worker->last_busy_time;
 				core_idle_tsc += worker->idle_time - worker->last_idle_time;
 				worker->last_busy_time = worker->busy_time;
@@ -1956,7 +2188,8 @@ print_periodic_performance(bool warmup)
 	g_core_utils += (double)core_busy_tsc / (core_idle_tsc + core_busy_tsc);
 	g_core_util_count++;
 	printf(" %6.2f%% Busy", g_core_utils * 100 / g_core_util_count); // CPU利用率平均值
-	if (g_monitor_perf_cores) {
+	if (g_monitor_perf_cores)
+	{
 		core_busy_perc = (double)core_busy_tsc / (core_idle_tsc + core_busy_tsc) * 100;
 		printf("%3d Core(s): %6.2f%% Busy", g_num_workers, core_busy_perc);
 	}
@@ -1969,8 +2202,10 @@ perf_dump_transport_statistics(struct worker_thread *worker)
 {
 	struct ns_worker_ctx *ns_ctx;
 
-	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
-		if (ns_ctx->entry->fn_table->dump_transport_stats) {
+	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+	{
+		if (ns_ctx->entry->fn_table->dump_transport_stats)
+		{
 			ns_ctx->entry->fn_table->dump_transport_stats(worker->lcore, ns_ctx);
 		}
 	}
@@ -2014,7 +2249,6 @@ perf_dump_transport_statistics(struct worker_thread *worker)
 // 	} else {
 // 		tsc_end = tsc_current + g_time_in_sec * g_tsc_rate;
 // 	}
-
 
 // 	while (spdk_likely(!g_exit)) {
 // 		bool all_draining = true;
@@ -2104,29 +2338,35 @@ static int
 work_fn(void *arg)
 {
 	uint64_t tsc_start, tsc_end, tsc_current, tsc_next_print;
-	struct worker_thread *worker = (struct worker_thread *) arg;
+	struct worker_thread *worker = (struct worker_thread *)arg;
 	struct ns_worker_ctx *ns_ctx = NULL;
 	uint32_t unfinished_ns_ctx;
 	bool warmup = false;
 	int rc;
 	int64_t check_rc;
 	uint64_t check_now;
-	TAILQ_HEAD(, perf_task)	swap;
+	TAILQ_HEAD(, perf_task)
+	swap;
 	struct perf_task *task;
 
-	if(g_enable_uintr) {
+	if (g_enable_uintr)
+	{
 		SPDK_ERRLOG("开始注册用户态中断处理函数\n");
 		int cpu_id = worker->lcore;
-		#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
-		if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
+#define UINTR_HANDLER_FLAG_WAITING_RECEIVER 0x1000 // TODO: 这个定义也一直需要吗？
+		if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER))
+		{
 			SPDK_ERRLOG("Interrupt handler register error");
 			exit(EXIT_FAILURE);
 		}
-		idle_thread[cpu_id].rsp = (uint64_t)((unsigned char*)(idle_thread[cpu_id].stack_space) + sizeof(idle_thread[cpu_id].stack_space) - 0x38);
-		if(g_io_size_bytes != 4096) {
+		idle_thread[cpu_id].rsp = (uint64_t)((unsigned char *)(idle_thread[cpu_id].stack_space) + sizeof(idle_thread[cpu_id].stack_space) - 0x38);
+		if (g_io_size_bytes != 4096)
+		{
 			idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
 			idle_thread[cpu_id].stack_space[0xFFFF] = (uint64_t)idle_thread_func;
-		} else {
+		}
+		else
+		{
 			idle_thread[cpu_id].rip = (uint64_t)idle_thread_func;
 			idle_thread[cpu_id].stack_space[0xFFFF] = (uint64_t)idle_thread_func;
 		}
@@ -2153,13 +2393,16 @@ work_fn(void *arg)
 	}
 
 	int flags;
-	if(g_enable_uintr) {
+	if (g_enable_uintr)
+	{
 		local_irq_save(flags); // 保存中断标志并且屏蔽用户中断
 	}
 
 	/* Allocate queue pairs for each namespace. */
-	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
-		if (init_ns_worker_ctx(ns_ctx) != 0) {
+	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+	{
+		if (init_ns_worker_ctx(ns_ctx) != 0)
+		{
 			printf("ERROR: init_ns_worker_ctx() failed\n");
 			/* Wait on barrier to avoid blocking of successful workers */
 			pthread_barrier_wait(&g_worker_sync_barrier);
@@ -2169,7 +2412,8 @@ work_fn(void *arg)
 	}
 
 	rc = pthread_barrier_wait(&g_worker_sync_barrier);
-	if (rc != 0 && rc != PTHREAD_BARRIER_SERIAL_THREAD) {
+	if (rc != 0 && rc != PTHREAD_BARRIER_SERIAL_THREAD)
+	{
 		printf("ERROR: failed to wait on thread sync barrier\n");
 		ns_ctx->status = 1;
 		return 1;
@@ -2179,15 +2423,19 @@ work_fn(void *arg)
 	tsc_current = tsc_start;
 	tsc_next_print = tsc_current + g_tsc_rate;
 
-	if (g_warmup_time_in_sec) {
+	if (g_warmup_time_in_sec)
+	{
 		warmup = true;
 		tsc_end = tsc_current + g_warmup_time_in_sec * g_tsc_rate;
-	} else {
+	}
+	else
+	{
 		tsc_end = tsc_current + g_time_in_sec * g_tsc_rate;
 	}
 
 	/* Submit initial I/O for each namespace. */
-	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+	{
 		submit_io(ns_ctx, g_queue_depth);
 	}
 
@@ -2195,12 +2443,14 @@ work_fn(void *arg)
 	uint64_t last_tsc = spdk_get_ticks();
 	uint64_t curr_tsc = 0;
 
-	while (spdk_likely(!g_exit)) {
+	while (spdk_likely(!g_exit))
+	{
 		bool all_draining = true;
 
 		bool total_check_io = false;
 
-		if(g_enable_uintr) {
+		if (g_enable_uintr)
+		{
 			local_irq_restore(flags); // 恢复中断标志并且允许处理用户中断
 			uintr_count[worker->lcore] = 0;
 		}
@@ -2210,17 +2460,21 @@ work_fn(void *arg)
 		 * I/O will be submitted in the io_complete callback
 		 * to replace each I/O that is completed.
 		 */
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
-			if (g_continue_on_error && !ns_ctx->is_draining) {
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
+			if (g_continue_on_error && !ns_ctx->is_draining)
+			{
 				/* Submit any I/O that is queued up */
 				TAILQ_INIT(&swap);
 				TAILQ_SWAP(&swap, &ns_ctx->queued_tasks, perf_task, link);
-				while (!TAILQ_EMPTY(&swap)) {
+				while (!TAILQ_EMPTY(&swap))
+				{
 					task = TAILQ_FIRST(&swap);
 					TAILQ_REMOVE(&swap, task, link);
-					if (ns_ctx->is_draining) {
+					if (ns_ctx->is_draining)
+					{
 						TAILQ_INSERT_TAIL(&ns_ctx->queued_tasks,
-								  task, link);
+										  task, link);
 						continue;
 					}
 					submit_single_io(task);
@@ -2230,29 +2484,37 @@ work_fn(void *arg)
 			check_now = spdk_get_ticks();
 			check_rc = ns_ctx->entry->fn_table->check_io(ns_ctx);
 
-			if (check_rc > 0) {
+			if (check_rc > 0)
+			{
 				ns_ctx->stats.busy_tsc += check_now - ns_ctx->stats.last_tsc;
 				total_check_io = true;
-			} else {
+			}
+			else
+			{
 				ns_ctx->stats.idle_tsc += check_now - ns_ctx->stats.last_tsc;
 				total_check_io = false;
 			}
 			ns_ctx->stats.last_tsc = check_now;
 
-			if (!ns_ctx->is_draining) {
+			if (!ns_ctx->is_draining)
+			{
 				all_draining = false;
 			}
 		}
 
-		if(g_enable_uintr) {
+		if (g_enable_uintr)
+		{
 			int cpu_id = worker->lcore;
 			curr_tsc = spdk_get_ticks();
-			if(uintr_count[cpu_id] > 0 || total_check_io) { // 上一次获取至少一个IO completion 信号或者还有至少一个IO completion 信号没有处理，就继续执行
+			if (uintr_count[cpu_id] > 0 || total_check_io)
+			{ // 上一次获取至少一个IO completion 信号或者还有至少一个IO completion 信号没有处理，就继续执行
 				// local_irq_save(flags);
 				total_check_io = false;
 				worker->busy_time += (curr_tsc - last_tsc);
 				last_tsc = curr_tsc;
-			} else {
+			}
+			else
+			{
 				worker->idle_time += (curr_tsc - last_tsc);
 				switch_thread(work_thread + cpu_id, idle_thread + cpu_id);
 				current_thread[cpu_id] = work_thread + cpu_id;
@@ -2260,36 +2522,44 @@ work_fn(void *arg)
 			}
 		}
 
-		if (spdk_unlikely(all_draining)) {
+		if (spdk_unlikely(all_draining))
+		{
 			break;
 		}
 
 		tsc_current = spdk_get_ticks();
 
-		if (worker->lcore == g_main_core && tsc_current > tsc_next_print) {
+		if (worker->lcore == g_main_core && tsc_current > tsc_next_print)
+		{
 			tsc_next_print += g_tsc_rate;
 			print_periodic_performance(warmup);
 		}
 
-		if (tsc_current > tsc_end) {
-			if (warmup) {
+		if (tsc_current > tsc_end)
+		{
+			if (warmup)
+			{
 				/* Update test start and end time, clear statistics */
 				tsc_start = spdk_get_ticks();
 				tsc_end = tsc_start + g_time_in_sec * g_tsc_rate;
 
-				TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+				TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+				{
 					memset(&ns_ctx->stats, 0, sizeof(ns_ctx->stats));
 					ns_ctx->stats.min_tsc = UINT64_MAX;
 					spdk_histogram_data_reset(ns_ctx->histogram);
 				}
 
-				if (worker->lcore == g_main_core && isatty(STDOUT_FILENO)) {
+				if (worker->lcore == g_main_core && isatty(STDOUT_FILENO))
+				{
 					/* warmup stage prints a longer string to stdout, need to erase it */
 					printf("%c[2K", 27);
 				}
 
 				warmup = false;
-			} else {
+			}
+			else
+			{
 				break;
 			}
 		}
@@ -2299,35 +2569,43 @@ work_fn(void *arg)
 	 * for cases where we exit prematurely due to a signal. We only need to capture it on
 	 * one core, so use the main core.
 	 */
-	if (worker->lcore == g_main_core) {
+	if (worker->lcore == g_main_core)
+	{
 		g_elapsed_time_in_usec = (tsc_current - tsc_start) * SPDK_SEC_TO_USEC / g_tsc_rate;
 	}
 
 	/* drain the io of each ns_ctx in round robin to make the fairness */
-	do {
+	do
+	{
 		unfinished_ns_ctx = 0;
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
 			/* first time will enter into this if case */
-			if (!ns_ctx->is_draining) {
+			if (!ns_ctx->is_draining)
+			{
 				ns_ctx->is_draining = true;
 			}
 
-			if (ns_ctx->current_queue_depth > 0) {
+			if (ns_ctx->current_queue_depth > 0)
+			{
 				ns_ctx->entry->fn_table->check_io(ns_ctx);
-				if (ns_ctx->current_queue_depth > 0) {
+				if (ns_ctx->current_queue_depth > 0)
+				{
 					unfinished_ns_ctx++;
 				}
 			}
 		}
 	} while (unfinished_ns_ctx > 0);
 
-	if (g_dump_transport_stats) {
+	if (g_dump_transport_stats)
+	{
 		pthread_mutex_lock(&g_stats_mutex);
 		perf_dump_transport_statistics(worker);
 		pthread_mutex_unlock(&g_stats_mutex);
 	}
 
-	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+	TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+	{
 		cleanup_ns_worker_ctx(ns_ctx);
 	}
 	return 0;
@@ -2373,7 +2651,7 @@ usage(char *program_name)
 	printf("\t-P, --num-qpairs <val> number of io queues per namespace. default: 1\n");
 	printf("\t-U, --num-unused-qpairs <val> number of unused io queues per controller. default: 0\n");
 	printf("\t-A, --buffer-alignment IO buffer alignment. Must be power of 2 and not less than cache line (%u)\n",
-	       SPDK_CACHE_LINE_SIZE);
+		   SPDK_CACHE_LINE_SIZE);
 	printf("\t-s, --hugemem-size <MB> DPDK huge memory size in MB.\n");
 	printf("\t-g, --mem-single-seg use single file descriptor for DPDK memory segments\n");
 	printf("\t-C, --max-completion-per-poll <val> max completions per poll\n");
@@ -2446,17 +2724,19 @@ usage(char *program_name)
 
 static void
 check_cutoff(void *ctx, uint64_t start, uint64_t end, uint64_t count,
-	     uint64_t total, uint64_t so_far)
+			 uint64_t total, uint64_t so_far)
 {
 	double so_far_pct;
 	double **cutoff = ctx;
 
-	if (count == 0) {
+	if (count == 0)
+	{
 		return;
 	}
 
 	so_far_pct = (double)so_far / total;
-	while (so_far_pct >= **cutoff && **cutoff > 0) {
+	while (so_far_pct >= **cutoff && **cutoff > 0)
+	{
 		printf("%9.5f%% : %9.3fus\n", **cutoff * 100, (double)end * 1000 * 1000 / g_tsc_rate);
 		(*cutoff)++;
 	}
@@ -2464,19 +2744,20 @@ check_cutoff(void *ctx, uint64_t start, uint64_t end, uint64_t count,
 
 static void
 print_bucket(void *ctx, uint64_t start, uint64_t end, uint64_t count,
-	     uint64_t total, uint64_t so_far)
+			 uint64_t total, uint64_t so_far)
 {
 	double so_far_pct;
 
-	if (count == 0) {
+	if (count == 0)
+	{
 		return;
 	}
 
 	so_far_pct = (double)so_far * 100 / total;
 	printf("%9.3f - %9.3f: %9.4f%%  (%9ju)\n",
-	       (double)start * 1000 * 1000 / g_tsc_rate,
-	       (double)end * 1000 * 1000 / g_tsc_rate,
-	       so_far_pct, count);
+		   (double)start * 1000 * 1000 / g_tsc_rate,
+		   (double)end * 1000 * 1000 / g_tsc_rate,
+		   so_far_pct, count);
 }
 
 static void
@@ -2487,8 +2768,8 @@ print_performance(void)
 	double sum_ave_latency, min_latency_so_far, max_latency_so_far;
 	double total_io_per_second, total_mb_per_second;
 	int ns_count;
-	struct worker_thread	*worker;
-	struct ns_worker_ctx	*ns_ctx;
+	struct worker_thread *worker;
+	struct ns_worker_ctx *ns_ctx;
 	uint32_t max_strlen;
 
 	total_io_per_second = 0;
@@ -2500,8 +2781,10 @@ print_performance(void)
 	ns_count = 0;
 
 	max_strlen = 0;
-	TAILQ_FOREACH(worker, &g_workers, link) {
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+	TAILQ_FOREACH(worker, &g_workers, link)
+	{
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
 			max_strlen = spdk_max(strlen(ns_ctx->entry->name), max_strlen);
 		}
 	}
@@ -2510,29 +2793,34 @@ print_performance(void)
 	printf("avg core utils: %6.2f%% \n", g_core_utils * 100 / g_core_util_count); // 打印CPU利用率平均值
 	printf("%*s\n", max_strlen + 60, "Latency(us)");
 	printf("%-*s: %10s %10s %10s %10s %10s\n",
-	       max_strlen + 13, "Device Information", "IOPS", "MiB/s", "Average", "min", "max");
+		   max_strlen + 13, "Device Information", "IOPS", "MiB/s", "Average", "min", "max");
 
-	TAILQ_FOREACH(worker, &g_workers, link) {
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
-			if (ns_ctx->stats.io_completed != 0) {
+	TAILQ_FOREACH(worker, &g_workers, link)
+	{
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
+			if (ns_ctx->stats.io_completed != 0)
+			{
 				io_per_second = (double)ns_ctx->stats.io_completed * 1000 * 1000 / g_elapsed_time_in_usec;
 				mb_per_second = io_per_second * g_io_size_bytes / (1024 * 1024);
 				average_latency = ((double)ns_ctx->stats.total_tsc / ns_ctx->stats.io_completed) * 1000 * 1000 /
-						  g_tsc_rate;
+								  g_tsc_rate;
 				min_latency = (double)ns_ctx->stats.min_tsc * 1000 * 1000 / g_tsc_rate;
-				if (min_latency < min_latency_so_far) {
+				if (min_latency < min_latency_so_far)
+				{
 					min_latency_so_far = min_latency;
 				}
 
 				max_latency = (double)ns_ctx->stats.max_tsc * 1000 * 1000 / g_tsc_rate;
-				if (max_latency > max_latency_so_far) {
+				if (max_latency > max_latency_so_far)
+				{
 					max_latency_so_far = max_latency;
 				}
 
 				printf("%-*.*s from core %2u: %10.2f %10.2f %10.2f %10.2f %10.2f\n",
-				       max_strlen, max_strlen, ns_ctx->entry->name, worker->lcore,
-				       io_per_second, mb_per_second,
-				       average_latency, min_latency, max_latency);
+					   max_strlen, max_strlen, ns_ctx->entry->name, worker->lcore,
+					   io_per_second, mb_per_second,
+					   average_latency, min_latency, max_latency);
 				total_io_per_second += io_per_second;
 				total_mb_per_second += mb_per_second;
 				total_io_completed += ns_ctx->stats.io_completed;
@@ -2542,21 +2830,25 @@ print_performance(void)
 		}
 	}
 
-	if (ns_count != 0 && total_io_completed) {
+	if (ns_count != 0 && total_io_completed)
+	{
 		sum_ave_latency = ((double)total_io_tsc / total_io_completed) * 1000 * 1000 / g_tsc_rate;
 		printf("====================================================================\n");
 		printf("%-*s: %10.2f %10.2f %10.2f %10.2f %10.2f\n",
-		       max_strlen + 13, "Total", total_io_per_second, total_mb_per_second,
-		       sum_ave_latency, min_latency_so_far, max_latency_so_far);
+			   max_strlen + 13, "Total", total_io_per_second, total_mb_per_second,
+			   sum_ave_latency, min_latency_so_far, max_latency_so_far);
 		printf("\n");
 	}
 
-	if (g_latency_sw_tracking_level == 0 || total_io_completed == 0) {
+	if (g_latency_sw_tracking_level == 0 || total_io_completed == 0)
+	{
 		return;
 	}
 
-	TAILQ_FOREACH(worker, &g_workers, link) {
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+	TAILQ_FOREACH(worker, &g_workers, link)
+	{
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
 			const double *cutoff = g_latency_cutoffs;
 
 			printf("Summary latency data for %-43.43s from core %u:\n", ns_ctx->entry->name, worker->lcore);
@@ -2568,12 +2860,15 @@ print_performance(void)
 		}
 	}
 
-	if (g_latency_sw_tracking_level == 1) {
+	if (g_latency_sw_tracking_level == 1)
+	{
 		return;
 	}
 
-	TAILQ_FOREACH(worker, &g_workers, link) {
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
+	TAILQ_FOREACH(worker, &g_workers, link)
+	{
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
 			printf("Latency histogram for %-43.43s from core %u:\n", ns_ctx->entry->name, worker->lcore);
 			printf("==============================================================================\n");
 			printf("       Range in us     Cumulative    IO count\n");
@@ -2582,7 +2877,6 @@ print_performance(void)
 			printf("\n");
 		}
 	}
-
 }
 
 static void
@@ -2594,54 +2888,68 @@ print_latency_page(struct ctrlr_entry *entry)
 	printf("%s\n", entry->name);
 	printf("--------------------------------------------------------\n");
 
-	for (i = 0; i < 32; i++) {
-		if (entry->latency_page->buckets_32us[i]) {
+	for (i = 0; i < 32; i++)
+	{
+		if (entry->latency_page->buckets_32us[i])
+		{
 			printf("Bucket %dus - %dus: %d\n", i * 32, (i + 1) * 32, entry->latency_page->buckets_32us[i]);
 		}
 	}
-	for (i = 0; i < 31; i++) {
-		if (entry->latency_page->buckets_1ms[i]) {
+	for (i = 0; i < 31; i++)
+	{
+		if (entry->latency_page->buckets_1ms[i])
+		{
 			printf("Bucket %dms - %dms: %d\n", i + 1, i + 2, entry->latency_page->buckets_1ms[i]);
 		}
 	}
-	for (i = 0; i < 31; i++) {
+	for (i = 0; i < 31; i++)
+	{
 		if (entry->latency_page->buckets_32ms[i])
 			printf("Bucket %dms - %dms: %d\n", (i + 1) * 32, (i + 2) * 32,
-			       entry->latency_page->buckets_32ms[i]);
+				   entry->latency_page->buckets_32ms[i]);
 	}
 }
 
 static void
 print_latency_statistics(const char *op_name, enum spdk_nvme_intel_log_page log_page)
 {
-	struct ctrlr_entry	*ctrlr;
+	struct ctrlr_entry *ctrlr;
 
 	printf("%s Latency Statistics:\n", op_name);
 	printf("========================================================\n");
-	TAILQ_FOREACH(ctrlr, &g_controllers, link) {
-		if (spdk_nvme_ctrlr_is_log_page_supported(ctrlr->ctrlr, log_page)) {
+	TAILQ_FOREACH(ctrlr, &g_controllers, link)
+	{
+		if (spdk_nvme_ctrlr_is_log_page_supported(ctrlr->ctrlr, log_page))
+		{
 			if (spdk_nvme_ctrlr_cmd_get_log_page(ctrlr->ctrlr, log_page, SPDK_NVME_GLOBAL_NS_TAG,
-							     ctrlr->latency_page, sizeof(struct spdk_nvme_intel_rw_latency_page), 0,
-							     enable_latency_tracking_complete,
-							     NULL)) {
+												 ctrlr->latency_page, sizeof(struct spdk_nvme_intel_rw_latency_page), 0,
+												 enable_latency_tracking_complete,
+												 NULL))
+			{
 				printf("nvme_ctrlr_cmd_get_log_page() failed\n");
 				exit(1);
 			}
 
 			g_outstanding_commands++;
-		} else {
+		}
+		else
+		{
 			printf("Controller %s: %s latency statistics not supported\n", ctrlr->name, op_name);
 		}
 	}
 
-	while (g_outstanding_commands) {
-		TAILQ_FOREACH(ctrlr, &g_controllers, link) {
+	while (g_outstanding_commands)
+	{
+		TAILQ_FOREACH(ctrlr, &g_controllers, link)
+		{
 			spdk_nvme_ctrlr_process_admin_completions(ctrlr->ctrlr);
 		}
 	}
 
-	TAILQ_FOREACH(ctrlr, &g_controllers, link) {
-		if (spdk_nvme_ctrlr_is_log_page_supported(ctrlr->ctrlr, log_page)) {
+	TAILQ_FOREACH(ctrlr, &g_controllers, link)
+	{
+		if (spdk_nvme_ctrlr_is_log_page_supported(ctrlr->ctrlr, log_page))
+		{
 			print_latency_page(ctrlr);
 		}
 	}
@@ -2652,11 +2960,14 @@ static void
 print_stats(void)
 {
 	print_performance();
-	if (g_latency_ssd_tracking_enable) {
-		if (g_rw_percentage != 0) {
+	if (g_latency_ssd_tracking_enable)
+	{
+		if (g_rw_percentage != 0)
+		{
 			print_latency_statistics("Read", SPDK_NVME_INTEL_LOG_READ_CMD_LATENCY);
 		}
-		if (g_rw_percentage != 100) {
+		if (g_rw_percentage != 100)
+		{
 			print_latency_statistics("Write", SPDK_NVME_INTEL_LOG_WRITE_CMD_LATENCY);
 		}
 	}
@@ -2667,7 +2978,8 @@ unregister_trids(void)
 {
 	struct trid_entry *trid_entry, *tmp;
 
-	TAILQ_FOREACH_SAFE(trid_entry, &g_trid_list, tailq, tmp) {
+	TAILQ_FOREACH_SAFE(trid_entry, &g_trid_list, tailq, tmp)
+	{
 		TAILQ_REMOVE(&g_trid_list, trid_entry, tailq);
 		free(trid_entry);
 	}
@@ -2682,7 +2994,8 @@ add_trid(const char *trid_str)
 	char *hostnqn;
 
 	trid_entry = calloc(1, sizeof(*trid_entry));
-	if (trid_entry == NULL) {
+	if (trid_entry == NULL)
+	{
 		return -1;
 	}
 
@@ -2690,14 +3003,16 @@ add_trid(const char *trid_str)
 	trid->trtype = SPDK_NVME_TRANSPORT_PCIE;
 	snprintf(trid->subnqn, sizeof(trid->subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
 
-	if (spdk_nvme_transport_id_parse(trid, trid_str) != 0) {
+	if (spdk_nvme_transport_id_parse(trid, trid_str) != 0)
+	{
 		fprintf(stderr, "Invalid transport ID format '%s'\n", trid_str);
 		free(trid_entry);
 		return 1;
 	}
 
 	if ((ns = strcasestr(trid_str, "ns:")) ||
-	    (ns = strcasestr(trid_str, "ns="))) {
+		(ns = strcasestr(trid_str, "ns=")))
+	{
 		char nsid_str[6]; /* 5 digits maximum in an nsid */
 		int len;
 		int nsid;
@@ -2705,7 +3020,8 @@ add_trid(const char *trid_str)
 		ns += 3;
 
 		len = strcspn(ns, " \t\n");
-		if (len > 5) {
+		if (len > 5)
+		{
 			fprintf(stderr, "NVMe namespace IDs must be 5 digits or less\n");
 			free(trid_entry);
 			return 1;
@@ -2715,7 +3031,8 @@ add_trid(const char *trid_str)
 		nsid_str[len] = '\0';
 
 		nsid = spdk_strtol(nsid_str, 10);
-		if (nsid <= 0 || nsid > 65535) {
+		if (nsid <= 0 || nsid > 65535)
+		{
 			fprintf(stderr, "NVMe namespace IDs must be less than 65536 and greater than 0\n");
 			free(trid_entry);
 			return 1;
@@ -2725,13 +3042,15 @@ add_trid(const char *trid_str)
 	}
 
 	if ((hostnqn = strcasestr(trid_str, "hostnqn:")) ||
-	    (hostnqn = strcasestr(trid_str, "hostnqn="))) {
+		(hostnqn = strcasestr(trid_str, "hostnqn=")))
+	{
 		size_t len;
 
 		hostnqn += strlen("hostnqn:");
 
 		len = strcspn(hostnqn, " \t\n");
-		if (len > (sizeof(trid_entry->hostnqn) - 1)) {
+		if (len > (sizeof(trid_entry->hostnqn) - 1))
+		{
 			fprintf(stderr, "Host NQN is too long\n");
 			free(trid_entry);
 			return 1;
@@ -2750,14 +3069,16 @@ add_allowed_pci_device(const char *bdf_str, struct spdk_env_opts *env_opts)
 {
 	int rc;
 
-	if (env_opts->num_pci_addr >= MAX_ALLOWED_PCI_DEVICE_NUM) {
+	if (env_opts->num_pci_addr >= MAX_ALLOWED_PCI_DEVICE_NUM)
+	{
 		fprintf(stderr, "Currently we only support allowed PCI device num=%d\n",
-			MAX_ALLOWED_PCI_DEVICE_NUM);
+				MAX_ALLOWED_PCI_DEVICE_NUM);
 		return -1;
 	}
 
 	rc = spdk_pci_addr_parse(&env_opts->pci_allowed[env_opts->num_pci_addr], bdf_str);
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		fprintf(stderr, "Failed to parse the given bdf_str=%s\n", bdf_str);
 		return -1;
 	}
@@ -2768,7 +3089,7 @@ add_allowed_pci_device(const char *bdf_str, struct spdk_env_opts *env_opts)
 
 static size_t
 parse_next_key(const char **str, char *key, char *val, size_t key_buf_size,
-	       size_t val_buf_size)
+			   size_t val_buf_size)
 {
 	const char *sep;
 	const char *separator = ", \t\n";
@@ -2777,31 +3098,35 @@ parse_next_key(const char **str, char *key, char *val, size_t key_buf_size,
 	*str += strspn(*str, separator);
 
 	sep = strchr(*str, '=');
-	if (!sep) {
+	if (!sep)
+	{
 		fprintf(stderr, "Key without '=' separator\n");
 		return 0;
 	}
 
 	key_len = sep - *str;
-	if (key_len >= key_buf_size) {
+	if (key_len >= key_buf_size)
+	{
 		fprintf(stderr, "Key length %zu is greater than maximum allowed %zu\n",
-			key_len, key_buf_size - 1);
+				key_len, key_buf_size - 1);
 		return 0;
 	}
 
 	memcpy(key, *str, key_len);
 	key[key_len] = '\0';
 
-	*str += key_len + 1;	/* Skip key */
+	*str += key_len + 1; /* Skip key */
 	val_len = strcspn(*str, separator);
-	if (val_len == 0) {
+	if (val_len == 0)
+	{
 		fprintf(stderr, "Key without value\n");
 		return 0;
 	}
 
-	if (val_len >= val_buf_size) {
+	if (val_len >= val_buf_size)
+	{
 		fprintf(stderr, "Value length %zu is greater than maximum allowed %zu\n",
-			val_len, val_buf_size - 1);
+				val_len, val_buf_size - 1);
 		return 0;
 	}
 
@@ -2821,34 +3146,46 @@ parse_metadata(const char *metacfg_str)
 	char key[32];
 	char val[1024];
 
-	if (metacfg_str == NULL) {
+	if (metacfg_str == NULL)
+	{
 		return -EINVAL;
 	}
 
 	str = metacfg_str;
 
-	while (*str != '\0') {
+	while (*str != '\0')
+	{
 		val_len = parse_next_key(&str, key, val, sizeof(key), sizeof(val));
-		if (val_len == 0) {
+		if (val_len == 0)
+		{
 			fprintf(stderr, "Failed to parse metadata\n");
 			return -EINVAL;
 		}
 
-		if (strcmp(key, "PRACT") == 0) {
-			if (*val == '1') {
+		if (strcmp(key, "PRACT") == 0)
+		{
+			if (*val == '1')
+			{
 				g_metacfg_pract_flag = SPDK_NVME_IO_FLAGS_PRACT;
 			}
-		} else if (strcmp(key, "PRCHK") == 0) {
-			if (strstr(val, "GUARD") != NULL) {
+		}
+		else if (strcmp(key, "PRCHK") == 0)
+		{
+			if (strstr(val, "GUARD") != NULL)
+			{
 				g_metacfg_prchk_flags |= SPDK_NVME_IO_FLAGS_PRCHK_GUARD;
 			}
-			if (strstr(val, "REFTAG") != NULL) {
+			if (strstr(val, "REFTAG") != NULL)
+			{
 				g_metacfg_prchk_flags |= SPDK_NVME_IO_FLAGS_PRCHK_REFTAG;
 			}
-			if (strstr(val, "APPTAG") != NULL) {
+			if (strstr(val, "APPTAG") != NULL)
+			{
 				g_metacfg_prchk_flags |= SPDK_NVME_IO_FLAGS_PRCHK_APPTAG;
 			}
-		} else {
+		}
+		else
+		{
 			fprintf(stderr, "Unknown key '%s'\n", key);
 		}
 	}
@@ -2859,7 +3196,8 @@ parse_metadata(const char *metacfg_str)
 static void
 free_key(struct spdk_key **key)
 {
-	if (*key == NULL) {
+	if (*key == NULL)
+	{
 		return;
 	}
 
@@ -2875,12 +3213,14 @@ alloc_key(const char *name, const char *path)
 	int rc;
 
 	rc = spdk_keyring_file_add_key(name, path);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		return NULL;
 	}
 
 	key = spdk_keyring_get_key(name);
-	if (key == NULL) {
+	if (key == NULL)
+	{
 		return NULL;
 	}
 
@@ -2890,117 +3230,116 @@ alloc_key(const char *name, const char *path)
 #define PERF_GETOPT_SHORT "a:b:c:d:e:ghi:lmo:p:q:r:k:s:t:w:z:A:C:DEuF:GHILM:NO:P:Q:RS:T:U:VZ:"
 
 static const struct option g_perf_cmdline_opts[] = {
-#define PERF_WARMUP_TIME	'a'
-	{"warmup-time",			required_argument,	NULL, PERF_WARMUP_TIME},
-#define PERF_ALLOWED_PCI_ADDR	'b'
-	{"allowed-pci-addr",			required_argument,	NULL, PERF_ALLOWED_PCI_ADDR},
-#define PERF_CORE_MASK	'c'
-	{"core-mask",			required_argument,	NULL, PERF_CORE_MASK},
-#define PERF_METADATA	'e'
-	{"metadata",			required_argument,	NULL, PERF_METADATA},
-#define PERF_MEM_SINGL_SEG	'g'
+#define PERF_WARMUP_TIME 'a'
+	{"warmup-time", required_argument, NULL, PERF_WARMUP_TIME},
+#define PERF_ALLOWED_PCI_ADDR 'b'
+	{"allowed-pci-addr", required_argument, NULL, PERF_ALLOWED_PCI_ADDR},
+#define PERF_CORE_MASK 'c'
+	{"core-mask", required_argument, NULL, PERF_CORE_MASK},
+#define PERF_METADATA 'e'
+	{"metadata", required_argument, NULL, PERF_METADATA},
+#define PERF_MEM_SINGL_SEG 'g'
 	{"mem-single-seg", no_argument, NULL, PERF_MEM_SINGL_SEG},
-#define PERF_HELP		'h'
+#define PERF_HELP 'h'
 	{"help", no_argument, NULL, PERF_HELP},
-#define PERF_SHMEM_GROUP_ID	'i'
-	{"shmem-grp-id",			required_argument,	NULL, PERF_SHMEM_GROUP_ID},
-#define PERF_ENABLE_SSD_LATENCY_TRACING	'l'
+#define PERF_SHMEM_GROUP_ID 'i'
+	{"shmem-grp-id", required_argument, NULL, PERF_SHMEM_GROUP_ID},
+#define PERF_ENABLE_SSD_LATENCY_TRACING 'l'
 	{"enable-ssd-latency-tracking", no_argument, NULL, PERF_ENABLE_SSD_LATENCY_TRACING},
-#define PERF_CPU_USAGE	'm'
+#define PERF_CPU_USAGE 'm'
 	{"cpu-usage", no_argument, NULL, PERF_CPU_USAGE},
-#define PERF_IO_SIZE	'o'
-	{"io-size",			required_argument,	NULL, PERF_IO_SIZE},
-#define PERF_SSD_POWER_MODE	'p'
-	{"ssd-power-mode",			required_argument,	NULL, PERF_SSD_POWER_MODE},
-#define PERF_IO_DEPTH	'q'
-	{"io-depth",			required_argument,	NULL, PERF_IO_DEPTH},
-#define PERF_TRANSPORT	'r'
-	{"transport",			required_argument,	NULL, PERF_TRANSPORT},
-#define PERF_KEEPALIVE	'k'
-	{"keepalive",			required_argument,	NULL, PERF_KEEPALIVE},
-#define PERF_HUGEMEM_SIZE	's'
-	{"hugemem-size",			required_argument,	NULL, PERF_HUGEMEM_SIZE},
-#define PERF_TIME	't'
-	{"time",			required_argument,	NULL, PERF_TIME},
-#define PERF_NUMBER_IOS	'd'
-	{"number-ios",			required_argument,	NULL, PERF_NUMBER_IOS},
-#define PERF_IO_PATTERN	'w'
-	{"io-pattern",			required_argument,	NULL, PERF_IO_PATTERN},
-#define PERF_DISABLE_ZCOPY	'z'
-	{"disable-zcopy",			required_argument,	NULL, PERF_DISABLE_ZCOPY},
-#define PERF_BUFFER_ALIGNMENT	'A'
-	{"buffer-alignment",			required_argument,	NULL, PERF_BUFFER_ALIGNMENT},
-#define PERF_MAX_COMPLETIONS_PER_POLL	'C'
-	{"max-completion-per-poll",			required_argument,	NULL, PERF_MAX_COMPLETIONS_PER_POLL},
-#define PERF_DISABLE_SQ_CMB	'D'
-	{"disable-sq-cmb",			no_argument,	NULL, PERF_DISABLE_SQ_CMB},
-#define PERF_ENABLE_INTERRUPT	'E'
-	{"enable-interrupt",			no_argument,	NULL, PERF_ENABLE_INTERRUPT},
-#define PERF_ENABLE_UINTR	'u'
-	{"enable-user-interrupt",			no_argument,	NULL, PERF_ENABLE_UINTR},
-#define PERF_ZIPF		'F'
-	{"zipf",				required_argument,	NULL, PERF_ZIPF},
-#define PERF_ENABLE_DEBUG	'G'
-	{"enable-debug",			no_argument,	NULL, PERF_ENABLE_DEBUG},
-#define PERF_ENABLE_TCP_HDGST	'H'
-	{"enable-tcp-hdgst",			no_argument,	NULL, PERF_ENABLE_TCP_HDGST},
-#define PERF_ENABLE_TCP_DDGST	'I'
-	{"enable-tcp-ddgst",			no_argument,	NULL, PERF_ENABLE_TCP_DDGST},
-#define PERF_ENABLE_SW_LATENCY_TRACING	'L'
+#define PERF_IO_SIZE 'o'
+	{"io-size", required_argument, NULL, PERF_IO_SIZE},
+#define PERF_SSD_POWER_MODE 'p'
+	{"ssd-power-mode", required_argument, NULL, PERF_SSD_POWER_MODE},
+#define PERF_IO_DEPTH 'q'
+	{"io-depth", required_argument, NULL, PERF_IO_DEPTH},
+#define PERF_TRANSPORT 'r'
+	{"transport", required_argument, NULL, PERF_TRANSPORT},
+#define PERF_KEEPALIVE 'k'
+	{"keepalive", required_argument, NULL, PERF_KEEPALIVE},
+#define PERF_HUGEMEM_SIZE 's'
+	{"hugemem-size", required_argument, NULL, PERF_HUGEMEM_SIZE},
+#define PERF_TIME 't'
+	{"time", required_argument, NULL, PERF_TIME},
+#define PERF_NUMBER_IOS 'd'
+	{"number-ios", required_argument, NULL, PERF_NUMBER_IOS},
+#define PERF_IO_PATTERN 'w'
+	{"io-pattern", required_argument, NULL, PERF_IO_PATTERN},
+#define PERF_DISABLE_ZCOPY 'z'
+	{"disable-zcopy", required_argument, NULL, PERF_DISABLE_ZCOPY},
+#define PERF_BUFFER_ALIGNMENT 'A'
+	{"buffer-alignment", required_argument, NULL, PERF_BUFFER_ALIGNMENT},
+#define PERF_MAX_COMPLETIONS_PER_POLL 'C'
+	{"max-completion-per-poll", required_argument, NULL, PERF_MAX_COMPLETIONS_PER_POLL},
+#define PERF_DISABLE_SQ_CMB 'D'
+	{"disable-sq-cmb", no_argument, NULL, PERF_DISABLE_SQ_CMB},
+#define PERF_ENABLE_INTERRUPT 'E'
+	{"enable-interrupt", no_argument, NULL, PERF_ENABLE_INTERRUPT},
+#define PERF_ENABLE_UINTR 'u'
+	{"enable-user-interrupt", no_argument, NULL, PERF_ENABLE_UINTR},
+#define PERF_ZIPF 'F'
+	{"zipf", required_argument, NULL, PERF_ZIPF},
+#define PERF_ENABLE_DEBUG 'G'
+	{"enable-debug", no_argument, NULL, PERF_ENABLE_DEBUG},
+#define PERF_ENABLE_TCP_HDGST 'H'
+	{"enable-tcp-hdgst", no_argument, NULL, PERF_ENABLE_TCP_HDGST},
+#define PERF_ENABLE_TCP_DDGST 'I'
+	{"enable-tcp-ddgst", no_argument, NULL, PERF_ENABLE_TCP_DDGST},
+#define PERF_ENABLE_SW_LATENCY_TRACING 'L'
 	{"enable-sw-latency-tracking", no_argument, NULL, PERF_ENABLE_SW_LATENCY_TRACING},
-#define PERF_RW_MIXREAD	'M'
+#define PERF_RW_MIXREAD 'M'
 	{"rwmixread", required_argument, NULL, PERF_RW_MIXREAD},
-#define PERF_NO_SHST_NOTIFICATION	'N'
+#define PERF_NO_SHST_NOTIFICATION 'N'
 	{"no-shst-notification", no_argument, NULL, PERF_NO_SHST_NOTIFICATION},
-#define PERF_IO_UNIT_SIZE	'O'
-	{"io-unit-size",			required_argument,	NULL, PERF_IO_UNIT_SIZE},
-#define PERF_IO_QUEUES_PER_NS	'P'
+#define PERF_IO_UNIT_SIZE 'O'
+	{"io-unit-size", required_argument, NULL, PERF_IO_UNIT_SIZE},
+#define PERF_IO_QUEUES_PER_NS 'P'
 	{"num-qpairs", required_argument, NULL, PERF_IO_QUEUES_PER_NS},
-#define PERF_CONTINUE_ON_ERROR	'Q'
-	{"continue-on-error",			required_argument,	NULL, PERF_CONTINUE_ON_ERROR},
-#define PERF_ENABLE_URING	'R'
+#define PERF_CONTINUE_ON_ERROR 'Q'
+	{"continue-on-error", required_argument, NULL, PERF_CONTINUE_ON_ERROR},
+#define PERF_ENABLE_URING 'R'
 	{"enable-uring", no_argument, NULL, PERF_ENABLE_URING},
-#define PERF_DEFAULT_SOCK_IMPL	'S'
+#define PERF_DEFAULT_SOCK_IMPL 'S'
 	{"default-sock-impl", required_argument, NULL, PERF_DEFAULT_SOCK_IMPL},
-#define PERF_LOG_FLAG	'T'
+#define PERF_LOG_FLAG 'T'
 	{"logflag", required_argument, NULL, PERF_LOG_FLAG},
-#define PERF_NUM_UNUSED_IO_QPAIRS	'U'
+#define PERF_NUM_UNUSED_IO_QPAIRS 'U'
 	{"num-unused-qpairs", required_argument, NULL, PERF_NUM_UNUSED_IO_QPAIRS},
-#define PERF_ENABLE_VMD	'V'
+#define PERF_ENABLE_VMD 'V'
 	{"enable-vmd", no_argument, NULL, PERF_ENABLE_VMD},
-#define PERF_ENABLE_ZCOPY	'Z'
-	{"enable-zcopy",			required_argument,	NULL, PERF_ENABLE_ZCOPY},
-#define PERF_TRANSPORT_STATISTICS	257
+#define PERF_ENABLE_ZCOPY 'Z'
+	{"enable-zcopy", required_argument, NULL, PERF_ENABLE_ZCOPY},
+#define PERF_TRANSPORT_STATISTICS 257
 	{"transport-stats", no_argument, NULL, PERF_TRANSPORT_STATISTICS},
-#define PERF_IOVA_MODE		258
+#define PERF_IOVA_MODE 258
 	{"iova-mode", required_argument, NULL, PERF_IOVA_MODE},
-#define PERF_IO_QUEUE_SIZE	259
+#define PERF_IO_QUEUE_SIZE 259
 	{"io-queue-size", required_argument, NULL, PERF_IO_QUEUE_SIZE},
-#define PERF_DISABLE_KTLS	260
+#define PERF_DISABLE_KTLS 260
 	{"disable-ktls", no_argument, NULL, PERF_DISABLE_KTLS},
-#define PERF_ENABLE_KTLS	261
+#define PERF_ENABLE_KTLS 261
 	{"enable-ktls", no_argument, NULL, PERF_ENABLE_KTLS},
-#define PERF_TLS_VERSION	262
+#define PERF_TLS_VERSION 262
 	{"tls-version", required_argument, NULL, PERF_TLS_VERSION},
-#define PERF_PSK_PATH		263
+#define PERF_PSK_PATH 263
 	{"psk-path", required_argument, NULL, PERF_PSK_PATH},
-#define PERF_PSK_IDENTITY	264
+#define PERF_PSK_IDENTITY 264
 	{"psk-identity ", required_argument, NULL, PERF_PSK_IDENTITY},
-#define PERF_ZEROCOPY_THRESHOLD		265
+#define PERF_ZEROCOPY_THRESHOLD 265
 	{"zerocopy-threshold", required_argument, NULL, PERF_ZEROCOPY_THRESHOLD},
-#define PERF_SOCK_IMPL		266
+#define PERF_SOCK_IMPL 266
 	{"zerocopy-threshold-sock-impl", required_argument, NULL, PERF_SOCK_IMPL},
-#define PERF_TRANSPORT_TOS		267
+#define PERF_TRANSPORT_TOS 267
 	{"transport-tos", required_argument, NULL, PERF_TRANSPORT_TOS},
-#define PERF_RDMA_SRQ_SIZE	268
+#define PERF_RDMA_SRQ_SIZE 268
 	{"rdma-srq-size", required_argument, NULL, PERF_RDMA_SRQ_SIZE},
-#define PERF_USE_EVERY_CORE	269
+#define PERF_USE_EVERY_CORE 269
 	{"use-every-core", no_argument, NULL, PERF_USE_EVERY_CORE},
-#define PERF_NO_HUGE		270
+#define PERF_NO_HUGE 270
 	{"no-huge", no_argument, NULL, PERF_NO_HUGE},
 	/* Should be the last element */
-	{0, 0, 0, 0}
-};
+	{0, 0, 0, 0}};
 
 static int
 parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
@@ -3013,8 +3352,10 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 	bool ssl_used = false;
 	char *sock_impl = "posix";
 
-	while ((op = getopt_long(argc, argv, PERF_GETOPT_SHORT, g_perf_cmdline_opts, &long_idx)) != -1) {
-		switch (op) {
+	while ((op = getopt_long(argc, argv, PERF_GETOPT_SHORT, g_perf_cmdline_opts, &long_idx)) != -1)
+	{
+		switch (op)
+		{
 		case PERF_WARMUP_TIME:
 		case PERF_SHMEM_GROUP_ID:
 		case PERF_MAX_COMPLETIONS_PER_POLL:
@@ -3026,11 +3367,13 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_CONTINUE_ON_ERROR:
 		case PERF_RDMA_SRQ_SIZE:
 			val = spdk_strtol(optarg, 10);
-			if (val < 0) {
+			if (val < 0)
+			{
 				fprintf(stderr, "Converting a string to integer failed\n");
 				return val;
 			}
-			switch (op) {
+			switch (op)
+			{
 			case PERF_WARMUP_TIME:
 				g_warmup_time_in_sec = val;
 				break;
@@ -3075,11 +3418,13 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_SSD_POWER_MODE:
 		case PERF_IO_QUEUE_SIZE:
 			rc = spdk_parse_capacity(optarg, &val_u64, NULL);
-			if (rc != 0) {
+			if (rc != 0)
+			{
 				fprintf(stderr, "Converting a string to integer failed\n");
 				return 1;
 			}
-			switch (op) {
+			switch (op)
+			{
 			case PERF_IO_SIZE:
 				g_io_size_bytes = (uint32_t)val_u64;
 				break;
@@ -3100,9 +3445,10 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 				break;
 			case PERF_BUFFER_ALIGNMENT:
 				g_io_align = (uint32_t)val_u64;
-				if (!spdk_u32_is_pow2(g_io_align) || g_io_align < SPDK_CACHE_LINE_SIZE) {
+				if (!spdk_u32_is_pow2(g_io_align) || g_io_align < SPDK_CACHE_LINE_SIZE)
+				{
 					fprintf(stderr, "Wrong alignment %u. Must be power of 2 and not less than cache lize (%u)\n",
-						g_io_align, SPDK_CACHE_LINE_SIZE);
+							g_io_align, SPDK_CACHE_LINE_SIZE);
 					usage(argv[0]);
 					return 1;
 				}
@@ -3119,13 +3465,15 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_ZIPF:
 			errno = 0;
 			g_zipf_theta = strtod(optarg, &endptr);
-			if (errno || optarg == endptr || g_zipf_theta < 0) {
+			if (errno || optarg == endptr || g_zipf_theta < 0)
+			{
 				fprintf(stderr, "Illegal zipf theta value %s\n", optarg);
 				return 1;
 			}
 			break;
 		case PERF_ALLOWED_PCI_ADDR:
-			if (add_allowed_pci_device(optarg, env_opts)) {
+			if (add_allowed_pci_device(optarg, env_opts))
+			{
 				usage(argv[0]);
 				return 1;
 			}
@@ -3134,7 +3482,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			env_opts->core_mask = optarg;
 			break;
 		case PERF_METADATA:
-			if (parse_metadata(optarg)) {
+			if (parse_metadata(optarg))
+			{
 				usage(argv[0]);
 				return 1;
 			}
@@ -3149,7 +3498,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			g_monitor_perf_cores = true;
 			break;
 		case PERF_TRANSPORT:
-			if (add_trid(optarg)) {
+			if (add_trid(optarg))
+			{
 				usage(argv[0]);
 				return 1;
 			}
@@ -3169,7 +3519,7 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_ENABLE_DEBUG:
 #ifndef DEBUG
 			fprintf(stderr, "%s must be configured with --enable-debug for -G flag\n",
-				argv[0]);
+					argv[0]);
 			usage(argv[0]);
 			return 1;
 #else
@@ -3192,7 +3542,7 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_ENABLE_URING:
 #ifndef SPDK_CONFIG_URING
 			fprintf(stderr, "%s must be rebuilt with CONFIG_URING=y for -R flag.\n",
-				argv[0]);
+					argv[0]);
 			usage(argv[0]);
 			return 0;
 #endif
@@ -3200,7 +3550,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			break;
 		case PERF_LOG_FLAG:
 			rc = spdk_log_set_flag(optarg);
-			if (rc < 0) {
+			if (rc < 0)
+			{
 				fprintf(stderr, "unknown flag\n");
 				usage(argv[0]);
 				exit(EXIT_FAILURE);
@@ -3223,7 +3574,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_TLS_VERSION:
 			ssl_used = true;
 			val = spdk_strtol(optarg, 10);
-			if (val < 0) {
+			if (val < 0)
+			{
 				fprintf(stderr, "Illegal tls version value %s\n", optarg);
 				return val;
 			}
@@ -3233,7 +3585,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			ssl_used = true;
 			free_key(&g_psk);
 			g_psk = alloc_key("perf-psk", optarg);
-			if (g_psk == NULL) {
+			if (g_psk == NULL)
+			{
 				fprintf(stderr, "Unable to set PSK at %s\n", optarg);
 				return 1;
 			}
@@ -3254,7 +3607,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		case PERF_DEFAULT_SOCK_IMPL:
 			sock_impl = optarg;
 			rc = spdk_sock_set_default_impl(optarg);
-			if (rc) {
+			if (rc)
+			{
 				fprintf(stderr, "Failed to set sock impl %s, err %d (%s)\n", optarg, errno, strerror(errno));
 				return 1;
 			}
@@ -3270,7 +3624,8 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 			break;
 		case PERF_TRANSPORT_TOS:
 			val = spdk_strtol(optarg, 10);
-			if (val < 0) {
+			if (val < 0)
+			{
 				fprintf(stderr, "Invalid TOS value\n");
 				return 1;
 			}
@@ -3288,117 +3643,143 @@ parse_args(int argc, char **argv, struct spdk_env_opts *env_opts)
 		}
 	}
 
-	if (!g_nr_io_queues_per_ns) {
+	if (!g_nr_io_queues_per_ns)
+	{
 		usage(argv[0]);
 		return 1;
 	}
 
-	if (!g_queue_depth) {
+	if (!g_queue_depth)
+	{
 		fprintf(stderr, "missing -q (--io-depth) operand\n");
 		usage(argv[0]);
 		return 1;
 	}
-	if (!g_io_size_bytes) {
+	if (!g_io_size_bytes)
+	{
 		fprintf(stderr, "missing -o (--io-size) operand\n");
 		usage(argv[0]);
 		return 1;
 	}
-	if (!g_io_unit_size || g_io_unit_size % 4) {
+	if (!g_io_unit_size || g_io_unit_size % 4)
+	{
 		fprintf(stderr, "io unit size can not be 0 or non 4-byte aligned\n");
 		return 1;
 	}
-	if (!g_workload_type) {
+	if (!g_workload_type)
+	{
 		fprintf(stderr, "missing -w (--io-pattern) operand\n");
 		usage(argv[0]);
 		return 1;
 	}
-	if (!g_time_in_sec) {
+	if (!g_time_in_sec)
+	{
 		fprintf(stderr, "missing -t (--time) operand\n");
 		usage(argv[0]);
 		return 1;
 	}
-	if (!g_quiet_count) {
+	if (!g_quiet_count)
+	{
 		fprintf(stderr, "-Q (--continue-on-error) value must be greater than 0\n");
 		usage(argv[0]);
 		return 1;
 	}
 
-	if (strncmp(g_workload_type, "rand", 4) == 0) {
+	if (strncmp(g_workload_type, "rand", 4) == 0)
+	{
 		g_is_random = 1;
 		g_workload_type = &g_workload_type[4];
 	}
 
-	if (ssl_used && strncmp(sock_impl, "ssl", 3) != 0) {
+	if (ssl_used && strncmp(sock_impl, "ssl", 3) != 0)
+	{
 		fprintf(stderr, "sock impl is not SSL but tried to use one of the SSL only options\n");
 		usage(argv[0]);
 		return 1;
 	}
 
-
-	if (strcmp(g_workload_type, "read") == 0 || strcmp(g_workload_type, "write") == 0) {
+	if (strcmp(g_workload_type, "read") == 0 || strcmp(g_workload_type, "write") == 0)
+	{
 		g_rw_percentage = strcmp(g_workload_type, "read") == 0 ? 100 : 0;
 		is_write = strcmp(g_workload_type, "write") == 0;
-		if (g_mix_specified) {
+		if (g_mix_specified)
+		{
 			fprintf(stderr, "Ignoring -M (--rwmixread) option... Please use -M option"
-				" only when using rw or randrw.\n");
+							" only when using rw or randrw.\n");
 		}
-	} else if (strcmp(g_workload_type, "rw") == 0) {
-		if (g_rw_percentage < 0 || g_rw_percentage > 100) {
+	}
+	else if (strcmp(g_workload_type, "rw") == 0)
+	{
+		if (g_rw_percentage < 0 || g_rw_percentage > 100)
+		{
 			fprintf(stderr,
-				"-M (--rwmixread) must be specified to value from 0 to 100 "
-				"for rw or randrw.\n");
+					"-M (--rwmixread) must be specified to value from 0 to 100 "
+					"for rw or randrw.\n");
 			return 1;
 		}
-	} else {
+	}
+	else
+	{
 		fprintf(stderr,
-			"-w (--io-pattern) io pattern type must be one of\n"
-			"(read, write, randread, randwrite, rw, randrw)\n");
+				"-w (--io-pattern) io pattern type must be one of\n"
+				"(read, write, randread, randwrite, rw, randrw)\n");
 		return 1;
 	}
 
-	if (g_sock_zcopy_threshold > 0) {
-		if (!g_sock_threshold_impl) {
+	if (g_sock_zcopy_threshold > 0)
+	{
+		if (!g_sock_threshold_impl)
+		{
 			fprintf(stderr,
-				"--zerocopy-threshold must be set with sock implementation specified(--zerocopy-threshold-sock-impl <impl>)\n");
+					"--zerocopy-threshold must be set with sock implementation specified(--zerocopy-threshold-sock-impl <impl>)\n");
 			return 1;
 		}
 
 		perf_set_sock_opts(g_sock_threshold_impl, "zerocopy_threshold", g_sock_zcopy_threshold, NULL);
 	}
 
-	if (g_number_ios && g_warmup_time_in_sec) {
+	if (g_number_ios && g_warmup_time_in_sec)
+	{
 		fprintf(stderr, "-d (--number-ios) with -a (--warmup-time) is not supported\n");
 		return 1;
 	}
 
-	if (g_number_ios && g_number_ios < g_queue_depth) {
+	if (g_number_ios && g_number_ios < g_queue_depth)
+	{
 		fprintf(stderr, "-d (--number-ios) less than -q (--io-depth) is not supported\n");
 		return 1;
 	}
 
-	if (g_rdma_srq_size != 0) {
+	if (g_rdma_srq_size != 0)
+	{
 		struct spdk_nvme_transport_opts opts;
 
 		spdk_nvme_transport_get_opts(&opts, sizeof(opts));
 		opts.rdma_srq_size = g_rdma_srq_size;
 
 		rc = spdk_nvme_transport_set_opts(&opts, sizeof(opts));
-		if (rc != 0) {
+		if (rc != 0)
+		{
 			fprintf(stderr, "Failed to set NVMe transport options.\n");
 			return 1;
 		}
 	}
 
-	if (TAILQ_EMPTY(&g_trid_list)) {
+	if (TAILQ_EMPTY(&g_trid_list))
+	{
 		/* If no transport IDs specified, default to enumerating all local PCIe devices */
 		add_trid("trtype:PCIe");
-	} else {
+	}
+	else
+	{
 		struct trid_entry *trid_entry, *trid_entry_tmp;
 
 		env_opts->no_pci = true;
 		/* check whether there is local PCIe type */
-		TAILQ_FOREACH_SAFE(trid_entry, &g_trid_list, tailq, trid_entry_tmp) {
-			if (trid_entry->trid.trtype == SPDK_NVME_TRANSPORT_PCIE) {
+		TAILQ_FOREACH_SAFE(trid_entry, &g_trid_list, tailq, trid_entry_tmp)
+		{
+			if (trid_entry->trid.trtype == SPDK_NVME_TRANSPORT_PCIE)
+			{
 				env_opts->no_pci = false;
 				break;
 			}
@@ -3439,9 +3820,11 @@ register_workers(void)
 	uint32_t i;
 	struct worker_thread *worker;
 
-	SPDK_ENV_FOREACH_CORE(i) {
+	SPDK_ENV_FOREACH_CORE(i)
+	{
 		worker = calloc(1, sizeof(*worker));
-		if (worker == NULL) {
+		if (worker == NULL)
+		{
 			fprintf(stderr, "Unable to allocate worker\n");
 			return -1;
 		}
@@ -3462,10 +3845,12 @@ unregister_workers(void)
 	struct ns_worker_ctx *ns_ctx, *tmp_ns_ctx;
 
 	/* Free namespace context and worker thread */
-	TAILQ_FOREACH_SAFE(worker, &g_workers, link, tmp_worker) {
+	TAILQ_FOREACH_SAFE(worker, &g_workers, link, tmp_worker)
+	{
 		TAILQ_REMOVE(&g_workers, worker, link);
 
-		TAILQ_FOREACH_SAFE(ns_ctx, &worker->ns_ctx, link, tmp_ns_ctx) {
+		TAILQ_FOREACH_SAFE(ns_ctx, &worker->ns_ctx, link, tmp_ns_ctx)
+		{
 			TAILQ_REMOVE(&worker->ns_ctx, ns_ctx, link);
 			spdk_histogram_data_free(ns_ctx->histogram);
 			free(ns_ctx);
@@ -3477,24 +3862,29 @@ unregister_workers(void)
 
 static bool
 probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
-	 struct spdk_nvme_ctrlr_opts *opts)
+		 struct spdk_nvme_ctrlr_opts *opts)
 {
 	struct trid_entry *trid_entry = cb_ctx;
 
-	if (trid->trtype == SPDK_NVME_TRANSPORT_PCIE) {
-		if (g_disable_sq_cmb) {
+	if (trid->trtype == SPDK_NVME_TRANSPORT_PCIE)
+	{
+		if (g_disable_sq_cmb)
+		{
 			opts->use_cmb_sqs = false;
 		}
-		if (g_no_shn_notification) {
+		if (g_no_shn_notification)
+		{
 			opts->no_shn_notification = true;
 		}
-		if (g_enable_interrupt) {
+		if (g_enable_interrupt)
+		{
 			opts->enable_interrupts = true;
 		}
 	}
 
 	if (trid->trtype != trid_entry->trid.trtype &&
-	    strcasecmp(trid->trstring, trid_entry->trid.trstring)) {
+		strcasecmp(trid->trstring, trid_entry->trid.trstring))
+	{
 		return false;
 	}
 
@@ -3508,7 +3898,8 @@ probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	memcpy(opts->hostnqn, trid_entry->hostnqn, sizeof(opts->hostnqn));
 
 	opts->transport_tos = g_transport_tos;
-	if (opts->num_io_queues < g_num_workers * g_nr_io_queues_per_ns) {
+	if (opts->num_io_queues < g_num_workers * g_nr_io_queues_per_ns)
+	{
 		opts->num_io_queues = g_num_workers * g_nr_io_queues_per_ns;
 	}
 
@@ -3517,37 +3908,43 @@ probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 
 static void
 attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
-	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
+		  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
 {
-	struct trid_entry	*trid_entry = cb_ctx;
-	struct spdk_pci_addr	pci_addr;
-	struct spdk_pci_device	*pci_dev;
-	struct spdk_pci_id	pci_id;
+	struct trid_entry *trid_entry = cb_ctx;
+	struct spdk_pci_addr pci_addr;
+	struct spdk_pci_device *pci_dev;
+	struct spdk_pci_id pci_id;
 
-	if (trid->trtype != SPDK_NVME_TRANSPORT_PCIE) {
+	if (trid->trtype != SPDK_NVME_TRANSPORT_PCIE)
+	{
 		printf("Attached to NVMe over Fabrics controller at %s:%s: %s\n",
-		       trid->traddr, trid->trsvcid,
-		       trid->subnqn);
-	} else {
-		if (spdk_pci_addr_parse(&pci_addr, trid->traddr)) {
+			   trid->traddr, trid->trsvcid,
+			   trid->subnqn);
+	}
+	else
+	{
+		if (spdk_pci_addr_parse(&pci_addr, trid->traddr))
+		{
 			return;
 		}
 
 		pci_dev = spdk_nvme_ctrlr_get_pci_device(ctrlr);
-		if (!pci_dev) {
+		if (!pci_dev)
+		{
 			return;
 		}
 
 		pci_id = spdk_pci_device_get_id(pci_dev);
 
 		printf("Attached to NVMe Controller at %s [%04x:%04x]\n",
-		       trid->traddr,
-		       pci_id.vendor_id, pci_id.device_id);
+			   trid->traddr,
+			   pci_id.vendor_id, pci_id.device_id);
 
-		if (g_enable_interrupt && !opts->enable_interrupts) {
+		if (g_enable_interrupt && !opts->enable_interrupts)
+		{
 			fprintf(stderr, "Couldn't enable interrupts on NVMe controller at %s [%04x:%04x]\n",
-				trid->traddr,
-				pci_id.vendor_id, pci_id.device_id);
+					trid->traddr,
+					pci_id.vendor_id, pci_id.device_id);
 			return;
 		}
 	}
@@ -3562,15 +3959,18 @@ register_controllers(void)
 
 	printf("Initializing NVMe Controllers\n");
 
-	if (g_vmd && spdk_vmd_init()) {
+	if (g_vmd && spdk_vmd_init())
+	{
 		fprintf(stderr, "Failed to initialize VMD."
-			" Some NVMe devices can be unavailable.\n");
+						" Some NVMe devices can be unavailable.\n");
 	}
 
-	TAILQ_FOREACH(trid_entry, &g_trid_list, tailq) {
-		if (spdk_nvme_probe(&trid_entry->trid, trid_entry, probe_cb, attach_cb, NULL) != 0) {
+	TAILQ_FOREACH(trid_entry, &g_trid_list, tailq)
+	{
+		if (spdk_nvme_probe(&trid_entry->trid, trid_entry, probe_cb, attach_cb, NULL) != 0)
+		{
 			fprintf(stderr, "spdk_nvme_probe() failed for transport address '%s'\n",
-				trid_entry->trid.traddr);
+					trid_entry->trid.traddr);
 			return -1;
 		}
 	}
@@ -3584,19 +3984,23 @@ unregister_controllers(void)
 	struct ctrlr_entry *entry, *tmp;
 	struct spdk_nvme_detach_ctx *detach_ctx = NULL;
 
-	TAILQ_FOREACH_SAFE(entry, &g_controllers, link, tmp) {
+	TAILQ_FOREACH_SAFE(entry, &g_controllers, link, tmp)
+	{
 		TAILQ_REMOVE(&g_controllers, entry, link);
 
 		spdk_dma_free(entry->latency_page);
 		if (g_latency_ssd_tracking_enable &&
-		    spdk_nvme_ctrlr_is_feature_supported(entry->ctrlr, SPDK_NVME_INTEL_FEAT_LATENCY_TRACKING)) {
+			spdk_nvme_ctrlr_is_feature_supported(entry->ctrlr, SPDK_NVME_INTEL_FEAT_LATENCY_TRACKING))
+		{
 			set_latency_tracking_feature(entry->ctrlr, false);
 		}
 
-		if (g_nr_unused_io_queues) {
+		if (g_nr_unused_io_queues)
+		{
 			int i;
 
-			for (i = 0; i < g_nr_unused_io_queues; i++) {
+			for (i = 0; i < g_nr_unused_io_queues; i++)
+			{
 				spdk_nvme_ctrlr_free_io_qpair(entry->unused_qpairs[i]);
 			}
 
@@ -3607,11 +4011,13 @@ unregister_controllers(void)
 		free(entry);
 	}
 
-	if (detach_ctx) {
+	if (detach_ctx)
+	{
 		spdk_nvme_detach_poll(detach_ctx);
 	}
 
-	if (g_vmd) {
+	if (g_vmd)
+	{
 		spdk_vmd_fini();
 	}
 }
@@ -3619,10 +4025,11 @@ unregister_controllers(void)
 static int
 allocate_ns_worker(struct ns_entry *entry, struct worker_thread *worker)
 {
-	struct ns_worker_ctx	*ns_ctx;
+	struct ns_worker_ctx *ns_ctx;
 
 	ns_ctx = calloc(1, sizeof(struct ns_worker_ctx));
-	if (!ns_ctx) {
+	if (!ns_ctx)
+	{
 		return -1;
 	}
 
@@ -3638,9 +4045,9 @@ allocate_ns_worker(struct ns_entry *entry, struct worker_thread *worker)
 static int
 associate_workers_with_ns(void)
 {
-	struct ns_entry		*entry = TAILQ_FIRST(&g_namespaces);
-	struct worker_thread	*worker = TAILQ_FIRST(&g_workers);
-	int			i, count;
+	struct ns_entry *entry = TAILQ_FIRST(&g_namespaces);
+	struct worker_thread *worker = TAILQ_FIRST(&g_workers);
+	int i, count;
 
 	/* Each core contains single worker, and namespaces are associated as follows:
 	 * --use-every-core not specified (default):
@@ -3649,10 +4056,14 @@ associate_workers_with_ns(void)
 	 * 4) more namespaces than workers - each worker is associated with one or more namespaces
 	 * --use-every-core option enabled - every worker is associated with all namespaces
 	 */
-	if (g_use_every_core) {
-		TAILQ_FOREACH(worker, &g_workers, link) {
-			TAILQ_FOREACH(entry, &g_namespaces, link) {
-				if (allocate_ns_worker(entry, worker) != 0) {
+	if (g_use_every_core)
+	{
+		TAILQ_FOREACH(worker, &g_workers, link)
+		{
+			TAILQ_FOREACH(entry, &g_namespaces, link)
+			{
+				if (allocate_ns_worker(entry, worker) != 0)
+				{
 					return -1;
 				}
 			}
@@ -3662,25 +4073,29 @@ associate_workers_with_ns(void)
 
 	count = g_num_namespaces > g_num_workers ? g_num_namespaces : g_num_workers;
 
-	for (i = 0; i < count; i++) {
-		if (entry == NULL) {
+	for (i = 0; i < count; i++)
+	{
+		if (entry == NULL)
+		{
 			break;
 		}
 
-		if (allocate_ns_worker(entry, worker) != 0) {
+		if (allocate_ns_worker(entry, worker) != 0)
+		{
 			return -1;
 		}
 
 		worker = TAILQ_NEXT(worker, link);
-		if (worker == NULL) {
+		if (worker == NULL)
+		{
 			worker = TAILQ_FIRST(&g_workers);
 		}
 
 		entry = TAILQ_NEXT(entry, link);
-		if (entry == NULL) {
+		if (entry == NULL)
+		{
 			entry = TAILQ_FIRST(&g_namespaces);
 		}
-
 	}
 
 	return 0;
@@ -3695,13 +4110,17 @@ nvme_poll_ctrlrs(void *arg)
 
 	spdk_unaffinitize_thread();
 
-	while (true) {
+	while (true)
+	{
 		pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
 
-		TAILQ_FOREACH(entry, &g_controllers, link) {
-			if (entry->trtype != SPDK_NVME_TRANSPORT_PCIE) {
+		TAILQ_FOREACH(entry, &g_controllers, link)
+		{
+			if (entry->trtype != SPDK_NVME_TRANSPORT_PCIE)
+			{
 				rc = spdk_nvme_ctrlr_process_admin_completions(entry->ctrlr);
-				if (spdk_unlikely(rc < 0 && !g_exit)) {
+				if (spdk_unlikely(rc < 0 && !g_exit))
+				{
 					g_exit = true;
 				}
 			}
@@ -3731,13 +4150,15 @@ setup_sig_handlers(void)
 	sigemptyset(&sigact.sa_mask);
 	sigact.sa_handler = sig_handler;
 	rc = sigaction(SIGINT, &sigact, NULL);
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		fprintf(stderr, "sigaction(SIGINT) failed, errno %d (%s)\n", errno, strerror(errno));
 		return -1;
 	}
 
 	rc = sigaction(SIGTERM, &sigact, NULL);
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		fprintf(stderr, "sigaction(SIGTERM) failed, errno %d (%s)\n", errno, strerror(errno));
 		return -1;
 	}
@@ -3745,8 +4166,7 @@ setup_sig_handlers(void)
 	return 0;
 }
 
-int
-main(int argc, char **argv)
+int main(int argc, char **argv)
 {
 	int rc;
 	struct worker_thread *worker, *main_worker;
@@ -3762,9 +4182,11 @@ main(int argc, char **argv)
 	opts.name = "perf";
 	opts.pci_allowed = g_allowed_pci_addr;
 	rc = parse_args(argc, argv, &opts);
-	if (rc != 0 || rc == HELP_RETURN_CODE) {
+	if (rc != 0 || rc == HELP_RETURN_CODE)
+	{
 		free_key(&g_psk);
-		if (rc == HELP_RETURN_CODE) {
+		if (rc == HELP_RETURN_CODE)
+		{
 			return 0;
 		}
 
@@ -3773,12 +4195,14 @@ main(int argc, char **argv)
 	/* Transport statistics are printed from each thread.
 	 * To avoid mess in terminal, init and use mutex */
 	rc = pthread_mutex_init(&g_stats_mutex, NULL);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		fprintf(stderr, "Failed to init mutex\n");
 		free_key(&g_psk);
 		return -1;
 	}
-	if (spdk_env_init(&opts) < 0) {
+	if (spdk_env_init(&opts) < 0)
+	{
 		fprintf(stderr, "Unable to initialize SPDK env\n");
 		unregister_trids();
 		pthread_mutex_destroy(&g_stats_mutex);
@@ -3787,7 +4211,8 @@ main(int argc, char **argv)
 	}
 
 	rc = spdk_keyring_init();
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		fprintf(stderr, "Unable to initialize keyring: %s\n", spdk_strerror(-rc));
 		unregister_trids();
 		pthread_mutex_destroy(&g_stats_mutex);
@@ -3797,57 +4222,67 @@ main(int argc, char **argv)
 	}
 
 	rc = setup_sig_handlers();
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		rc = -1;
 		goto cleanup;
 	}
 
 	g_tsc_rate = spdk_get_ticks_hz();
 
-	if (register_workers() != 0) {
+	if (register_workers() != 0)
+	{
 		rc = -1;
 		goto cleanup;
 	}
 
 #if defined(HAVE_LIBAIO) || defined(SPDK_CONFIG_URING)
-	if (register_files(argc, argv) != 0) {
+	if (register_files(argc, argv) != 0)
+	{
 		rc = -1;
 		goto cleanup;
 	}
 #endif
 
-	if (register_controllers() != 0) {
+	if (register_controllers() != 0)
+	{
 		rc = -1;
 		goto cleanup;
 	}
 
-	if (g_warn) {
+	if (g_warn)
+	{
 		printf("WARNING: Some requested NVMe devices were skipped\n");
 	}
 
-	if (g_num_namespaces == 0) {
+	if (g_num_namespaces == 0)
+	{
 		fprintf(stderr, "No valid NVMe controllers or AIO or URING devices found\n");
 		goto cleanup;
 	}
 
-	if (g_num_workers > 1 && g_quiet_count > 1) {
+	if (g_num_workers > 1 && g_quiet_count > 1)
+	{
 		fprintf(stderr, "Error message rate-limiting enabled across multiple threads.\n");
 		fprintf(stderr, "Error suppression count may not be exact.\n");
 	}
 
 	rc = pthread_create(&thread_id, NULL, &nvme_poll_ctrlrs, NULL);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		fprintf(stderr, "Unable to spawn a thread to poll admin queues.\n");
 		goto cleanup;
 	}
 
-	if (associate_workers_with_ns() != 0) {
+	if (associate_workers_with_ns() != 0)
+	{
 		rc = -1;
 		goto cleanup;
 	}
 
 	rc = pthread_barrier_init(&g_worker_sync_barrier, NULL, g_num_workers);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		fprintf(stderr, "Unable to initialize thread sync barrier\n");
 		goto cleanup;
 	}
@@ -3857,10 +4292,14 @@ main(int argc, char **argv)
 	/* Launch all of the secondary workers */
 	g_main_core = spdk_env_get_current_core();
 	main_worker = NULL;
-	TAILQ_FOREACH(worker, &g_workers, link) {
-		if (worker->lcore != g_main_core) {
+	TAILQ_FOREACH(worker, &g_workers, link)
+	{
+		if (worker->lcore != g_main_core)
+		{
 			spdk_env_thread_launch_pinned(worker->lcore, work_fn, worker);
-		} else {
+		}
+		else
+		{
 			assert(main_worker == NULL);
 			main_worker = worker;
 		}
@@ -3878,18 +4317,23 @@ main(int argc, char **argv)
 cleanup:
 	fflush(stdout);
 
-	if (thread_id && pthread_cancel(thread_id) == 0) {
+	if (thread_id && pthread_cancel(thread_id) == 0)
+	{
 		pthread_join(thread_id, NULL);
 	}
 
 	/* Collect errors from all workers and namespaces */
-	TAILQ_FOREACH(worker, &g_workers, link) {
-		if (rc != 0) {
+	TAILQ_FOREACH(worker, &g_workers, link)
+	{
+		if (rc != 0)
+		{
 			break;
 		}
 
-		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link) {
-			if (ns_ctx->status != 0) {
+		TAILQ_FOREACH(ns_ctx, &worker->ns_ctx, link)
+		{
+			if (ns_ctx->status != 0)
+			{
 				rc = ns_ctx->status;
 				break;
 			}
@@ -3907,7 +4351,8 @@ cleanup:
 
 	pthread_mutex_destroy(&g_stats_mutex);
 
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		fprintf(stderr, "%s: errors occurred\n", argv[0]);
 	}
 

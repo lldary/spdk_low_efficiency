@@ -1192,7 +1192,7 @@ struct spdk_nvmf_poll_group *
 spdk_nvmf_poll_group_create(struct spdk_nvmf_tgt *tgt)
 {
 	struct spdk_io_channel *ch;
-
+	SPDK_ERRLOG("[ DEBUG ]Getting I/O channel for target %p\n", tgt);
 	ch = spdk_get_io_channel(tgt);
 	if (!ch) {
 		SPDK_ERRLOG("Unable to get I/O channel for target\n");
@@ -1519,11 +1519,16 @@ poll_group_update_subsystem(struct spdk_nvmf_poll_group *group,
 		} else if (ns != NULL && ch == NULL) {
 			/* A namespace appeared but there is no channel yet */
 			ns_changed = true;
-			ch = spdk_bdev_get_io_channel(ns->desc);
+			SPDK_DEBUGLOG(nvmf, "Namespace appeared: subsystem_id %u, nsid %u, pg %p\n",
+				      subsystem->id, ns->nsid, group);
+			// ch = spdk_bdev_get_io_channel(ns->desc);
+			// ch = spdk_bdev_get_io_channel_int(ns->desc, true);
+			ch = spdk_bdev_get_io_channel_int(ns->desc, true);
 			if (ch == NULL) {
 				SPDK_ERRLOG("Could not allocate I/O channel.\n");
 				return -ENOMEM;
 			}
+			// int fd = get_channel_fd(ch);
 			ns_info->channel = ch;
 		} else if (spdk_uuid_compare(&ns_info->uuid, spdk_bdev_get_uuid(ns->bdev)) != 0) {
 			/* A namespace was here before, but was replaced by a new one. */

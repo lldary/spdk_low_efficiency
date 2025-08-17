@@ -993,6 +993,137 @@ _reactor_run(struct spdk_reactor *reactor)
 	}
 }
 
+#include <x86gprintrin.h>
+#ifndef __NR_uintr_register_handler
+#define __NR_uintr_wait_msix_interrupt 470
+#define __NR_uintr_register_handler	471
+#define __NR_uintr_unregister_handler	472
+#define __NR_uintr_create_fd		473
+#define __NR_uintr_register_sender	474
+#define __NR_uintr_unregister_sender	475
+#define __NR_uintr_wait			476
+#endif
+int uipi_index = 0;
+uint64_t uipi_count = 0;
+#define uintr_wait_msix_interrupt(ptr, flags)   syscall(__NR_uintr_wait_msix_interrupt, ptr, flags)
+#define uintr_register_handler(handler, flags)	syscall(__NR_uintr_register_handler, handler, flags)
+#define uintr_unregister_handler(flags)		syscall(__NR_uintr_unregister_handler, flags)
+#define uintr_create_fd(vector, flags)		syscall(__NR_uintr_create_fd, vector, flags)
+#define uintr_register_sender(fd, flags)	syscall(__NR_uintr_register_sender, fd, flags)
+#define uintr_unregister_sender(ipi_idx, flags)	syscall(__NR_uintr_unregister_sender, ipi_idx, flags)
+#define uintr_wait(usec, flags)			syscall(__NR_uintr_wait, usec, flags)
+
+#define CORE_NUMBER 90
+#define NS_PER_S 1000000000
+bool g_io_completion_notify[CORE_NUMBER];                 /* IO完成通知 */
+
+
+void __attribute__((interrupt))__attribute__((target("general-regs-only", "inline-all-stringops")))
+uintr_get_handler(struct __uintr_frame *ui_frame,
+	      unsigned long long vector)
+{
+	_senduipi(uipi_index);
+	g_io_completion_notify[vector] = true;
+}
+
+#define local_irq_save(flags) \
+    do {                      \
+        flags = _testui();    \
+        _clui();              \
+    } while (0)
+#define local_irq_restore(flags) \
+    do {                         \
+        if (flags)               \
+            _stui();             \
+    } while (0)
+
+struct spdk_plus_nvme_thread
+{
+    uint64_t rsp;
+    uint64_t rip;
+    uint64_t stack_space[0x10000];
+    int64_t flags; /* 记录用户中断标志，帮助恢复 */
+};
+
+/* 用于用户中断切换框架 */
+struct spdk_plus_nvme_thread *g_curr_thread[CORE_NUMBER]; /* 当前线程 */
+struct spdk_plus_nvme_thread *g_work_thread[CORE_NUMBER]; /* IO线程结构 */
+struct spdk_plus_nvme_thread *g_idle_thread[CORE_NUMBER]; /* 节能线程结构 */
+
+void spdk_plus_switch_thread(struct spdk_plus_nvme_thread *from, struct spdk_plus_nvme_thread *to);
+
+static inline uint64_t spdk_plus_idle_thread_func(uint64_t cpu_id)
+{
+    
+    uint64_t delay = 15 * spdk_get_ticks_hz() / NS_PER_S;
+	uint64_t flags;
+
+    if (!g_io_completion_notify[cpu_id])
+    {
+        uint64_t sleep_time = _rdtsc() + delay;
+        _tpause(0, sleep_time);
+    }
+	// local_irq_save(flags);
+	return flags;
+}
+
+// static void
+// nvme_prepare_uintr_env(void)
+// {
+//     int32_t cpu_id = sched_getcpu();
+//     int flags;
+//     if (g_curr_thread[cpu_id] != NULL)
+//     {
+//         DEBUGLOG("CPU %u already has initalize user interrupt\n", cpu_id);
+//         return;
+//     }
+// #define UINTR_HANDLER_FLAG_WAITING_RECEIVER 0x1000 // TODO: 这个定义也一直需要吗？
+//     if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER))
+//     {
+//         SPDK_ERRLOG("Interrupt handler register error");
+//         exit(EXIT_FAILURE);
+//     }
+//     local_irq_save(flags);
+//     local_irq_restore(flags);
+//     g_idle_thread[cpu_id] = calloc(1, sizeof(struct spdk_plus_nvme_thread));
+//     g_work_thread[cpu_id] = calloc(1, sizeof(struct spdk_plus_nvme_thread));
+//     if (g_idle_thread[cpu_id] == NULL || g_work_thread[cpu_id] == NULL)
+//     {
+//         SPDK_ERRLOG("Failed to allocate memory for thread\n");
+//         exit(EXIT_FAILURE);
+//     }
+//     g_idle_thread[cpu_id]->flags = flags;
+//     g_work_thread[cpu_id]->flags = flags;
+//     g_idle_thread[cpu_id]->rsp = (uint64_t)((unsigned char *)(g_idle_thread[cpu_id]->stack_space) + sizeof(g_idle_thread[cpu_id]->stack_space) - 0x40);
+//     g_idle_thread[cpu_id]->rip = (uint64_t)spdk_plus_idle_thread_func;
+//     g_idle_thread[cpu_id]->stack_space[0xFFFF] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFFE] = (uint64_t)spdk_plus_idle_thread_func;
+//     g_idle_thread[cpu_id]->stack_space[0xFFFD] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFFC] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFFB] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFFA] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF9] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF8] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF7] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF6] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF5] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF4] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF3] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF2] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF1] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFF0] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFEF] = cpu_id;
+//     g_idle_thread[cpu_id]->stack_space[0xFFEE] = cpu_id;
+//     local_irq_save(flags);
+//     DEBUGLOG("初始化完成用户框架，开始试运行 core id： %u rip: %p %lx\n", cpu_id, spdk_plus_idle_thread_func, *(uint64_t *)(g_idle_thread[cpu_id]->rsp + 0x30));
+//     spdk_plus_switch_thread(g_work_thread[cpu_id], g_idle_thread[cpu_id]);
+//     DEBUGLOG("CPU %d 第一次试运行完成\n", cpu_id);
+//     g_curr_thread[cpu_id] = g_work_thread[cpu_id];
+//     spdk_plus_switch_thread(g_work_thread[cpu_id], g_idle_thread[cpu_id]);
+//     g_curr_thread[cpu_id] = g_work_thread[cpu_id];
+//     DEBUGLOG("试运行成功\n");
+// }
+
 static int
 reactor_run(void *arg)
 {
@@ -1003,6 +1134,24 @@ reactor_run(void *arg)
 	uint64_t		last_sched = 0;
 
 	SPDK_NOTICELOG("Reactor started on core %u\n", reactor->lcore);
+
+	SPDK_ERRLOG("开始注册用户态中断处理函数\n");
+	#define UINTR_HANDLER_FLAG_WAITING_RECEIVER	0x1000 // TODO: 这个定义也一直需要吗？
+	if (uintr_register_handler(uintr_get_handler, UINTR_HANDLER_FLAG_WAITING_RECEIVER)) {
+		SPDK_ERRLOG("Interrupt handler register error");
+		exit(EXIT_FAILURE);
+	}
+	int fd = uintr_create_fd(reactor->lcore, 0);
+	uipi_index = uintr_register_sender(fd, 0);
+	if(uipi_index < 0) {
+		SPDK_ERRLOG("Unable to register sender\n");
+		exit(EXIT_FAILURE);
+	}
+	_senduipi(uipi_index);
+	_stui();
+	uint64_t flags;
+	local_irq_save(flags);
+	local_irq_restore(flags);
 
 	/* Rename the POSIX thread because the reactor is tied to the POSIX
 	 * thread in the SPDK event library.
@@ -1042,6 +1191,8 @@ reactor_run(void *arg)
 		if (g_reactor_state != SPDK_REACTOR_STATE_RUNNING) {
 			break;
 		}
+
+		spdk_plus_idle_thread_func(reactor->lcore);
 	}
 
 	TAILQ_FOREACH(lw_thread, &reactor->threads, link) {

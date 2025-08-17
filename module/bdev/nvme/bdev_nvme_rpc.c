@@ -409,7 +409,7 @@ rpc_bdev_nvme_attach_controller(struct spdk_jsonrpc_request *request,
 		spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(ENOMEM));
 		return;
 	}
-
+	SPDK_ERRLOG("[ DEBUG ]rpc_bdev_nvme_attach_controller: RUNNING!\n");
 	spdk_nvme_ctrlr_get_default_ctrlr_opts(&ctx->req.drv_opts, sizeof(ctx->req.drv_opts));
 	spdk_bdev_nvme_get_default_ctrlr_opts(&ctx->req.bdev_opts);
 	ctx->req.multipath = BDEV_NVME_MP_MODE_MULTIPATH;

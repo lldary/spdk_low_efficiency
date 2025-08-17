@@ -446,7 +446,7 @@ nvme_ctrlr_create_io_qpair_int(struct spdk_nvme_ctrlr *ctrlr,
 	}
 	if(opts->interrupt_mode)
 		*efd = nvme_transport_alloc_msix(ctrlr, qid, opts->interrupt_mode);
-	SPDK_ERRLOG("[ DEBUG ] efd = %d\n", *efd);
+	SPDK_ERRLOG("[ DEBUG ] qid = %d, efd = %d\n", qid, *efd);
 
 	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
 

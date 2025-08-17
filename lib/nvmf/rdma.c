@@ -24,6 +24,7 @@
 #include "transport.h"
 
 #include "spdk_internal/trace_defs.h"
+#include "mlx5.h"
 
 struct spdk_nvme_rdma_hooks g_nvmf_hooks = {};
 const struct spdk_nvmf_transport_ops spdk_nvmf_transport_rdma;
@@ -4098,8 +4099,9 @@ nvmf_rdma_poller_create(struct spdk_nvmf_rdma_transport *rtransport,
 	} else {
 		num_cqe = rtransport->rdma_opts.num_cqe;
 	}
+	struct ibv_comp_channel* channel = ibv_create_comp_channel(device->context);
 
-	poller->cq = ibv_create_cq(device->context, num_cqe, poller, NULL, 0);
+	poller->cq = ibv_create_cq(device->context, num_cqe, poller, channel, 11); // 修改了MSI-X index号
 	if (!poller->cq) {
 		SPDK_ERRLOG("Unable to create completion queue\n");
 		return -1;
@@ -4702,9 +4704,33 @@ nvmf_rdma_poller_poll(struct spdk_nvmf_rdma_transport *rtransport,
 		}
 		return 0;
 	}
-
+	static bool first_init = true;
 	/* Poll for completing operations. */
 	reaped = ibv_poll_cq(rpoller->cq, 32, wc);
+	struct ibv_cq *ev_cq;
+	uint64_t tt = 0;
+	if(reaped > 0 && rpoller->cq->channel != NULL && (tt % 2 == 0)){
+		// fprintf(stderr, "poller %p cq %p reaped %d cpu %d fd %d\n", rpoller, rpoller->cq, reaped, spdk_env_get_current_core(), rpoller->cq->channel->fd);
+		/*
+		* poll the channel until it has an event and sleep ms_timeout
+		* milliseconds between any iteration
+		*/
+		struct pollfd my_pollfd;
+		my_pollfd.fd = rpoller->cq->channel->fd;
+		my_pollfd.events = POLLIN;
+		my_pollfd.revents = 0; 
+
+
+			
+			struct ibv_context *cq_context;
+			struct ib_uverbs_comp_event_desc ev;
+
+				(to_mcq(rpoller->cq))->arm_sn++;
+				rpoller->cq->comp_events_completed ++;
+
+				ibv_req_notify_cq(rpoller->cq, 0);
+	}
+	tt++;
 	if (spdk_unlikely(reaped < 0)) {
 		SPDK_ERRLOG("Error polling CQ! (%d): %s\n",
 			    errno, spdk_strerror(errno));
@@ -4719,6 +4745,7 @@ nvmf_rdma_poller_poll(struct spdk_nvmf_rdma_transport *rtransport,
 	for (i = 0; i < reaped; i++) {
 
 		rdma_wr = (struct spdk_nvmf_rdma_wr *)wc[i].wr_id;
+		// SPDK_DEBUGLOG(rdma, "RDMA->TYPE %u\n", rdma_wr->type);
 
 		switch (rdma_wr->type) {
 		case RDMA_WR_TYPE_SEND:
@@ -4781,7 +4808,7 @@ nvmf_rdma_poller_poll(struct spdk_nvmf_rdma_transport *rtransport,
 		case RDMA_WR_TYPE_DATA:
 			rdma_req = SPDK_CONTAINEROF(rdma_wr, struct spdk_nvmf_rdma_request, data_wr);
 			rqpair = SPDK_CONTAINEROF(rdma_req->req.qpair, struct spdk_nvmf_rdma_qpair, qpair);
-
+			// SPDK_ERRLOG("over\n");
 			assert(rdma_req->num_outstanding_data_wr > 0);
 
 			rqpair->current_send_depth--;
