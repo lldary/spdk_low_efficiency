@@ -342,8 +342,8 @@ static uint32_t cpuid_uipi_map[0xFF];
 
 struct user_thread
 {
-	uint64_t rsp;
 	uint64_t stack_space[0x10000];
+	uint64_t rsp;
 	uint64_t rip;
 	int64_t flags;
 };
@@ -387,6 +387,30 @@ uintr_get_handler(struct __uintr_frame *ui_frame,
 	{
 		uintr_count[vector]++;
 	}
+}
+
+void switch_thread(struct user_thread *from, struct user_thread *to)
+{
+	asm volatile(
+		"push %%rbx\n\t"
+		"push %%rbp\n\t"
+		"push %%r12\n\t"
+		"push %%r13\n\t"
+		"push %%r14\n\t"
+		"push %%r15\n\t"
+		"mov %%rsp , %0\n\t"
+		"mov %1 , %%rsp\n\t"
+		"pop %%r15\n\t"
+		"pop %%r14\n\t"
+		"pop %%r13\n\t"
+		"pop %%r12\n\t"
+		"pop %%rbp\n\t"
+		"pop %%rbx\n\t"
+		: "=m"(from->rsp) // 正确存储 from->rsp
+		: "m"(to->rsp)	  // 正确加载 to->rsp 和 to->rip
+	);
+	// _stui();
+	asm volatile("ret");
 }
 
 void idle_thread_func(void);

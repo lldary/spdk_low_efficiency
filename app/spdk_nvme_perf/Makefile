@@ -10,9 +10,7 @@ include $(SPDK_ROOT_DIR)/mk/spdk.modules.mk
 
 APP = spdk_nvme_perf
 
-C_SRCS := perf.c 
-
-AS_SRCS = switch_thread.S
+C_SRCS := perf.c
 
 SPDK_LIB_LIST += $(SOCK_MODULES_LIST) nvme vmd keyring_file
 

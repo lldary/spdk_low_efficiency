@@ -8,27 +8,24 @@
 
 #include "spdk/env.h"
 
-struct spdk_pci_driver
-{
-	uint8_t driver_buf[256];
-	struct rte_pci_driver *driver;
+struct spdk_pci_driver {
+	uint8_t				driver_buf[256];
+	struct rte_pci_driver		*driver;
 
-	const char *name;
-	const struct spdk_pci_id *id_table;
-	uint32_t drv_flags;
+	const char                      *name;
+	const struct spdk_pci_id	*id_table;
+	uint32_t			drv_flags;
 
-	spdk_pci_enum_cb cb_fn;
-	void *cb_arg;
-	TAILQ_ENTRY(spdk_pci_driver)
-	tailq;
+	spdk_pci_enum_cb		cb_fn;
+	void				*cb_arg;
+	TAILQ_ENTRY(spdk_pci_driver)	tailq;
 };
 
 struct rte_pci_device;
 struct rte_pci_driver;
 struct rte_device;
 
-struct dpdk_fn_table
-{
+struct dpdk_fn_table {
 	struct rte_mem_resource *(*pci_device_get_mem_resource)(struct rte_pci_device *dev, uint32_t bar);
 	const char *(*pci_device_get_name)(struct rte_pci_device *);
 	struct rte_devargs *(*pci_device_get_devargs)(struct rte_pci_device *);
@@ -36,16 +33,15 @@ struct dpdk_fn_table
 	struct rte_pci_id *(*pci_device_get_id)(struct rte_pci_device *);
 	int (*pci_device_get_numa_node)(struct rte_pci_device *_dev);
 	int (*pci_device_read_config)(struct rte_pci_device *dev, void *value, uint32_t len,
-								  uint32_t offset);
+				      uint32_t offset);
 	int (*pci_device_write_config)(struct rte_pci_device *dev, void *value, uint32_t len,
-								   uint32_t offset);
+				       uint32_t offset);
 	int (*pci_driver_register)(struct spdk_pci_driver *driver,
-							   int (*probe_fn)(struct rte_pci_driver *driver, struct rte_pci_device *device),
-							   int (*remove_fn)(struct rte_pci_device *device));
+				   int (*probe_fn)(struct rte_pci_driver *driver, struct rte_pci_device *device),
+				   int (*remove_fn)(struct rte_pci_device *device));
 	int (*pci_device_enable_interrupt)(struct rte_pci_device *rte_dev);
 	int (*pci_device_enable_spec_interrupt)(struct rte_pci_device *rte_dev, uint32_t index);
 	int (*pci_device_enable_interrupt_uintr)(struct rte_pci_device *rte_dev, uint32_t index);
-	int (*pci_device_control_spec_interrupt)(struct rte_pci_device *rte_dev, uint32_t index, bool enable);
 	int (*pci_device_disable_interrupt)(struct rte_pci_device *rte_dev);
 	int (*pci_device_get_interrupt_efd)(struct rte_pci_device *rte_dev);
 	int (*pci_device_create_interrupt_efds)(struct rte_pci_device *rte_dev, uint32_t count);
@@ -72,12 +68,12 @@ struct rte_pci_addr *dpdk_pci_device_get_addr(struct rte_pci_device *);
 struct rte_pci_id *dpdk_pci_device_get_id(struct rte_pci_device *);
 int dpdk_pci_device_get_numa_node(struct rte_pci_device *_dev);
 int dpdk_pci_device_read_config(struct rte_pci_device *dev, void *value, uint32_t len,
-								uint32_t offset);
+				uint32_t offset);
 int dpdk_pci_device_write_config(struct rte_pci_device *dev, void *value, uint32_t len,
-								 uint32_t offset);
+				 uint32_t offset);
 int dpdk_pci_driver_register(struct spdk_pci_driver *driver,
-							 int (*probe_fn)(struct rte_pci_driver *driver, struct rte_pci_device *device),
-							 int (*remove_fn)(struct rte_pci_device *device));
+			     int (*probe_fn)(struct rte_pci_driver *driver, struct rte_pci_device *device),
+			     int (*remove_fn)(struct rte_pci_device *device));
 int dpdk_pci_device_enable_interrupt(struct rte_pci_device *rte_dev);
 int dpdk_pci_device_disable_interrupt(struct rte_pci_device *rte_dev);
 int dpdk_pci_device_get_interrupt_efd(struct rte_pci_device *rte_dev);
