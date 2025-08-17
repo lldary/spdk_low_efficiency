@@ -15,7 +15,8 @@
 #include "nvme_internal.h"
 #include "nvme_pcie_internal.h"
 
-struct nvme_pcie_enum_ctx {
+struct nvme_pcie_enum_ctx
+{
 	struct spdk_nvme_probe_ctx *probe_ctx;
 	struct spdk_pci_addr pci_addr;
 	bool has_pci_addr;
@@ -32,20 +33,24 @@ nvme_sigbus_fault_sighandler(const void *failure_addr, void *ctx)
 	uint16_t flag = 0;
 
 	if (!__atomic_compare_exchange_n(&g_signal_lock, &flag, 1, false, __ATOMIC_ACQUIRE,
-					 __ATOMIC_RELAXED)) {
+									 __ATOMIC_RELAXED))
+	{
 		SPDK_DEBUGLOG(nvme, "request g_signal_lock failed\n");
 		return;
 	}
 
-	if (g_thread_mmio_ctrlr == NULL) {
+	if (g_thread_mmio_ctrlr == NULL)
+	{
 		return;
 	}
 
-	if (!g_thread_mmio_ctrlr->is_remapped) {
+	if (!g_thread_mmio_ctrlr->is_remapped)
+	{
 		map_address = mmap((void *)g_thread_mmio_ctrlr->regs, g_thread_mmio_ctrlr->regs_size,
-				   PROT_READ | PROT_WRITE,
-				   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-		if (map_address == MAP_FAILED) {
+						   PROT_READ | PROT_WRITE,
+						   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+		if (map_address == MAP_FAILED)
+		{
 			SPDK_ERRLOG("mmap failed\n");
 			__atomic_store_n(&g_signal_lock, 0, __ATOMIC_RELEASE);
 			return;
@@ -63,24 +68,31 @@ _nvme_pcie_event_process(struct spdk_pci_event *event, void *cb_ctx)
 	struct spdk_nvme_transport_id trid;
 	struct spdk_nvme_ctrlr *ctrlr;
 
-	if (event->action == SPDK_UEVENT_ADD) {
-		if (spdk_process_is_primary()) {
-			if (g_hotplug_filter_cb == NULL || g_hotplug_filter_cb(&event->traddr)) {
+	if (event->action == SPDK_UEVENT_ADD)
+	{
+		if (spdk_process_is_primary())
+		{
+			if (g_hotplug_filter_cb == NULL || g_hotplug_filter_cb(&event->traddr))
+			{
 				/* The enumerate interface implement the add operation */
 				spdk_pci_device_allow(&event->traddr);
 			}
 		}
-	} else if (event->action == SPDK_UEVENT_REMOVE) {
+	}
+	else if (event->action == SPDK_UEVENT_REMOVE)
+	{
 		memset(&trid, 0, sizeof(trid));
 		spdk_nvme_trid_populate_transport(&trid, SPDK_NVME_TRANSPORT_PCIE);
 
-		if (spdk_pci_addr_fmt(trid.traddr, sizeof(trid.traddr), &event->traddr) < 0) {
+		if (spdk_pci_addr_fmt(trid.traddr, sizeof(trid.traddr), &event->traddr) < 0)
+		{
 			SPDK_ERRLOG("Failed to format pci address\n");
 			return;
 		}
 
 		ctrlr = nvme_get_ctrlr_by_trid_unsafe(&trid, NULL);
-		if (ctrlr == NULL) {
+		if (ctrlr == NULL)
+		{
 			return;
 		}
 		SPDK_DEBUGLOG(nvme, "remove nvme address: %s\n", trid.traddr);
@@ -90,7 +102,8 @@ _nvme_pcie_event_process(struct spdk_pci_event *event, void *cb_ctx)
 		nvme_ctrlr_unlock(ctrlr);
 
 		/* get the user app to clean up and stop I/O */
-		if (ctrlr->remove_cb) {
+		if (ctrlr->remove_cb)
+		{
 			nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
 			ctrlr->remove_cb(ctrlr->cb_ctx, ctrlr);
 			nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock);
@@ -105,8 +118,10 @@ _nvme_pcie_hotplug_monitor(struct spdk_nvme_probe_ctx *probe_ctx)
 	struct spdk_pci_event event;
 	int rc = 0;
 
-	if (g_spdk_nvme_driver->hotplug_fd >= 0) {
-		while (spdk_pci_get_event(g_spdk_nvme_driver->hotplug_fd, &event) > 0) {
+	if (g_spdk_nvme_driver->hotplug_fd >= 0)
+	{
+		while (spdk_pci_get_event(g_spdk_nvme_driver->hotplug_fd, &event) > 0)
+		{
 			_nvme_pcie_event_process(&event, probe_ctx->cb_ctx);
 		}
 	}
@@ -114,25 +129,30 @@ _nvme_pcie_hotplug_monitor(struct spdk_nvme_probe_ctx *probe_ctx)
 	/* Initiate removal of physically hotremoved PCI controllers. Even after
 	 * they're hotremoved from the system, SPDK might still report them via RPC.
 	 */
-	TAILQ_FOREACH_SAFE(ctrlr, &g_spdk_nvme_driver->shared_attached_ctrlrs, tailq, tmp) {
+	TAILQ_FOREACH_SAFE(ctrlr, &g_spdk_nvme_driver->shared_attached_ctrlrs, tailq, tmp)
+	{
 		bool do_remove = false;
 		struct nvme_pcie_ctrlr *pctrlr;
 
-		if (ctrlr->trid.trtype != SPDK_NVME_TRANSPORT_PCIE) {
+		if (ctrlr->trid.trtype != SPDK_NVME_TRANSPORT_PCIE)
+		{
 			continue;
 		}
 
 		pctrlr = nvme_pcie_ctrlr(ctrlr);
-		if (spdk_pci_device_is_removed(pctrlr->devhandle)) {
+		if (spdk_pci_device_is_removed(pctrlr->devhandle))
+		{
 			do_remove = true;
 			rc = 1;
 		}
 
-		if (do_remove) {
+		if (do_remove)
+		{
 			nvme_ctrlr_lock(ctrlr);
 			nvme_ctrlr_fail(ctrlr, true);
 			nvme_ctrlr_unlock(ctrlr);
-			if (ctrlr->remove_cb) {
+			if (ctrlr->remove_cb)
+			{
 				nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
 				ctrlr->remove_cb(ctrlr->cb_ctx, ctrlr);
 				nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock);
@@ -192,7 +212,8 @@ nvme_pcie_ctrlr_get_reg_4(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint32
 	g_thread_mmio_ctrlr = pctrlr;
 	*value = spdk_mmio_read_4(nvme_pcie_reg_addr(ctrlr, offset));
 	g_thread_mmio_ctrlr = NULL;
-	if (~(*value) == 0) {
+	if (~(*value) == 0)
+	{
 		return -1;
 	}
 
@@ -209,7 +230,8 @@ nvme_pcie_ctrlr_get_reg_8(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint64
 	g_thread_mmio_ctrlr = pctrlr;
 	*value = spdk_mmio_read_8(nvme_pcie_reg_addr(ctrlr, offset));
 	g_thread_mmio_ctrlr = NULL;
-	if (~(*value) == 0) {
+	if (~(*value) == 0)
+	{
 		return -1;
 	}
 
@@ -220,80 +242,80 @@ static int
 nvme_pcie_ctrlr_set_asq(struct nvme_pcie_ctrlr *pctrlr, uint64_t value)
 {
 	return nvme_pcie_ctrlr_set_reg_8(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, asq),
-					 value);
+									 value);
 }
 
 static int
 nvme_pcie_ctrlr_set_acq(struct nvme_pcie_ctrlr *pctrlr, uint64_t value)
 {
 	return nvme_pcie_ctrlr_set_reg_8(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, acq),
-					 value);
+									 value);
 }
 
 static int
 nvme_pcie_ctrlr_set_aqa(struct nvme_pcie_ctrlr *pctrlr, const union spdk_nvme_aqa_register *aqa)
 {
 	return nvme_pcie_ctrlr_set_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, aqa.raw),
-					 aqa->raw);
+									 aqa->raw);
 }
 
 static int
 nvme_pcie_ctrlr_get_cmbloc(struct nvme_pcie_ctrlr *pctrlr, union spdk_nvme_cmbloc_register *cmbloc)
 {
 	return nvme_pcie_ctrlr_get_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, cmbloc.raw),
-					 &cmbloc->raw);
+									 &cmbloc->raw);
 }
 
 static int
 nvme_pcie_ctrlr_get_cmbsz(struct nvme_pcie_ctrlr *pctrlr, union spdk_nvme_cmbsz_register *cmbsz)
 {
 	return nvme_pcie_ctrlr_get_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, cmbsz.raw),
-					 &cmbsz->raw);
+									 &cmbsz->raw);
 }
 
 static int
 nvme_pcie_ctrlr_get_pmrcap(struct nvme_pcie_ctrlr *pctrlr, union spdk_nvme_pmrcap_register *pmrcap)
 {
 	return nvme_pcie_ctrlr_get_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, pmrcap.raw),
-					 &pmrcap->raw);
+									 &pmrcap->raw);
 }
 
 static int
 nvme_pcie_ctrlr_set_pmrctl(struct nvme_pcie_ctrlr *pctrlr, union spdk_nvme_pmrctl_register *pmrctl)
 {
 	return nvme_pcie_ctrlr_set_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, pmrctl.raw),
-					 pmrctl->raw);
+									 pmrctl->raw);
 }
 
 static int
 nvme_pcie_ctrlr_get_pmrctl(struct nvme_pcie_ctrlr *pctrlr, union spdk_nvme_pmrctl_register *pmrctl)
 {
 	return nvme_pcie_ctrlr_get_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, pmrctl.raw),
-					 &pmrctl->raw);
+									 &pmrctl->raw);
 }
 
 static int
 nvme_pcie_ctrlr_get_pmrsts(struct nvme_pcie_ctrlr *pctrlr, union spdk_nvme_pmrsts_register *pmrsts)
 {
 	return nvme_pcie_ctrlr_get_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, pmrsts.raw),
-					 &pmrsts->raw);
+									 &pmrsts->raw);
 }
 
 static int
 nvme_pcie_ctrlr_set_pmrmscl(struct nvme_pcie_ctrlr *pctrlr, uint32_t value)
 {
 	return nvme_pcie_ctrlr_set_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, pmrmscl.raw),
-					 value);
+									 value);
 }
 
 static int
 nvme_pcie_ctrlr_set_pmrmscu(struct nvme_pcie_ctrlr *pctrlr, uint32_t value)
 {
 	return nvme_pcie_ctrlr_set_reg_4(&pctrlr->ctrlr, offsetof(struct spdk_nvme_registers, pmrmscu),
-					 value);
+									 value);
 }
 
-static  uint32_t
+static uint32_t
 nvme_pcie_ctrlr_get_max_xfer_size(struct spdk_nvme_ctrlr *ctrlr)
 {
 	/*
@@ -327,18 +349,21 @@ nvme_pcie_ctrlr_map_cmb(struct nvme_pcie_ctrlr *pctrlr)
 	uint64_t size, unit_size, offset, bar_size = 0, bar_phys_addr = 0;
 
 	if (nvme_pcie_ctrlr_get_cmbsz(pctrlr, &cmbsz) ||
-	    nvme_pcie_ctrlr_get_cmbloc(pctrlr, &cmbloc)) {
+		nvme_pcie_ctrlr_get_cmbloc(pctrlr, &cmbloc))
+	{
 		SPDK_ERRLOG("get registers failed\n");
 		goto exit;
 	}
 
-	if (!cmbsz.bits.sz) {
+	if (!cmbsz.bits.sz)
+	{
 		goto exit;
 	}
 
 	bir = cmbloc.bits.bir;
 	/* Values 0 2 3 4 5 are valid for BAR */
-	if (bir > 5 || bir == 1) {
+	if (bir > 5 || bir == 1)
+	{
 		goto exit;
 	}
 
@@ -350,16 +375,19 @@ nvme_pcie_ctrlr_map_cmb(struct nvme_pcie_ctrlr *pctrlr)
 	offset = unit_size * cmbloc.bits.ofst;
 
 	rc = spdk_pci_device_map_bar(pctrlr->devhandle, bir, &addr,
-				     &bar_phys_addr, &bar_size);
-	if ((rc != 0) || addr == NULL) {
+								 &bar_phys_addr, &bar_size);
+	if ((rc != 0) || addr == NULL)
+	{
 		goto exit;
 	}
 
-	if (offset > bar_size) {
+	if (offset > bar_size)
+	{
 		goto exit;
 	}
 
-	if (size > bar_size - offset) {
+	if (size > bar_size - offset)
+	{
 		goto exit;
 	}
 
@@ -368,7 +396,8 @@ nvme_pcie_ctrlr_map_cmb(struct nvme_pcie_ctrlr *pctrlr)
 	pctrlr->cmb.size = size;
 	pctrlr->cmb.current_offset = offset;
 
-	if (!cmbsz.bits.sqs) {
+	if (!cmbsz.bits.sqs)
+	{
 		pctrlr->ctrlr.opts.use_cmb_sqs = false;
 	}
 
@@ -385,12 +414,15 @@ nvme_pcie_ctrlr_unmap_cmb(struct nvme_pcie_ctrlr *pctrlr)
 	union spdk_nvme_cmbloc_register cmbloc;
 	void *addr = pctrlr->cmb.bar_va;
 
-	if (addr) {
-		if (pctrlr->cmb.mem_register_addr) {
+	if (addr)
+	{
+		if (pctrlr->cmb.mem_register_addr)
+		{
 			spdk_mem_unregister(pctrlr->cmb.mem_register_addr, pctrlr->cmb.mem_register_size);
 		}
 
-		if (nvme_pcie_ctrlr_get_cmbloc(pctrlr, &cmbloc)) {
+		if (nvme_pcie_ctrlr_get_cmbloc(pctrlr, &cmbloc))
+		{
 			SPDK_ERRLOG("get_cmbloc() failed\n");
 			return -EIO;
 		}
@@ -404,12 +436,14 @@ nvme_pcie_ctrlr_reserve_cmb(struct spdk_nvme_ctrlr *ctrlr)
 {
 	struct nvme_pcie_ctrlr *pctrlr = nvme_pcie_ctrlr(ctrlr);
 
-	if (pctrlr->cmb.bar_va == NULL) {
+	if (pctrlr->cmb.bar_va == NULL)
+	{
 		SPDK_DEBUGLOG(nvme, "CMB not available\n");
 		return -ENOTSUP;
 	}
 
-	if (ctrlr->opts.use_cmb_sqs) {
+	if (ctrlr->opts.use_cmb_sqs)
+	{
 		SPDK_ERRLOG("CMB is already in use for submission queues.\n");
 		return -ENOTSUP;
 	}
@@ -426,46 +460,53 @@ nvme_pcie_ctrlr_map_io_cmb(struct spdk_nvme_ctrlr *ctrlr, size_t *size)
 	uint64_t mem_register_start, mem_register_end;
 	int rc;
 
-	if (pctrlr->cmb.mem_register_addr != NULL) {
+	if (pctrlr->cmb.mem_register_addr != NULL)
+	{
 		*size = pctrlr->cmb.mem_register_size;
 		return pctrlr->cmb.mem_register_addr;
 	}
 
 	*size = 0;
 
-	if (pctrlr->cmb.bar_va == NULL) {
+	if (pctrlr->cmb.bar_va == NULL)
+	{
 		SPDK_DEBUGLOG(nvme, "CMB not available\n");
 		return NULL;
 	}
 
-	if (ctrlr->opts.use_cmb_sqs) {
+	if (ctrlr->opts.use_cmb_sqs)
+	{
 		SPDK_ERRLOG("CMB is already in use for submission queues.\n");
 		return NULL;
 	}
 
 	if (nvme_pcie_ctrlr_get_cmbsz(pctrlr, &cmbsz) ||
-	    nvme_pcie_ctrlr_get_cmbloc(pctrlr, &cmbloc)) {
+		nvme_pcie_ctrlr_get_cmbloc(pctrlr, &cmbloc))
+	{
 		SPDK_ERRLOG("get registers failed\n");
 		return NULL;
 	}
 
 	/* If only SQS is supported */
-	if (!(cmbsz.bits.wds || cmbsz.bits.rds)) {
+	if (!(cmbsz.bits.wds || cmbsz.bits.rds))
+	{
 		return NULL;
 	}
 
 	/* If CMB is less than 4MiB in size then abort CMB mapping */
-	if (pctrlr->cmb.size < (1ULL << 22)) {
+	if (pctrlr->cmb.size < (1ULL << 22))
+	{
 		return NULL;
 	}
 
 	mem_register_start = _2MB_PAGE((uintptr_t)pctrlr->cmb.bar_va + pctrlr->cmb.current_offset +
-				       VALUE_2MB - 1);
+								   VALUE_2MB - 1);
 	mem_register_end = _2MB_PAGE((uintptr_t)pctrlr->cmb.bar_va + pctrlr->cmb.current_offset +
-				     pctrlr->cmb.size);
+								 pctrlr->cmb.size);
 
 	rc = spdk_mem_register((void *)mem_register_start, mem_register_end - mem_register_start);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("spdk_mem_register() failed\n");
 		return NULL;
 	}
@@ -483,13 +524,15 @@ nvme_pcie_ctrlr_unmap_io_cmb(struct spdk_nvme_ctrlr *ctrlr)
 	struct nvme_pcie_ctrlr *pctrlr = nvme_pcie_ctrlr(ctrlr);
 	int rc;
 
-	if (pctrlr->cmb.mem_register_addr == NULL) {
+	if (pctrlr->cmb.mem_register_addr == NULL)
+	{
 		return 0;
 	}
 
 	rc = spdk_mem_unregister(pctrlr->cmb.mem_register_addr, pctrlr->cmb.mem_register_size);
 
-	if (rc == 0) {
+	if (rc == 0)
+	{
 		pctrlr->cmb.mem_register_addr = NULL;
 		pctrlr->cmb.mem_register_size = 0;
 	}
@@ -506,29 +549,34 @@ nvme_pcie_ctrlr_map_pmr(struct nvme_pcie_ctrlr *pctrlr)
 	union spdk_nvme_pmrcap_register pmrcap;
 	uint64_t bar_size = 0, bar_phys_addr = 0;
 
-	if (!pctrlr->regs->cap.bits.pmrs) {
+	if (!pctrlr->regs->cap.bits.pmrs)
+	{
 		return;
 	}
 
-	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap)) {
+	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap))
+	{
 		SPDK_ERRLOG("get registers failed\n");
 		return;
 	}
 
 	bir = pmrcap.bits.bir;
 	/* Values 2 3 4 5 are valid for BAR */
-	if (bir > 5 || bir < 2) {
+	if (bir > 5 || bir < 2)
+	{
 		SPDK_ERRLOG("invalid base indicator register value\n");
 		return;
 	}
 
 	rc = spdk_pci_device_map_bar(pctrlr->devhandle, bir, &addr, &bar_phys_addr, &bar_size);
-	if ((rc != 0) || addr == NULL) {
+	if ((rc != 0) || addr == NULL)
+	{
 		SPDK_ERRLOG("could not map the bar %d\n", bir);
 		return;
 	}
 
-	if (pmrcap.bits.cmss) {
+	if (pmrcap.bits.cmss)
+	{
 		uint32_t pmrmscl, pmrmscu, cmse = 1;
 		union spdk_nvme_pmrsts_register pmrsts;
 
@@ -536,28 +584,34 @@ nvme_pcie_ctrlr_map_pmr(struct nvme_pcie_ctrlr *pctrlr)
 		pmrmscl = (uint32_t)((bar_phys_addr & 0xFFFFF000ULL) | (cmse << 1));
 		pmrmscu = (uint32_t)((bar_phys_addr >> 32ULL) & 0xFFFFFFFFULL);
 
-		if (nvme_pcie_ctrlr_set_pmrmscu(pctrlr, pmrmscu)) {
+		if (nvme_pcie_ctrlr_set_pmrmscu(pctrlr, pmrmscu))
+		{
 			SPDK_ERRLOG("set_pmrmscu() failed\n");
 			spdk_pci_device_unmap_bar(pctrlr->devhandle, bir, addr);
 			return;
 		}
 
-		if (nvme_pcie_ctrlr_set_pmrmscl(pctrlr, pmrmscl)) {
+		if (nvme_pcie_ctrlr_set_pmrmscl(pctrlr, pmrmscl))
+		{
 			SPDK_ERRLOG("set_pmrmscl() failed\n");
 			spdk_pci_device_unmap_bar(pctrlr->devhandle, bir, addr);
 			return;
 		}
 
-		if (nvme_pcie_ctrlr_get_pmrsts(pctrlr, &pmrsts)) {
+		if (nvme_pcie_ctrlr_get_pmrsts(pctrlr, &pmrsts))
+		{
 			SPDK_ERRLOG("get pmrsts failed\n");
 			spdk_pci_device_unmap_bar(pctrlr->devhandle, bir, addr);
 			return;
 		}
 
-		if (pmrsts.bits.cbai) {
+		if (pmrsts.bits.cbai)
+		{
 			SPDK_ERRLOG("Controller Memory Space Enable Failure\n");
 			SPDK_ERRLOG("CBA Invalid - Host Addresses cannot reference PMR\n");
-		} else {
+		}
+		else
+		{
 			SPDK_DEBUGLOG(nvme, "Controller Memory Space Enable Success\n");
 			SPDK_DEBUGLOG(nvme, "Host Addresses can reference PMR\n");
 		}
@@ -575,25 +629,31 @@ nvme_pcie_ctrlr_unmap_pmr(struct nvme_pcie_ctrlr *pctrlr)
 	union spdk_nvme_pmrcap_register pmrcap;
 	void *addr = pctrlr->pmr.bar_va;
 
-	if (addr == NULL) {
+	if (addr == NULL)
+	{
 		return rc;
 	}
 
-	if (pctrlr->pmr.mem_register_addr) {
+	if (pctrlr->pmr.mem_register_addr)
+	{
 		spdk_mem_unregister(pctrlr->pmr.mem_register_addr, pctrlr->pmr.mem_register_size);
 	}
 
-	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap)) {
+	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap))
+	{
 		SPDK_ERRLOG("get_pmrcap() failed\n");
 		return -EIO;
 	}
 
-	if (pmrcap.bits.cmss) {
-		if (nvme_pcie_ctrlr_set_pmrmscu(pctrlr, 0)) {
+	if (pmrcap.bits.cmss)
+	{
+		if (nvme_pcie_ctrlr_set_pmrmscu(pctrlr, 0))
+		{
 			SPDK_ERRLOG("set_pmrmscu() failed\n");
 		}
 
-		if (nvme_pcie_ctrlr_set_pmrmscl(pctrlr, 0)) {
+		if (nvme_pcie_ctrlr_set_pmrmscl(pctrlr, 0))
+		{
 			SPDK_ERRLOG("set_pmrmscl() failed\n");
 		}
 	}
@@ -613,12 +673,14 @@ nvme_pcie_ctrlr_config_pmr(struct spdk_nvme_ctrlr *ctrlr, bool enable)
 	uint8_t pmrto, pmrtu;
 	uint64_t timeout_in_ms, ticks_per_ms, timeout_in_ticks, now_ticks;
 
-	if (!pctrlr->regs->cap.bits.pmrs) {
+	if (!pctrlr->regs->cap.bits.pmrs)
+	{
 		SPDK_ERRLOG("PMR is not supported by the controller\n");
 		return -ENOTSUP;
 	}
 
-	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap)) {
+	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap))
+	{
 		SPDK_ERRLOG("get registers failed\n");
 		return -EIO;
 	}
@@ -626,7 +688,8 @@ nvme_pcie_ctrlr_config_pmr(struct spdk_nvme_ctrlr *ctrlr, bool enable)
 	pmrto = pmrcap.bits.pmrto;
 	pmrtu = pmrcap.bits.pmrtu;
 
-	if (pmrtu > 1) {
+	if (pmrtu > 1)
+	{
 		SPDK_ERRLOG("PMR Time Units Invalid\n");
 		return -EINVAL;
 	}
@@ -635,36 +698,44 @@ nvme_pcie_ctrlr_config_pmr(struct spdk_nvme_ctrlr *ctrlr, bool enable)
 	timeout_in_ms = pmrto * (pmrtu ? (60 * 1000) : 500);
 	timeout_in_ticks = timeout_in_ms * ticks_per_ms;
 
-	if (nvme_pcie_ctrlr_get_pmrctl(pctrlr, &pmrctl)) {
+	if (nvme_pcie_ctrlr_get_pmrctl(pctrlr, &pmrctl))
+	{
 		SPDK_ERRLOG("get pmrctl failed\n");
 		return -EIO;
 	}
 
-	if (enable && pmrctl.bits.en != 0) {
+	if (enable && pmrctl.bits.en != 0)
+	{
 		SPDK_ERRLOG("PMR is already enabled\n");
 		return -EINVAL;
-	} else if (!enable && pmrctl.bits.en != 1) {
+	}
+	else if (!enable && pmrctl.bits.en != 1)
+	{
 		SPDK_ERRLOG("PMR is already disabled\n");
 		return -EINVAL;
 	}
 
 	pmrctl.bits.en = enable;
 
-	if (nvme_pcie_ctrlr_set_pmrctl(pctrlr, &pmrctl)) {
+	if (nvme_pcie_ctrlr_set_pmrctl(pctrlr, &pmrctl))
+	{
 		SPDK_ERRLOG("set pmrctl failed\n");
 		return -EIO;
 	}
 
-	now_ticks =  spdk_get_ticks();
+	now_ticks = spdk_get_ticks();
 
-	do {
-		if (nvme_pcie_ctrlr_get_pmrsts(pctrlr, &pmrsts)) {
+	do
+	{
+		if (nvme_pcie_ctrlr_get_pmrsts(pctrlr, &pmrsts))
+		{
 			SPDK_ERRLOG("get pmrsts failed\n");
 			return -EIO;
 		}
 
 		if (pmrsts.bits.nrdy == enable &&
-		    spdk_get_ticks() > now_ticks + timeout_in_ticks) {
+			spdk_get_ticks() > now_ticks + timeout_in_ticks)
+		{
 			SPDK_ERRLOG("PMR Enable - Timed Out\n");
 			return -ETIMEDOUT;
 		}
@@ -695,35 +766,41 @@ nvme_pcie_ctrlr_map_io_pmr(struct spdk_nvme_ctrlr *ctrlr, size_t *size)
 	uint64_t mem_register_start, mem_register_end;
 	int rc;
 
-	if (!pctrlr->regs->cap.bits.pmrs) {
+	if (!pctrlr->regs->cap.bits.pmrs)
+	{
 		SPDK_ERRLOG("PMR is not supported by the controller\n");
 		return NULL;
 	}
 
-	if (pctrlr->pmr.mem_register_addr != NULL) {
+	if (pctrlr->pmr.mem_register_addr != NULL)
+	{
 		*size = pctrlr->pmr.mem_register_size;
 		return pctrlr->pmr.mem_register_addr;
 	}
 
 	*size = 0;
 
-	if (pctrlr->pmr.bar_va == NULL) {
+	if (pctrlr->pmr.bar_va == NULL)
+	{
 		SPDK_DEBUGLOG(nvme, "PMR not available\n");
 		return NULL;
 	}
 
-	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap)) {
+	if (nvme_pcie_ctrlr_get_pmrcap(pctrlr, &pmrcap))
+	{
 		SPDK_ERRLOG("get registers failed\n");
 		return NULL;
 	}
 
 	/* Check if WDS / RDS is supported */
-	if (!(pmrcap.bits.wds || pmrcap.bits.rds)) {
+	if (!(pmrcap.bits.wds || pmrcap.bits.rds))
+	{
 		return NULL;
 	}
 
 	/* If PMR is less than 4MiB in size then abort PMR mapping */
-	if (pctrlr->pmr.size < (1ULL << 22)) {
+	if (pctrlr->pmr.size < (1ULL << 22))
+	{
 		return NULL;
 	}
 
@@ -731,7 +808,8 @@ nvme_pcie_ctrlr_map_io_pmr(struct spdk_nvme_ctrlr *ctrlr, size_t *size)
 	mem_register_end = _2MB_PAGE((uintptr_t)pctrlr->pmr.bar_va + pctrlr->pmr.size);
 
 	rc = spdk_mem_register((void *)mem_register_start, mem_register_end - mem_register_start);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("spdk_mem_register() failed\n");
 		return NULL;
 	}
@@ -749,13 +827,15 @@ nvme_pcie_ctrlr_unmap_io_pmr(struct spdk_nvme_ctrlr *ctrlr)
 	struct nvme_pcie_ctrlr *pctrlr = nvme_pcie_ctrlr(ctrlr);
 	int rc;
 
-	if (pctrlr->pmr.mem_register_addr == NULL) {
+	if (pctrlr->pmr.mem_register_addr == NULL)
+	{
 		return -ENXIO;
 	}
 
 	rc = spdk_mem_unregister(pctrlr->pmr.mem_register_addr, pctrlr->pmr.mem_register_size);
 
-	if (rc == 0) {
+	if (rc == 0)
+	{
 		pctrlr->pmr.mem_register_addr = NULL;
 		pctrlr->pmr.mem_register_size = 0;
 	}
@@ -771,11 +851,12 @@ nvme_pcie_ctrlr_allocate_bars(struct nvme_pcie_ctrlr *pctrlr)
 	uint64_t phys_addr = 0, size = 0;
 
 	rc = spdk_pci_device_map_bar(pctrlr->devhandle, 0, &addr,
-				     &phys_addr, &size);
+								 &phys_addr, &size);
 
-	if ((addr == NULL) || (rc != 0)) {
+	if ((addr == NULL) || (rc != 0))
+	{
 		SPDK_ERRLOG("nvme_pcicfg_map_bar failed with rc %d or bar %p\n",
-			    rc, addr);
+					rc, addr);
 		return -1;
 	}
 
@@ -794,23 +875,27 @@ nvme_pcie_ctrlr_free_bars(struct nvme_pcie_ctrlr *pctrlr)
 	int rc = 0;
 	void *addr = (void *)pctrlr->regs;
 
-	if (pctrlr->ctrlr.is_removed) {
+	if (pctrlr->ctrlr.is_removed)
+	{
 		return rc;
 	}
 
 	rc = nvme_pcie_ctrlr_unmap_pmr(pctrlr);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		SPDK_ERRLOG("nvme_ctrlr_unmap_pmr failed with error code %d\n", rc);
 		return -1;
 	}
 
 	rc = nvme_pcie_ctrlr_unmap_cmb(pctrlr);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		SPDK_ERRLOG("nvme_ctrlr_unmap_cmb failed with error code %d\n", rc);
 		return -1;
 	}
 
-	if (addr && spdk_process_is_primary()) {
+	if (addr && spdk_process_is_primary())
+	{
 		/* NOTE: addr may have been remapped here. We're relying on DPDK to call
 		 * munmap internally.
 		 */
@@ -834,13 +919,16 @@ pcie_nvme_enum_cb(void *ctx, struct spdk_pci_device *pci_dev)
 	spdk_pci_addr_fmt(trid.traddr, sizeof(trid.traddr), &pci_addr);
 
 	ctrlr = nvme_get_ctrlr_by_trid_unsafe(&trid, NULL);
-	if (!spdk_process_is_primary()) {
-		if (!ctrlr) {
+	if (!spdk_process_is_primary())
+	{
+		if (!ctrlr)
+		{
 			SPDK_ERRLOG("Controller must be constructed in the primary process first.\n");
 			return -1;
 		}
 
-		if (ctrlr->opts.enable_interrupts) {
+		if (ctrlr->opts.enable_interrupts)
+		{
 			SPDK_ERRLOG("Secondary processes are not supported in interrupt mode.\n");
 			return -1;
 		}
@@ -850,7 +938,8 @@ pcie_nvme_enum_cb(void *ctx, struct spdk_pci_device *pci_dev)
 
 	/* check whether user passes the pci_addr */
 	if (enum_ctx->has_pci_addr &&
-	    (spdk_pci_addr_compare(&pci_addr, &enum_ctx->pci_addr) != 0)) {
+		(spdk_pci_addr_compare(&pci_addr, &enum_ctx->pci_addr) != 0))
+	{
 		return 1;
 	}
 
@@ -861,7 +950,8 @@ static int
 nvme_pci_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx)
 {
 	/* Only the primary process can monitor hotplug. */
-	if (spdk_process_is_primary()) {
+	if (spdk_process_is_primary())
+	{
 		return _nvme_pcie_hotplug_monitor(probe_ctx);
 	}
 	return 0;
@@ -869,39 +959,45 @@ nvme_pci_ctrlr_scan_attached(struct spdk_nvme_probe_ctx *probe_ctx)
 
 static int
 nvme_pcie_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
-		     bool direct_connect)
+					 bool direct_connect)
 {
 	struct nvme_pcie_enum_ctx enum_ctx = {};
 
 	enum_ctx.probe_ctx = probe_ctx;
 
-	if (strlen(probe_ctx->trid.traddr) != 0) {
-		if (spdk_pci_addr_parse(&enum_ctx.pci_addr, probe_ctx->trid.traddr)) {
+	if (strlen(probe_ctx->trid.traddr) != 0)
+	{
+		if (spdk_pci_addr_parse(&enum_ctx.pci_addr, probe_ctx->trid.traddr))
+		{
 			return -1;
 		}
 		enum_ctx.has_pci_addr = true;
 	}
 
 	/* Only the primary process can monitor hotplug. */
-	if (nvme_pci_ctrlr_scan_attached(probe_ctx) > 0) {
+	if (nvme_pci_ctrlr_scan_attached(probe_ctx) > 0)
+	{
 		/* Some removal events were received. Return immediately, avoiding
 		 * an spdk_pci_enumerate() which could trigger issue #3205. */
 		return 0;
 	}
 
-	if (enum_ctx.has_pci_addr == false) {
+	if (enum_ctx.has_pci_addr == false)
+	{
 		return spdk_pci_enumerate(spdk_pci_nvme_get_driver(),
-					  pcie_nvme_enum_cb, &enum_ctx);
-	} else {
+								  pcie_nvme_enum_cb, &enum_ctx);
+	}
+	else
+	{
 		return spdk_pci_device_attach(spdk_pci_nvme_get_driver(),
-					      pcie_nvme_enum_cb, &enum_ctx, &enum_ctx.pci_addr);
+									  pcie_nvme_enum_cb, &enum_ctx, &enum_ctx.pci_addr);
 	}
 }
 
 static struct spdk_nvme_ctrlr *
-	nvme_pcie_ctrlr_construct(const struct spdk_nvme_transport_id *trid,
-			  const struct spdk_nvme_ctrlr_opts *opts,
-			  void *devhandle)
+nvme_pcie_ctrlr_construct(const struct spdk_nvme_transport_id *trid,
+						  const struct spdk_nvme_ctrlr_opts *opts,
+						  void *devhandle)
 {
 	struct spdk_pci_device *pci_dev = devhandle;
 	struct nvme_pcie_ctrlr *pctrlr;
@@ -911,15 +1007,17 @@ static struct spdk_nvme_ctrlr *
 	struct spdk_pci_id pci_id;
 
 	rc = spdk_pci_device_claim(pci_dev);
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		SPDK_ERRLOG("could not claim device %s (%s)\n",
-			    trid->traddr, spdk_strerror(-rc));
+					trid->traddr, spdk_strerror(-rc));
 		return NULL;
 	}
 
 	pctrlr = spdk_zmalloc(sizeof(struct nvme_pcie_ctrlr), 64, NULL,
-			      SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
-	if (pctrlr == NULL) {
+						  SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
+	if (pctrlr == NULL)
+	{
 		spdk_pci_device_unclaim(pci_dev);
 		SPDK_ERRLOG("could not allocate ctrlr\n");
 		return NULL;
@@ -931,23 +1029,26 @@ static struct spdk_nvme_ctrlr *
 	pctrlr->ctrlr.opts = *opts;
 	pctrlr->ctrlr.trid = *trid;
 	pctrlr->ctrlr.opts.admin_queue_size = spdk_max(pctrlr->ctrlr.opts.admin_queue_size,
-					      NVME_PCIE_MIN_ADMIN_QUEUE_SIZE);
+												   NVME_PCIE_MIN_ADMIN_QUEUE_SIZE);
 	pci_id = spdk_pci_device_get_id(pci_dev);
 	pctrlr->ctrlr.quirks = nvme_get_quirks(&pci_id);
-	if (pci_dev->numa_id != SPDK_ENV_NUMA_ID_ANY) {
+	if (pci_dev->numa_id != SPDK_ENV_NUMA_ID_ANY)
+	{
 		pctrlr->ctrlr.numa.id_valid = 1;
 		pctrlr->ctrlr.numa.id = pci_dev->numa_id;
 	}
 
 	rc = nvme_ctrlr_construct(&pctrlr->ctrlr);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
 		return NULL;
 	}
 
 	rc = nvme_pcie_ctrlr_allocate_bars(pctrlr);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
 		return NULL;
@@ -958,7 +1059,8 @@ static struct spdk_nvme_ctrlr *
 	cmd_reg |= 0x404;
 	spdk_pci_device_cfg_write16(pci_dev, cmd_reg, 4);
 
-	if (nvme_ctrlr_get_cap(&pctrlr->ctrlr, &cap)) {
+	if (nvme_ctrlr_get_cap(&pctrlr->ctrlr, &cap))
+	{
 		SPDK_ERRLOG("get_cap() failed\n");
 		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
@@ -970,21 +1072,24 @@ static struct spdk_nvme_ctrlr *
 	pctrlr->doorbell_stride_u32 = 1 << cap.bits.dstrd;
 
 	rc = nvme_pcie_ctrlr_construct_admin_qpair(&pctrlr->ctrlr, pctrlr->ctrlr.opts.admin_queue_size);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		nvme_ctrlr_destruct(&pctrlr->ctrlr);
 		return NULL;
 	}
 
 	/* Construct the primary process properties */
 	rc = nvme_ctrlr_add_process(&pctrlr->ctrlr, pci_dev);
-	if (rc != 0) {
+	if (rc != 0)
+	{
 		nvme_ctrlr_destruct(&pctrlr->ctrlr);
 		return NULL;
 	}
 
-	if (g_sigset != true) {
+	if (g_sigset != true)
+	{
 		spdk_pci_register_error_handler(nvme_sigbus_fault_sighandler,
-						NULL);
+										NULL);
 		g_sigset = true;
 	}
 
@@ -998,12 +1103,14 @@ nvme_pcie_ctrlr_enable(struct spdk_nvme_ctrlr *ctrlr)
 	struct nvme_pcie_qpair *padminq = nvme_pcie_qpair(ctrlr->adminq);
 	union spdk_nvme_aqa_register aqa;
 
-	if (nvme_pcie_ctrlr_set_asq(pctrlr, padminq->cmd_bus_addr)) {
+	if (nvme_pcie_ctrlr_set_asq(pctrlr, padminq->cmd_bus_addr))
+	{
 		SPDK_ERRLOG("set_asq() failed\n");
 		return -EIO;
 	}
 
-	if (nvme_pcie_ctrlr_set_acq(pctrlr, padminq->cpl_bus_addr)) {
+	if (nvme_pcie_ctrlr_set_acq(pctrlr, padminq->cpl_bus_addr))
+	{
 		SPDK_ERRLOG("set_acq() failed\n");
 		return -EIO;
 	}
@@ -1013,7 +1120,8 @@ nvme_pcie_ctrlr_enable(struct spdk_nvme_ctrlr *ctrlr)
 	aqa.bits.acqs = nvme_pcie_qpair(ctrlr->adminq)->num_entries - 1;
 	aqa.bits.asqs = nvme_pcie_qpair(ctrlr->adminq)->num_entries - 1;
 
-	if (nvme_pcie_ctrlr_set_aqa(pctrlr, &aqa)) {
+	if (nvme_pcie_ctrlr_set_aqa(pctrlr, &aqa))
+	{
 		SPDK_ERRLOG("set_aqa() failed\n");
 		return -EIO;
 	}
@@ -1027,7 +1135,8 @@ nvme_pcie_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 	struct nvme_pcie_ctrlr *pctrlr = nvme_pcie_ctrlr(ctrlr);
 	struct spdk_pci_device *devhandle = nvme_ctrlr_proc_get_devhandle(ctrlr);
 
-	if (ctrlr->adminq) {
+	if (ctrlr->adminq)
+	{
 		nvme_pcie_qpair_destroy(ctrlr->adminq);
 	}
 
@@ -1035,8 +1144,10 @@ nvme_pcie_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 
 	nvme_pcie_ctrlr_free_bars(pctrlr);
 
-	if (devhandle) {
-		if (ctrlr->opts.enable_interrupts) {
+	if (devhandle)
+	{
+		if (ctrlr->opts.enable_interrupts)
+		{
 			spdk_pci_device_disable_interrupts(devhandle);
 		}
 		spdk_pci_device_unclaim(devhandle);
@@ -1056,7 +1167,8 @@ nvme_pcie_ctrlr_enable_interrupts(struct spdk_nvme_ctrlr *ctrlr)
 
 	assert(devhandle != NULL);
 	rc = spdk_pci_device_enable_interrupts(devhandle, ctrlr->opts.num_io_queues);
-	if (rc) {
+	if (rc)
+	{
 		SPDK_ERRLOG("enable_interrupts() failed\n");
 		return -EIO;
 	}
@@ -1066,8 +1178,8 @@ nvme_pcie_ctrlr_enable_interrupts(struct spdk_nvme_ctrlr *ctrlr)
 
 static int
 nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
-				 int (*iter_fn)(struct nvme_request *req, void *arg),
-				 void *arg)
+								 int (*iter_fn)(struct nvme_request *req, void *arg),
+								 void *arg)
 {
 	struct nvme_pcie_qpair *pqpair = nvme_pcie_qpair(qpair);
 	struct nvme_tracker *tr, *tmp;
@@ -1075,11 +1187,13 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 
 	assert(iter_fn != NULL);
 
-	TAILQ_FOREACH_SAFE(tr, &pqpair->outstanding_tr, tq_list, tmp) {
+	TAILQ_FOREACH_SAFE(tr, &pqpair->outstanding_tr, tq_list, tmp)
+	{
 		assert(tr->req != NULL);
 
 		rc = iter_fn(tr->req, arg);
-		if (rc != 0) {
+		if (rc != 0)
+		{
 			return rc;
 		}
 	}
@@ -1087,35 +1201,59 @@ nvme_pcie_qpair_iterate_requests(struct spdk_nvme_qpair *qpair,
 	return 0;
 }
 
-
-
 static int nvme_pcie_ctrlr_alloc_msix(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, uint16_t flag)
 {
-	SPDK_ERRLOG("[ DEBUG ] nvme_pcie_ctrlr_alloc_msix\n");
 	// TODO: 不允许MSIX解决方案
 	struct spdk_pci_device *pci_dev = nvme_ctrlr_proc_get_devhandle(ctrlr);
 #ifdef SPDK_CONFIG_UINTR_MODE
-	if(flag & SPDK_PLUS_UINTR_MODE) {
+	if (flag & SPDK_PLUS_UINTR_MODE)
+	{
 		spdk_pci_device_enable_interrupts_uintr(pci_dev, index);
-		SPDK_ERRLOG("[ DEBUG ] SPDK_PLUS_UINTR_MODE\n");
-	} else if (flag & SPDK_PLUS_INTERRUPT_MODE) {
+	}
+	else if (flag & SPDK_PLUS_INTERRUPT_MODE)
+	{
 		spdk_pci_device_enable_spec_interrupts(pci_dev, index);
-		SPDK_ERRLOG("[ DEBUG ] SPDK_PLUS_INTERRUPT_MODE\n");
-	} else {
+	}
+	else
+	{
 		SPDK_ERRLOG("该模式不应调用此函数 mode = %u", flag);
 		return -EINVAL;
 	}
 #else
-	// spdk_pci_device_enable_interrupts(pci_dev, index+1);
 	SPDK_ERRLOG("错误，除非支持用户中断，否则不应该调用该函数\n");
 	exit(1);
 #endif
 	return spdk_pci_device_get_interrupt_efd_by_index(pci_dev, index);
 }
 
+static void *spdk_plus_pci_get_msix_table(struct spdk_pci_device *pci_dev)
+{
+	SPDK_ERRLOG("[ DEBUG ] pcie_get_msix_table\n");
+	return NULL;
+}
 
-void
-spdk_nvme_pcie_set_hotplug_filter(spdk_nvme_pcie_hotplug_filter_cb filter_cb)
+static int nvme_pcie_ctrlr_control_msix_enable(struct spdk_nvme_ctrlr *ctrlr, uint16_t index, bool enable)
+{
+	struct spdk_pci_device *pci_dev = nvme_ctrlr_proc_get_devhandle(ctrlr);
+#ifdef SPDK_CONFIG_UINTR_MODE
+	if (spdk_pci_device_get_interrupt_efd_by_index(pci_dev, index) < 0)
+	{
+		SPDK_ERRLOG("未分配中断\n");
+		return -EINVAL;
+	}
+	int ret = spdk_pci_device_control_spec_interrupt(pci_dev, index, enable);
+	if (ret < 0)
+	{
+		SPDK_ERRLOG("设置中断失败\n");
+		return ret;
+	}
+#else
+	SPDK_ERRLOG("[ DEBUG ] nvme_pcie_ctrlr_control_msix_enable: 函数不做任何事情\n");
+#endif
+	return 0;
+}
+
+void spdk_nvme_pcie_set_hotplug_filter(spdk_nvme_pcie_hotplug_filter_cb filter_cb)
 {
 	g_hotplug_filter_cb = filter_cb;
 }
@@ -1128,11 +1266,11 @@ static struct spdk_pci_id nvme_pci_driver_id[] = {
 		.subvendor_id = SPDK_PCI_ANY_ID,
 		.subdevice_id = SPDK_PCI_ANY_ID,
 	},
-	{ .vendor_id = 0, /* sentinel */ },
+	{.vendor_id = 0, /* sentinel */},
 };
 
 SPDK_PCI_DRIVER_REGISTER(nvme, nvme_pci_driver_id,
-			 SPDK_PCI_DRIVER_NEED_MAPPING | SPDK_PCI_DRIVER_WC_ACTIVATE);
+						 SPDK_PCI_DRIVER_NEED_MAPPING | SPDK_PCI_DRIVER_WC_ACTIVATE);
 
 const struct spdk_nvme_transport_ops pcie_ops = {
 	.name = "PCIE",
@@ -1167,7 +1305,8 @@ const struct spdk_nvme_transport_ops pcie_ops = {
 	.ctrlr_connect_qpair = nvme_pcie_ctrlr_connect_qpair,
 	.ctrlr_disconnect_qpair = nvme_pcie_ctrlr_disconnect_qpair,
 
-	.ctrlr_alloc_msix = nvme_pcie_ctrlr_alloc_msix, // 我添加的
+	.ctrlr_alloc_msix = nvme_pcie_ctrlr_alloc_msix,					  // 我添加的
+	.ctrlr_control_msix_enable = nvme_pcie_ctrlr_control_msix_enable, // 我添加的
 
 	.qpair_abort_reqs = nvme_pcie_qpair_abort_reqs,
 	.qpair_reset = nvme_pcie_qpair_reset,
@@ -1188,7 +1327,6 @@ const struct spdk_nvme_transport_ops pcie_ops = {
 	.poll_group_check_disconnected_qpairs = nvme_pcie_poll_group_check_disconnected_qpairs,
 	.poll_group_destroy = nvme_pcie_poll_group_destroy,
 	.poll_group_get_stats = nvme_pcie_poll_group_get_stats,
-	.poll_group_free_stats = nvme_pcie_poll_group_free_stats
-};
+	.poll_group_free_stats = nvme_pcie_poll_group_free_stats};
 
 SPDK_NVME_TRANSPORT_REGISTER(pcie, &pcie_ops);

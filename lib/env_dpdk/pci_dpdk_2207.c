@@ -5,6 +5,7 @@
 
 #define ALLOW_INTERNAL_API
 #include <rte_config.h>
+#include <rte_pci.h>
 #include <rte_version.h>
 #include "pci_dpdk.h"
 #include "22.07/rte_dev.h"
@@ -14,12 +15,13 @@
 
 SPDK_STATIC_ASSERT(offsetof(struct spdk_pci_driver, driver_buf) == 0, "driver_buf must be first");
 SPDK_STATIC_ASSERT(offsetof(struct spdk_pci_driver, driver) >= sizeof(struct rte_pci_driver),
-		   "driver_buf not big enough");
+				   "driver_buf not big enough");
 
 static struct rte_mem_resource *
 pci_device_get_mem_resource_2207(struct rte_pci_device *dev, uint32_t bar)
 {
-	if (bar >= PCI_MAX_RESOURCE) {
+	if (bar >= PCI_MAX_RESOURCE)
+	{
 		assert(false);
 		return NULL;
 	}
@@ -64,7 +66,7 @@ pci_device_read_config_2207(struct rte_pci_device *dev, void *value, uint32_t le
 
 	rc = rte_pci_read_config(dev, value, len, offset);
 
-	return (rc > 0 && (uint32_t) rc == len) ? 0 : -1;
+	return (rc > 0 && (uint32_t)rc == len) ? 0 : -1;
 }
 
 static int
@@ -78,14 +80,14 @@ pci_device_write_config_2207(struct rte_pci_device *dev, void *value, uint32_t l
 	/* DPDK returns 0 on success and -1 on failure */
 	return rc;
 #endif
-	return (rc > 0 && (uint32_t) rc == len) ? 0 : -1;
+	return (rc > 0 && (uint32_t)rc == len) ? 0 : -1;
 }
 
 /* translate spdk_pci_driver to an rte_pci_driver and register it to dpdk */
 static int
 pci_driver_register_2207(struct spdk_pci_driver *driver,
-			 int (*probe_fn)(struct rte_pci_driver *driver, struct rte_pci_device *device),
-			 int (*remove_fn)(struct rte_pci_device *device))
+						 int (*probe_fn)(struct rte_pci_driver *driver, struct rte_pci_device *device),
+						 int (*remove_fn)(struct rte_pci_device *device))
 
 {
 	unsigned pci_id_count = 0;
@@ -95,17 +97,20 @@ pci_driver_register_2207(struct spdk_pci_driver *driver,
 	uint32_t rte_flags;
 
 	assert(driver->id_table);
-	while (driver->id_table[pci_id_count].vendor_id) {
+	while (driver->id_table[pci_id_count].vendor_id)
+	{
 		pci_id_count++;
 	}
 	assert(pci_id_count > 0);
 
 	rte_id_table = calloc(pci_id_count + 1, sizeof(*rte_id_table));
-	if (!rte_id_table) {
+	if (!rte_id_table)
+	{
 		return -ENOMEM;
 	}
 
-	while (pci_id_count > 0) {
+	while (pci_id_count > 0)
+	{
 		struct rte_pci_id *rte_id = &rte_id_table[pci_id_count - 1];
 		const struct spdk_pci_id *spdk_id = &driver->id_table[pci_id_count - 1];
 
@@ -120,7 +125,8 @@ pci_driver_register_2207(struct spdk_pci_driver *driver,
 	assert(driver->name);
 	rte_name_len = strlen(driver->name) + strlen("spdk_") + 1;
 	rte_name = calloc(rte_name_len, 1);
-	if (!rte_name) {
+	if (!rte_name)
+	{
 		free(rte_id_table);
 		return -ENOMEM;
 	}
@@ -130,10 +136,12 @@ pci_driver_register_2207(struct spdk_pci_driver *driver,
 	driver->driver->id_table = rte_id_table;
 
 	rte_flags = 0;
-	if (driver->drv_flags & SPDK_PCI_DRIVER_NEED_MAPPING) {
+	if (driver->drv_flags & SPDK_PCI_DRIVER_NEED_MAPPING)
+	{
 		rte_flags |= RTE_PCI_DRV_NEED_MAPPING;
 	}
-	if (driver->drv_flags & SPDK_PCI_DRIVER_WC_ACTIVATE) {
+	if (driver->drv_flags & SPDK_PCI_DRIVER_WC_ACTIVATE)
+	{
 		rte_flags |= RTE_PCI_DRV_WC_ACTIVATE;
 	}
 	driver->driver->drv_flags = rte_flags;
@@ -161,6 +169,12 @@ static int
 pci_device_enable_interrupt_uintr_2207(struct rte_pci_device *rte_dev, uint32_t index)
 {
 	return rte_intr_enable_uintr(rte_dev->intr_handle, index);
+}
+
+static int
+pci_device_control_spec_interrupt_2207(struct rte_pci_device *rte_dev, uint32_t index, bool enable)
+{
+	return rte_intr_control_int_mask(rte_dev->intr_handle, index, enable);
 }
 
 static int
@@ -248,30 +262,31 @@ device_scan_allowed_2207(struct rte_device *dev)
 }
 
 struct dpdk_fn_table fn_table_2207 = {
-	.pci_device_get_mem_resource	= pci_device_get_mem_resource_2207,
-	.pci_device_get_name		= pci_device_get_name_2207,
-	.pci_device_get_devargs		= pci_device_get_devargs_2207,
-	.pci_device_get_addr		= pci_device_get_addr_2207,
-	.pci_device_get_id		= pci_device_get_id_2207,
-	.pci_device_get_numa_node	= pci_device_get_numa_node_2207,
-	.pci_device_read_config		= pci_device_read_config_2207,
-	.pci_device_write_config	= pci_device_write_config_2207,
-	.pci_driver_register		= pci_driver_register_2207,
-	.pci_device_enable_interrupt	= pci_device_enable_interrupt_2207,
+	.pci_device_get_mem_resource = pci_device_get_mem_resource_2207,
+	.pci_device_get_name = pci_device_get_name_2207,
+	.pci_device_get_devargs = pci_device_get_devargs_2207,
+	.pci_device_get_addr = pci_device_get_addr_2207,
+	.pci_device_get_id = pci_device_get_id_2207,
+	.pci_device_get_numa_node = pci_device_get_numa_node_2207,
+	.pci_device_read_config = pci_device_read_config_2207,
+	.pci_device_write_config = pci_device_write_config_2207,
+	.pci_driver_register = pci_driver_register_2207,
+	.pci_device_enable_interrupt = pci_device_enable_interrupt_2207,
 	.pci_device_enable_spec_interrupt = pci_device_enable_spec_interrupt_2207,
+	.pci_device_control_spec_interrupt = pci_device_control_spec_interrupt_2207,
 	.pci_device_enable_interrupt_uintr = pci_device_enable_interrupt_uintr_2207,
-	.pci_device_disable_interrupt	= pci_device_disable_interrupt_2207,
-	.pci_device_get_interrupt_efd	= pci_device_get_interrupt_efd_2207,
+	.pci_device_disable_interrupt = pci_device_disable_interrupt_2207,
+	.pci_device_get_interrupt_efd = pci_device_get_interrupt_efd_2207,
 	.pci_device_create_interrupt_efds = pci_device_create_interrupt_efds_2207,
 	.pci_device_create_spec_interrupt_efds = pci_device_create_spec_interrupt_efds_2207,
 	.pci_device_create_interrupt_efds_uintr = pci_device_create_interrupt_efds_uintr_2207,
 	.pci_device_delete_interrupt_efds = pci_device_delete_interrupt_efds_2207,
 	.pci_device_get_interrupt_efd_by_index = pci_device_get_interrupt_efd_by_index_2207,
-	.pci_device_interrupt_cap_multi	= pci_device_interrupt_cap_multi_2207,
-	.bus_scan			= bus_scan_2207,
-	.bus_probe			= bus_probe_2207,
-	.device_get_devargs		= device_get_devargs_2207,
-	.device_set_devargs		= device_set_devargs_2207,
-	.device_get_name		= device_get_name_2207,
-	.device_scan_allowed		= device_scan_allowed_2207,
+	.pci_device_interrupt_cap_multi = pci_device_interrupt_cap_multi_2207,
+	.bus_scan = bus_scan_2207,
+	.bus_probe = bus_probe_2207,
+	.device_get_devargs = device_get_devargs_2207,
+	.device_set_devargs = device_set_devargs_2207,
+	.device_get_name = device_get_name_2207,
+	.device_scan_allowed = device_scan_allowed_2207,
 };

@@ -389,7 +389,7 @@ MAKEFLAGS += --no-print-directory
 C_SRCS += $(C_SRCS-y)
 CXX_SRCS += $(CXX_SRCS-y)
 
-OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cpp=.o)
+OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cpp=.o) $(AS_SRCS:.S=.o)
 
 DEPFLAGS = -MMD -MP -MF $*.d.tmp
 
@@ -403,6 +403,11 @@ COMPILE_CXX=\
 	$(Q)echo "  CXX $S/$@"; \
 	$(CXX) -o $@ $(DEPFLAGS) $(CXXFLAGS) -c $< && \
 	mv -f $*.d.tmp $*.d && touch -c $@
+
+COMPILE_ASM = \
+	$(Q)echo "  ASM $S/$@"; \
+	$(CC) -o $@ $(DEPFLAGS) $(ASFLAGS) -c $< && \
+	mv -f $*.d.tmp $*.d  && touch -c $@
 
 ENV_LDFLAGS = $(if $(SPDK_NO_LINK_ENV),,$(ENV_LINKER_ARGS))
 
@@ -541,6 +546,10 @@ UNINSTALL_HEADER=\
 
 %.o: %.cpp %.d $(MAKEFILE_LIST)
 	$(COMPILE_CXX)
+
+
+%.o: %.S %.d $(MAKEFILE_LIST)
+	$(COMPILE_ASM)
 
 %.d: ;
 
